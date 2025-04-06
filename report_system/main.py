@@ -1,0 +1,1501 @@
+"""
+Classe principal do sistema de relatórios semanais com cache otimizado.
+"""
+
+import os
+import argparse
+import logging
+from datetime import datetime, timedelta
+import time
+from typing import Dict, List, Optional, Tuple, Any
+import pandas as pd
+from tqdm import tqdm
+import sys
+import requests
+import json
+from googleapiclient.discovery import build
+import time
+import googleapiclient.errors
+
+
+# Adiciona o diretório raiz ao path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from report_system.config import ConfigManager
+from report_system.processors.data_processor import DataProcessor
+from report_system.generators import SimpleReportGenerator
+from report_system.storage import GoogleDriveManager
+from report_system.utils.logging_config import setup_logging
+from report_system.utils.simple_cache import SimpleCacheManager
+from report_system.discord_handler import DiscordCommandHandler
+
+# Configurar logging
+logger = setup_logging()
+
+class WeeklyReportSystem:
+    """Sistema principal para geração de relatórios semanais."""
+    
+    def __init__(self, env_path: str = ".env", verbose_init: bool = True):
+        """
+        Inicializa o sistema de relatórios.
+        
+        Args:
+            env_path: Caminho para o arquivo .env
+            verbose_init: Se deve mostrar logs detalhados durante inicialização
+        """
+        # O parâmetro verbose_init é mantido para compatibilidade
+        logger.info("Inicializando sistema de relatorios")
+        
+        self.config = ConfigManager(env_path)
+        
+        # Inicializar o gerenciador de cache simplificado
+        try:
+            from report_system.utils.simple_cache import SimpleCacheManager
+            self.cache_manager = SimpleCacheManager(self.config.cache_dir)
+            logger.info("Inicializado SimpleCacheManager para cache")
+        except Exception as e:
+            logger.error(f"Erro ao inicializar SimpleCacheManager: {e}")
+            # Se falhar, criar diretório básico de cache
+            cache_dir = os.path.join(os.getcwd(), "cache")
+            os.makedirs(cache_dir, exist_ok=True)
+            
+            # Atribuir None e registrar erro
+            self.cache_manager = None
+            logger.error("Sistema de cache não disponível")
+        
+        # Inicializar processador de dados e conectores
+        self.processor = DataProcessor(self.config)
+        self.generator = SimpleReportGenerator(self.config)
+        
+        # Inicializar o GoogleDriveManager
+        self.gdrive = GoogleDriveManager(self.config)
+        
+        self.project_config_df = None  # Será carregado sob demanda
+        
+        # Inicializar o gerenciador de notificações do Discord
+        self.discord = self._initialize_discord_manager()
+        
+        # Inicializar o manipulador de comandos do Discord
+        self.discord_handler = DiscordCommandHandler(self.config, self)
+        
+        # Verificar se o cache está funcionando
+        if self.cache_manager:
+            try:
+                status = self.cache_manager.get_cache_status()
+                logger.info(f"Status do cache: {len(status)} arquivos encontrados")
+            except Exception as e:
+                logger.warning(f"Erro ao verificar status do cache: {e}")
+
+    def _initialize_discord_manager(self):
+        """Inicializa o gerenciador de Discord com melhor tratamento de erros."""
+        try:
+            from report_system.discord_notification import DiscordNotificationManager
+            discord_manager = DiscordNotificationManager(self.config)
+            
+            # Verificar se tem token configurado
+            if hasattr(discord_manager, 'discord_token') and discord_manager.discord_token:
+                logger.info("Gerenciador de Discord inicializado com sucesso")
+                return discord_manager
+            else:
+                logger.warning("Gerenciador de Discord inicializado mas sem token configurado")
+                return None
+        except Exception as e:
+            logger.warning(f"Não foi possível inicializar o gerenciador de Discord: {str(e)}")
+            return None
+    
+    def process_discord_command(self, channel_id: str, command: str, project_id: str = None) -> bool:
+        """
+        Processa um comando recebido pelo Discord.
+        
+        Args:
+            channel_id: ID do canal do Discord
+            command: Comando a ser processado
+            project_id: ID do projeto (opcional)
+            
+        Returns:
+            True se o comando foi processado com sucesso, False caso contrário
+        """
+        if not hasattr(self, 'discord_handler'):
+            self.discord_handler = DiscordCommandHandler(self.config, self)
+        
+        return self.discord_handler.process_command(channel_id, command, project_id)
+    
+    def _load_project_config(self, force_refresh: bool = False) -> pd.DataFrame:
+        """
+        Carrega a configuração de projetos da planilha.
+        
+        Args:
+            force_refresh: Se deve forçar atualização
+            
+        Returns:
+            DataFrame com configuração dos projetos
+        """
+        if self.project_config_df is None or force_refresh:
+            self.project_config_df = self.gdrive.load_project_config_from_sheet()
+        
+        return self.project_config_df
+    
+    def get_project_smartsheet_id(self, project_id: str) -> Optional[str]:
+        """
+        Obtém o ID do Smartsheet para um projeto.
+        
+        Args:
+            project_id: ID do projeto
+            
+        Returns:
+            ID do Smartsheet ou None
+        """
+        projects_df = self._load_project_config()
+        
+        if projects_df.empty or 'ID_Construflow' not in projects_df.columns or 'ID_Smartsheet' not in projects_df.columns:
+            logger.warning("Planilha de configuração não contém as colunas necessárias")
+            return None
+        
+        # Filtrar projeto
+        project_row = projects_df[projects_df['ID_Construflow'] == project_id]
+        
+        if project_row.empty or pd.isna(project_row['ID_Smartsheet'].values[0]):
+            logger.warning(f"ID do Smartsheet não encontrado para projeto {project_id}")
+            return None
+        
+        return project_row['ID_Smartsheet'].values[0]
+    
+    def get_active_projects(self) -> List[Dict[str, Any]]:
+        """
+        Obtém a lista de projetos ativos da planilha.
+        
+        Returns:
+            Lista de dicionários com dados dos projetos ativos
+        """
+        projects_df = self._load_project_config()
+        
+        if projects_df.empty:
+            logger.warning("Planilha de configuração vazia ou inacessível")
+            return []
+        
+        # Converter IDs para string
+        projects_df['ID_Construflow'] = projects_df['ID_Construflow'].astype(str)
+        
+        # Verificar se temos a coluna Ativo
+        if 'Ativo' in projects_df.columns:
+            active_projects = projects_df[projects_df['Ativo'].str.lower() == 'sim']
+        else:
+            # Se não tiver coluna Ativo, considerar todos os projetos
+            active_projects = projects_df
+        
+        logger.info(f"Total de projetos ativos: {len(active_projects)}")
+        
+        # Converter para lista de dicionários
+        projects_list = []
+        
+        for _, row in active_projects.iterrows():
+            project = {
+                'id': str(row.get('ID_Construflow', '')),
+                'name': row.get('Nome_Projeto', 'Projeto sem nome'),
+                'smartsheet_id': str(row.get('ID_Smartsheet', '')),
+                'drive_folder_id': row.get('ID_Pasta_Drive', ''),
+                'nome_cliente': [],
+                'disciplinas_cliente': []
+            }
+            
+            # Processar nomes de cliente
+            if 'Nome_Cliente' in row and pd.notna(row['Nome_Cliente']):
+                project['nome_cliente'] = [nome.strip() for nome in str(row['Nome_Cliente']).split(';') if nome.strip()]
+            
+            # Processar disciplinas do cliente
+            if 'Disciplinas_Cliente' in row and pd.notna(row['Disciplinas_Cliente']):
+                project['disciplinas_cliente'] = [disc.strip() for disc in str(row['Disciplinas_Cliente']).split(';') if disc.strip()]
+            
+            projects_list.append(project)
+        
+        return projects_list
+        
+    def get_client_names(self, project_id: str) -> List[str]:
+        """
+        Obtém os nomes do cliente para um projeto específico.
+        
+        Args:
+            project_id: ID do projeto
+            
+        Returns:
+            Lista de nomes do cliente
+        """
+        projects = self.get_active_projects()
+        
+        for project in projects:
+            if project['id'] == project_id:
+                return project.get('nome_cliente', [])
+        
+        return []
+    
+    def get_client_disciplines(self, project_id: str) -> List[str]:
+        """
+        Obtém as disciplinas sob responsabilidade do cliente para um projeto específico.
+        
+        Args:
+            project_id: ID do projeto
+            
+        Returns:
+            Lista de disciplinas do cliente
+        """
+        projects = self.get_active_projects()
+        
+        for project in projects:
+            if project['id'] == project_id:
+                return project.get('disciplinas_cliente', [])
+        
+        return []
+    
+    def get_project_by_discord_channel(self, channel_id: str) -> Optional[str]:
+        """
+        Busca o ID do projeto associado a um canal do Discord.
+        
+        Args:
+            channel_id: ID do canal Discord
+            
+        Returns:
+            ID do projeto ou None se não encontrado
+        """
+        projects_df = self._load_project_config()
+        
+        if projects_df.empty or 'Canal_Discord' not in projects_df.columns:
+            logger.warning("Planilha não contém coluna Canal_Discord")
+            return None
+        
+        # Limpar IDs para comparação
+        channel_id_clean = ''.join(c for c in channel_id if c.isdigit())
+        
+        # Verificar cada linha
+        for _, row in projects_df.iterrows():
+            if 'Canal_Discord' in row and pd.notna(row['Canal_Discord']):
+                row_channel = str(row['Canal_Discord'])
+                row_channel_clean = ''.join(c for c in row_channel if c.isdigit())
+                
+                if row_channel_clean == channel_id_clean:
+                    if 'ID_Construflow' in row and pd.notna(row['ID_Construflow']):
+                        return str(row['ID_Construflow'])
+        
+        return None
+
+    def filter_client_issues(self, df_issues: pd.DataFrame, project_id: str) -> pd.DataFrame:
+        """
+        Filtra issues do Construflow relacionadas às disciplinas do cliente.
+        
+        Args:
+            df_issues: DataFrame com todas as issues do projeto
+            project_id: ID do projeto
+            
+        Returns:
+            DataFrame com issues filtradas pelas disciplinas do cliente
+        """
+        # Obter disciplinas relacionadas ao cliente
+        disciplinas_cliente = self.get_client_disciplines(project_id)
+        
+        if not disciplinas_cliente or 'name' not in df_issues.columns:
+            logger.warning(f"Não foi possível filtrar issues para o cliente. Disciplinas: {disciplinas_cliente}")
+            return df_issues
+        
+        # Filtrar pelas disciplinas do cliente
+        mask = df_issues['name'].isin(disciplinas_cliente)
+        filtered_df = df_issues[mask]
+        
+        logger.info(f"Filtradas {len(filtered_df)} issues de cliente de um total de {len(df_issues)}")
+        return filtered_df
+    
+    def get_project_discord_channel(self, project_id: str) -> Optional[str]:
+        """
+        Obtém o ID do canal do Discord para um projeto específico.
+        
+        Args:
+            project_id: ID do projeto
+            
+        Returns:
+            ID do canal do Discord ou None se não encontrado
+        """
+        projects_df = self._load_project_config()
+        
+        if projects_df.empty or 'ID_Construflow' not in projects_df.columns:
+            logger.warning("Planilha de configuração não contém as colunas necessárias")
+            return None
+        
+        # Verificar se a coluna Canal_Discord existe
+        if 'Canal_Discord' not in projects_df.columns:
+            logger.warning("Coluna Canal_Discord não encontrada na planilha")
+            return None
+        
+        # Filtrar projeto
+        project_row = projects_df[projects_df['ID_Construflow'] == project_id]
+        
+        if project_row.empty or pd.isna(project_row['Canal_Discord'].values[0]):
+            logger.warning(f"Canal Discord não encontrado para projeto {project_id}")
+            return None
+        
+        channel_id = project_row['Canal_Discord'].values[0]
+        logger.info(f"ID do canal Discord obtido: {channel_id}")
+        return str(channel_id)
+    
+    def send_discord_notification(self, channel_id: str, message: str, max_retries: int = 3) -> bool:
+        """
+        Envia uma notificação do Discord com retry automático.
+        
+        Args:
+            channel_id: ID do canal do Discord
+            message: Mensagem a enviar
+            max_retries: Número máximo de tentativas
+        
+        Returns:
+            True se a notificação foi enviada com sucesso, False caso contrário
+        """
+        if not self.discord:
+            logger.error("Gerenciador de Discord não inicializado")
+            return False
+            
+        for attempt in range(max_retries):
+            try:
+                # Tenta sem e com o prefixo "Bot " alternadamente
+                if attempt % 2 == 1 and self.discord.discord_token and not self.discord.discord_token.startswith("Bot "):
+                    # Temporariamente adiciona o prefixo "Bot " ao token
+                    original_token = self.discord.discord_token
+                    self.discord.discord_token = f"Bot {original_token}"
+                    result = self.discord.send_notification(channel_id, message)
+                    self.discord.discord_token = original_token  # Restaura o token original
+                else:
+                    result = self.discord.send_notification(channel_id, message)
+                
+                if result:
+                    logger.info(f"Notificação enviada para canal {channel_id} com sucesso")
+                    return True
+                else:
+                    logger.warning(f"Tentativa {attempt+1}/{max_retries} falhou")
+                    time.sleep(1 * (attempt + 1))  # Backoff exponencial
+                    
+            except Exception as e:
+                logger.error(f"Erro ao enviar notificação: {str(e)}")
+                time.sleep(1 * (attempt + 1))
+        
+        logger.error(f"Todas as {max_retries} tentativas falharam ao enviar notificação")
+        return False
+    
+    def _update_project_cache(self, project_id: str) -> bool:
+        """
+        Atualiza o cache para um projeto específico usando o sistema simplificado.
+        Versão otimizada que salva corretamente os dados do Smartsheet com associação ao projeto.
+        
+        Args:
+            project_id: ID do projeto
+            
+        Returns:
+            True se a atualização foi bem-sucedida, False caso contrário
+        """
+        try:
+            from concurrent.futures import ThreadPoolExecutor
+            
+            logger.info(f"Atualizando cache para o projeto {project_id} antes de gerar relatório")
+            
+            # Verificar se o cache manager está disponível
+            if not self.cache_manager:
+                logger.error("Cache manager não inicializado")
+                return False
+                
+            # Usar o cache manager atual
+            cache = self.cache_manager
+            
+            # Verificar e atualizar arquivos de cache
+            construflow = self.processor.construflow
+            
+            # Funções auxiliares para executar em threads paralelas
+            def update_disciplines():
+                try:
+                    logger.info("Atualizando arquivo disciplines (thread paralela)")
+                    disciplines_data = construflow.get_data("disciplines", force_refresh=True, use_cache=False)
+                    if disciplines_data and hasattr(cache, 'save_construflow_data'):
+                        cache.save_construflow_data("disciplines", disciplines_data)
+                        logger.info(f"Arquivo disciplines atualizado com {len(disciplines_data)} registros")
+                        return disciplines_data
+                    return None
+                except Exception as e:
+                    logger.error(f"Erro ao atualizar disciplines em thread paralela: {e}")
+                    return None
+                    
+            def update_issue_disciplines():
+                try:
+                    logger.info("Atualizando arquivo issues-disciplines (thread paralela)")
+                    issue_disciplines_data = construflow.get_data("issues-disciplines", force_refresh=True, use_cache=False)
+                    if issue_disciplines_data and hasattr(cache, 'save_construflow_data'):
+                        cache.save_construflow_data("issues-disciplines", issue_disciplines_data)
+                        logger.info(f"Arquivo issues-disciplines atualizado com {len(issue_disciplines_data)} registros")
+                        return issue_disciplines_data
+                    return None
+                except Exception as e:
+                    logger.error(f"Erro ao atualizar issues-disciplines em thread paralela: {e}")
+                    return None
+                    
+            def update_issues():
+                try:
+                    logger.info("Atualizando arquivo issues (thread paralela)")
+                    # Obter todas as issues sem filtro
+                    issues_data = construflow.get_data("issues", force_refresh=True, use_cache=False)
+                    
+                    if issues_data and hasattr(cache, 'save_construflow_data'):
+                        # Converter para DataFrame para verificação (apenas para log)
+                        issues_df = pd.DataFrame(issues_data)
+                        
+                        # Salvar todas as issues no cache
+                        cache.save_construflow_data("issues", issues_data)
+                        
+                        # Log informativo sobre issues deste projeto
+                        try:
+                            issues_df['projectId'] = issues_df['projectId'].astype(str)
+                            project_issues = issues_df[issues_df['projectId'] == str(project_id)]
+                            logger.info(f"Identificadas {len(project_issues)} issues para o projeto {project_id} " +
+                                    f"de um total de {len(issues_df)} issues")
+                        except Exception as e:
+                            logger.warning(f"Erro ao analisar issues para o projeto {project_id}: {e}")
+                        
+                        return issues_data
+                    return None
+                except Exception as e:
+                    logger.error(f"Erro ao atualizar issues em thread paralela: {e}")
+                    return None
+            
+            def update_projects():
+                try:
+                    logger.info("Atualizando arquivo projects (thread paralela)")
+                    projects_data = construflow.get_data("projects", force_refresh=True, use_cache=False)
+                    if projects_data and hasattr(cache, 'save_construflow_data'):
+                        cache.save_construflow_data("projects", projects_data)
+                        logger.info(f"Arquivo projects atualizado")
+                        return projects_data
+                    return None
+                except Exception as e:
+                    logger.error(f"Erro ao atualizar projects em thread paralela: {e}")
+                    return None
+            
+            # 1. Atualizar projects, disciplines, issues-disciplines e issues em paralelo
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                # Submeter tarefas
+                logger.info("Iniciando atualização paralela de projects, disciplines, issues-disciplines e issues")
+                future_projects = executor.submit(update_projects)
+                future_disciplines = executor.submit(update_disciplines)
+                future_issue_disciplines = executor.submit(update_issue_disciplines)
+                future_issues = executor.submit(update_issues)
+                
+                # Aguardar conclusão e obter resultados
+                projects_data = future_projects.result()
+                disciplines_data = future_disciplines.result()
+                issue_disciplines_data = future_issue_disciplines.result()
+                issues_data = future_issues.result()
+                
+                logger.info("Atualização paralela concluída")
+            
+            # 2. Buscar e atualizar o Smartsheet separadamente (precisa do ID do Smartsheet)
+            try:
+                smartsheet_id = self.get_project_smartsheet_id(project_id)
+                if smartsheet_id:
+                    logger.info(f"Atualizando dados do Smartsheet para projeto {project_id} (ID: {smartsheet_id})")
+                    smartsheet_data = self.processor.smartsheet.get_sheet(smartsheet_id, force_refresh=True)
+                    
+                    if smartsheet_data:
+                        # Usar o método do SimpleCacheManager para salvar dados do Smartsheet
+                        if hasattr(cache, 'save_smartsheet_data'):
+                            cache.save_smartsheet_data(smartsheet_id, project_id, smartsheet_data)
+                            logger.info(f"Dados do Smartsheet {smartsheet_id} salvos com associação ao projeto {project_id}")
+                        else:
+                            # Fallback manual caso o método específico não exista
+                            # Adicionar identificadores
+                            for item in smartsheet_data:
+                                if isinstance(item, dict):
+                                    item['sheet_id'] = str(smartsheet_id)
+                                    item['project_id'] = str(project_id)
+                            
+                            # Salvar no cache
+                            file_name = f"sheet_{smartsheet_id}"
+                            cache.save_data(file_name, smartsheet_data, 'smartsheet')
+                            logger.info(f"Smartsheet {smartsheet_id} atualizado com {len(smartsheet_data)} registros para projeto {project_id}")
+                else:
+                    logger.warning(f"ID do Smartsheet não encontrado para o projeto {project_id}")
+            except Exception as e:
+                logger.error(f"Erro ao atualizar dados do Smartsheet: {e}")
+            
+            logger.info(f"Atualização de cache para projeto {project_id} concluída")
+            return True
+        except Exception as e:
+            logger.error(f"Erro ao atualizar cache para projeto {project_id}: {e}")
+            return False
+
+    def _format_final_success_message(self, project_name, doc_url, folder_url=None):
+        """
+        Formata uma mensagem de sucesso atraente para envio via Discord.
+        
+        Args:
+            project_name: Nome do projeto
+            doc_url: URL do documento gerado
+            folder_url: URL da pasta do projeto (opcional)
+            
+        Returns:
+            Mensagem formatada
+        """
+        message = [
+            f"🎉 **Relatório Semanal Concluído!**",
+            f"",
+            f"📋 **Projeto:** {project_name}",
+            f"",
+            f"📄 [Abrir Relatório]({doc_url})"
+        ]
+        
+        if folder_url:
+            message.append(f"📁 [Abrir Pasta do Projeto]({folder_url})")
+        
+        message.extend([
+            "",
+            "✅ O relatório foi gerado com sucesso e está pronto para ser compartilhado.",
+            "🔄 Para gerar um novo relatório, use o comando `!relatorio` neste canal."
+        ])
+        
+        return "\n".join(message)
+
+    def run_for_project(self, project_id, quiet_mode=False, skip_cache_update=False) -> Tuple[bool, str, Optional[str]]:
+        """
+        Executa o processo completo para um projeto, atualizando o cache primeiro.
+        
+        Args:
+            project_id: ID do projeto
+            quiet_mode: Se deve operar em modo silencioso
+            skip_cache_update: Se True, pula a atualização do cache (use quando já foi atualizado)
+            
+        Returns:
+            Tupla com (sucesso, caminho_arquivo, id_drive)
+        """
+        self.quiet_mode = quiet_mode
+
+        # Obter canal Discord e nome do projeto
+        discord_channel_id = self.get_project_discord_channel(project_id)
+        project_name = "Projeto"  # Valor padrão
+        
+        # Obter nome mais amigável do projeto se possível
+        projects_df = self._load_project_config()
+        if not projects_df.empty and 'ID_Construflow' in projects_df.columns:
+            project_row = projects_df[projects_df['ID_Construflow'] == project_id]
+            if not project_row.empty and 'Nome_Projeto' in project_row.columns:
+                project_name = project_row['Nome_Projeto'].values[0]
+        
+         # Inicializar reporter de progresso somente se NÃO estiver em modo silencioso
+        progress_reporter = None
+        if discord_channel_id and not quiet_mode:
+            try:
+                from report_system.utils.progress_reporter import ProgressReporter
+                progress_reporter = ProgressReporter(
+                    channel_id=discord_channel_id,
+                    project_name=project_name,
+                    send_message_func=self.send_discord_notification
+                )
+                progress_reporter.start()
+            except ImportError:
+                logger.warning("Módulo progress_reporter não encontrado. Continuando sem atualizações de progresso.")
+        
+        try:
+            if not skip_cache_update:
+                # Atualizar o cache para este projeto específico
+                logger.info(f"Atualizando cache para o projeto {project_id} antes de gerar relatório")
+  
+                if progress_reporter:
+                    progress_reporter.update("Atualização de cache", "Obtendo dados mais recentes...")      
+                self._update_project_cache(project_id)
+            
+                # Buscar o ID do Smartsheet para este projeto
+                smartsheet_id = self.get_project_smartsheet_id(project_id)
+            
+            else:
+                logger.info(f"Pulando atualização de cache para o projeto {project_id} (já atualizado)")
+            
+            if progress_reporter:
+                progress_reporter.update("Usando cache", "Utilizando dados já atualizados...")
+
+            # Processar dados
+            if progress_reporter:
+                progress_reporter.update("Processamento de dados", "Analisando informações do projeto...")
+                
+            project_data = self.processor.process_project_data(project_id, smartsheet_id)
+            
+            if not project_data.get('project_name'):
+                logger.error(f"Projeto {project_id} não encontrado ou sem dados")
+                
+                if progress_reporter:
+                    progress_reporter.complete(
+                        success=False, 
+                        final_message=f"❌ **Erro:** Não foi possível encontrar dados para o projeto {project_name}."
+                    )
+                    
+                return False, "", None
+            
+            # Atualizar o nome do projeto se necessário
+            if project_name == "Projeto" and project_data.get('project_name'):
+                project_name = project_data['project_name']
+            
+            # Gerar relatório
+            if progress_reporter:
+                progress_reporter.update("Geração de relatório", "Criando conteúdo do relatório...")
+                
+            report_text = self.generator.generate_report(project_data)
+            
+            # Salvar localmente primeiro
+            file_path = self.generator.save_report(
+                report_text, 
+                project_data['project_name']
+            )
+            
+            if not file_path:
+                logger.error(f"Erro ao salvar relatório para projeto {project_id}")
+                
+                if progress_reporter:
+                    progress_reporter.complete(
+                        success=False, 
+                        final_message=f"❌ **Erro:** Falha ao salvar o relatório para {project_name}."
+                    )
+                    
+                return False, "", None
+            
+            # Obter a pasta específica do projeto a partir da planilha de configuração
+            if progress_reporter:
+                progress_reporter.update("Upload do relatório", "Preparando o upload para o Google Drive...")
+                
+            project_folder_id = self.gdrive.get_project_folder(
+                project_id, 
+                project_data['project_name']
+            )
+            
+            if not project_folder_id:
+                logger.warning(f"ID da pasta do Drive não encontrado para projeto {project_id}")
+                logger.warning(f"Relatório salvo apenas localmente em {file_path}")
+                
+                if progress_reporter:
+                    progress_reporter.complete(
+                        success=True, 
+                        final_message=(
+                            f"⚠️ **Relatório parcialmente concluído para {project_name}**\n"
+                            f"O relatório foi gerado mas não foi possível encontrar a pasta do Google Drive.\n"
+                            f"O arquivo está disponível apenas localmente."
+                        )
+                    )
+                    
+                return True, file_path, None
+            
+            # Formatar data atual
+            today_str = datetime.now().strftime("%d/%m/%Y")
+            
+            # Inicializar serviços do Google
+            try:
+                from googleapiclient.discovery import build
+                
+                # Obter credenciais do gerenciador de configuração
+                creds = self.config.get_google_creds()
+                
+                if not creds:
+                    logger.error("Credenciais do Google não disponíveis")
+                    
+                    # Fazer upload do arquivo como fallback
+                    if progress_reporter:
+                        progress_reporter.update(
+                            "Upload alternativo", 
+                            "Tentando método alternativo de upload (sem credenciais)..."
+                        )
+                    
+                    file_name = f"Relatório Semanal - {project_data['project_name']} - {today_str}.md"
+                    file_id = self.gdrive.upload_file(
+                        file_path=file_path,
+                        name=file_name,
+                        parent_id=project_folder_id
+                    )
+                    
+                    if progress_reporter:
+                        if file_id:
+                            drive_url = f"https://drive.google.com/file/d/{file_id}/view"
+                            progress_reporter.complete(
+                                success=True,
+                                final_message=(
+                                    f"✅ **Relatório de {project_name} concluído!**\n"
+                                    f"O relatório foi enviado como arquivo markdown.\n"
+                                    f"📄 [Link para o relatório]({drive_url})"
+                                )
+                            )
+                        else:
+                            progress_reporter.complete(
+                                success=False,
+                                final_message=(
+                                    f"⚠️ **Relatório parcialmente concluído para {project_name}**\n"
+                                    f"O relatório foi gerado mas não foi possível enviá-lo ao Google Drive.\n"
+                                    f"O arquivo está disponível apenas localmente."
+                                )
+                            )
+                    
+                    return True, file_path, file_id
+                
+                # Criar serviços do Google
+                if progress_reporter:
+                    progress_reporter.update("Criação de documento", "Configurando serviços do Google Docs...")
+                    
+                drive_service = build('drive', 'v3', credentials=creds)
+                docs_service = build('docs', 'v1', credentials=creds)
+                
+                # Criar documento do Google Docs com links funcionais
+                doc_title = f"Relatório Semanal - {project_data['project_name']} - {today_str}"
+                
+                if progress_reporter:
+                    progress_reporter.update("Finalização", "Gerando documento do Google Docs com links...")
+                    
+                doc_id = self.create_google_doc_with_links(
+                    docs_service=docs_service,
+                    drive_service=drive_service,
+                    title=doc_title,
+                    project_data=project_data,
+                    parent_folder_id=project_folder_id
+                )
+                
+                logger.info(f"Documento Google Docs criado com ID: {doc_id}")
+                
+                # Finalizar e enviar mensagem final
+                if doc_id and progress_reporter:
+                    doc_url = f"https://docs.google.com/document/d/{doc_id}/edit"
+                    folder_url = f"https://drive.google.com/drive/folders/{project_folder_id}"
+                    
+                    final_message = (
+                        f"✅ **Relatório de {project_name} concluído com sucesso!**\n\n"
+                        f"📄 [Link para o relatório]({doc_url})\n"
+                        f"📁 [Link para a pasta do projeto]({folder_url})"
+                    )
+                    
+                    progress_reporter.complete(success=True, final_message=final_message)
+                elif progress_reporter:
+                    progress_reporter.complete(
+                        success=False, 
+                        final_message=f"❌ **Erro:** Falha ao criar documento no Google Docs para {project_name}."
+                    )
+                
+                # Se não enviamos notificação pelo sistema de progresso, enviar a notificação normal
+                if not progress_reporter and discord_channel_id:
+                    doc_url = f"https://docs.google.com/document/d/{doc_id}/edit"
+                    folder_url = f"https://drive.google.com/drive/folders/{project_folder_id}"
+                    
+                    discord_message = (
+                        f"🔔 Novo relatório semanal disponível para o projeto {project_data['project_name']}!\n"
+                        f"📄 Link para o relatório: {doc_url}\n"
+                        f"📁 Link para a pasta: {folder_url}"
+                    )
+                    
+                    self.send_discord_notification(discord_channel_id, discord_message)
+                
+                return True, file_path, doc_id
+                
+            except Exception as e:
+                logger.error(f"Erro ao criar documento no Google Docs: {e}")
+                
+                # Fazer upload do arquivo como fallback
+                if progress_reporter:
+                    progress_reporter.update(
+                        "Upload alternativo", 
+                        "Tentando método alternativo de upload após erro..."
+                    )
+                
+                file_name = f"Relatório Semanal - {project_data['project_name']} - {today_str}.md"
+                file_id = self.gdrive.upload_file(
+                    file_path=file_path,
+                    name=file_name,
+                    parent_id=project_folder_id
+                )
+                
+                if progress_reporter:
+                    if file_id:
+                        drive_url = f"https://drive.google.com/file/d/{file_id}/view"
+                        progress_reporter.complete(
+                            success=True,
+                            final_message=(
+                                f"⚠️ **Relatório de {project_name} concluído com limitações**\n"
+                                f"Houve um erro ao criar documento do Google Docs: {str(e)}\n"
+                                f"O relatório foi enviado como arquivo markdown.\n"
+                                f"📄 [Link para o relatório]({drive_url})"
+                            )
+                        )
+                    else:
+                        progress_reporter.complete(
+                            success=False,
+                            final_message=(
+                                f"❌ **Erro ao gerar relatório para {project_name}**\n"
+                                f"Erro ao criar documento no Google Docs: {str(e)}\n"
+                                f"Também falhou o upload alternativo do arquivo."
+                            )
+                        )
+            # Na parte final, se for em modo silencioso e tiver canal Discord, enviar apenas a mensagem final
+                if quiet_mode and discord_channel_id and doc_id:
+                    doc_url = f"https://docs.google.com/document/d/{doc_id}/edit"
+                    folder_url = f"https://drive.google.com/drive/folders/{project_folder_id}" if project_folder_id else None
+                    
+                    final_message = self._format_final_success_message(project_name, doc_url, folder_url)
+                    self.send_discord_notification(discord_channel_id, final_message)
+
+                return True, file_path, file_id
+                    
+        except Exception as e:
+            logger.error(f"Erro ao processar projeto {project_id}: {str(e)}", exc_info=True)
+            
+            if progress_reporter:
+                progress_reporter.complete(
+                    success=False,
+                    final_message=(
+                        f"❌ **Erro fatal ao gerar relatório para {project_name}**\n"
+                        f"Erro: {str(e)}\n"
+                        f"Por favor, contate o suporte técnico."
+                    )
+                )
+            
+            return False, "", None
+
+    def create_google_doc_with_links(self, docs_service, drive_service, title, project_data, parent_folder_id=None):
+        """Cria um documento Google Docs com links funcionais para os apontamentos."""
+        # 1. Criar documento vazio
+        doc_body = {'title': title}
+
+        # Função auxiliar para fazer requisições com retry e backoff
+        def execute_with_retry(request, max_retries=5):
+            for retry in range(max_retries):
+                try:
+                    return request.execute()
+                except googleapiclient.errors.HttpError as e:
+                    if e.resp.status == 429 or e.resp.status in [500, 503]:  
+                        wait_time = 60  # Wait for 1 minute
+                        logger.warning(f"Rate limit hit. Waiting {wait_time}s before retry.")
+                        time.sleep(wait_time)
+                    else:
+                        raise
+                except Exception as e:
+                    logger.error(f"Error executing request: {e}")
+                    raise
+
+            raise Exception(f"Failed after {max_retries} attempts")
+
+        # Criar documento com retry
+        try:
+            doc = execute_with_retry(docs_service.documents().create(body=doc_body))
+            document_id = doc.get('documentId')
+        except Exception as e:
+            logger.error(f"Erro ao criar documento: {e}")
+            return None
+        
+        # 2. Mover para a pasta correta, se especificada
+        if parent_folder_id:
+            try:
+                drive_service.files().update(
+                    fileId=document_id,
+                    addParents=parent_folder_id,
+                    fields='id, parents',
+                    supportsAllDrives=True
+                ).execute()
+            except Exception as e:
+                logger.warning(f"Erro ao mover documento para pasta: {e}")
+        
+        # 3. Gerar relatório com os links já construídos corretamente
+        original_report = self.generator.generate_report(project_data)
+        
+        # 4. Extrair os links para processá-los corretamente
+        import re
+        
+        # Encontrar todos os links markdown no formato [#código](url)
+        link_matches = re.findall(r'\[#(\d+)\]\((.*?)\)', original_report)
+        
+        # Criar um dicionário com o mapeamento de código para URL correta
+        code_to_url = {code: url for code, url in link_matches}
+        
+        # Substituir os links markdown por apenas o código para inserir no documento
+        modified_report = re.sub(r'\[#(\d+)\]\((.*?)\)', r'#\1', original_report)
+        
+        # 5. Procurar por títulos markdown (linhas que começam com # ou ##)
+        # e prepará-los para inserção como cabeçalhos reais do Google Docs
+        heading_matches = re.findall(r'^(#+)\s+(.*?)$', modified_report, re.MULTILINE)
+        heading_positions = {}
+
+        # Vamos substituir os cabeçalhos por marcadores para facilitar a identificação posterior
+        for i, (hashes, heading_text) in enumerate(heading_matches):
+            marker = f"{{HEADING_{i}_{len(hashes)}_{heading_text}}}"
+            heading_positions[marker] = {'level': len(hashes), 'text': heading_text}
+            modified_report = modified_report.replace(f"{hashes} {heading_text}", marker)
+
+        # 6. Inserir o relatório modificado
+        try:
+            execute_with_retry(
+                docs_service.documents().batchUpdate(
+                    documentId=document_id,
+                    body={
+                        'requests': [{
+                            'insertText': {
+                                'location': {'index': 1},
+                                'text': modified_report
+                            }
+                        }]
+                    }
+                )
+            )
+        except Exception as e:
+            logger.error(f"Erro ao inserir texto no documento: {e}")
+            return document_id  # Retornar o ID mesmo assim, para que o usuário possa acessar o documento incompleto
+        
+        # 7. Obter o documento para encontrar as posições dos marcadores e links
+        try:  # Esta linha está com indentação incorreta (tem um espaço extra no início)
+            search_response = execute_with_retry(
+                docs_service.documents().get(documentId=document_id)
+            )
+            content = search_response.get('body', {}).get('content', [])
+        except Exception as e:
+            logger.error(f"Erro ao obter conteúdo do documento: {e}")
+            return document_id
+        
+        # 8. Criar solicitações para formatação de cabeçalhos
+        heading_requests = []
+        
+        # Procurar por nossos marcadores de cabeçalho
+        for marker, heading_info in heading_positions.items():
+            start_index = None
+            
+            # Procurar no documento
+            for item in content:
+                if 'paragraph' in item:
+                    paragraph = item.get('paragraph', {})
+                    elements = paragraph.get('elements', [])
+                    
+                    for element in elements:
+                        text_run = element.get('textRun', {})
+                        element_text = text_run.get('content', '')
+                        
+                        if marker in element_text:
+                            # Encontrar a posição exata
+                            local_start = element_text.find(marker)
+                            start_index = element.get('startIndex', 0) + local_start
+                            end_index = start_index + len(marker)
+                            
+                            heading_requests.append({
+                                'deleteContentRange': {  # Primeiro deletamos o conteúdo do marcador
+                                    'range': {
+                                        'startIndex': start_index,
+                                        'endIndex': end_index
+                                    }
+                                }
+                            })
+
+                            heading_requests.append({
+                                'insertText': {  # Depois inserimos o texto correto
+                                    'location': {
+                                        'index': start_index
+                                    },
+                                    'text': heading_info['text']
+                                }
+                            })
+
+
+                            # Mapear nível do cabeçalho para o formato do Google Docs
+                            heading_level = 1  # Padrão para H1
+                            if heading_info['level'] == 2:
+                                heading_level = 2
+                            elif heading_info['level'] >= 3:
+                                heading_level = 3
+                            
+                            # Adicionar solicitação para formatar como cabeçalho
+                            heading_requests.append({
+                                'updateParagraphStyle': {
+                                    'range': {
+                                        'startIndex': start_index,
+                                        'endIndex': start_index + len(heading_info['text'])
+                                    },
+                                    'paragraphStyle': {
+                                        'namedStyleType': f'HEADING_{heading_level}',
+                                    },
+                                    'fields': 'namedStyleType'
+                                }
+                            })
+                            break
+                    
+                    if start_index is not None:
+                        break
+        
+        # 9. Adicionar links usando as URLs extraídas anteriormente
+        link_requests = []
+        
+        for code, url in code_to_url.items():
+            search_text = f"#{code}"
+            
+            try:
+                # Procurar no documento
+                start_index = None
+                
+                # Procurar por instâncias do código nos parágrafos
+                for item in content:
+                    if 'paragraph' in item:
+                        paragraph = item.get('paragraph', {})
+                        elements = paragraph.get('elements', [])
+                        
+                        for element in elements:
+                            text_run = element.get('textRun', {})
+                            content_text = text_run.get('content', '')
+                            
+                            if search_text in content_text:
+                                # Encontrar a posição exata
+                                local_start = content_text.find(search_text)
+                                start_index = element.get('startIndex', 0) + local_start
+                                end_index = start_index + len(search_text)
+                                
+                            # Verificar presença do código antes de adicionar link      
+                            if code_to_url and search_text in content_text:
+                                start_index = content_text.find(search_text)  
+
+                                # Aplicar negrito ao texto
+                                link_requests.append({
+                                    'updateTextStyle': {
+                                        'range': {
+                                            'startIndex': start_index,
+                                            'endIndex': end_index
+                                        },
+                                        'textStyle': {
+                                            'bold': True
+                                        },
+                                        'fields': 'bold'
+                                    }
+                                })
+                                
+                                # Adicionar o link usando a URL extraída anteriormente
+                                link_requests.append({
+                                    'updateTextStyle': {
+                                        'range': {
+                                            'startIndex': start_index,
+                                            'endIndex': end_index
+                                        },
+                                        'textStyle': {
+                                            'link': {'url': url}
+                                        },
+                                        'fields': 'link'
+                                    }
+                                })
+                                break
+                        
+                        if start_index is not None:
+                            break
+                    
+            except Exception as e:
+                logger.warning(f"Erro ao adicionar link para o apontamento #{code}: {e}")
+        
+        # 10. Executar todas as solicitações
+        all_requests = heading_requests + link_requests
+        
+        if all_requests:
+            # Dividir em lotes para evitar exceder limites da API
+            batch_size = 50  # A API do Google Docs tem um limite de requisições por lote
+            for i in range(0, len(all_requests), batch_size):
+                batch = all_requests[i:i+batch_size]
+                
+                try:
+                    execute_with_retry(
+                        docs_service.documents().batchUpdate(
+                            documentId=document_id,
+                            body={'requests': batch}
+                        )
+                    )
+                    # Adicionar uma pequena pausa entre lotes para evitar atingir limites
+                    if i + batch_size < len(all_requests):
+                        time.sleep(0.5)  # Pausa de 500ms entre lotes
+                except Exception as e:
+                    logger.error(f"Erro ao processar lote de atualizações {i//batch_size + 1}: {e}")
+                    # Continuar com o próximo lote mesmo em caso de erro
+        logger.info(f"Documento criado com sucesso: {document_id}")
+        return document_id
+
+    def update_all_cache(self, projects):
+        """
+        Atualiza o cache para todos os projetos de uma vez de forma eficiente.
+        
+        Args:
+            projects: Lista de dicionários com dados dos projetos
+        
+        Returns:
+            True se a atualização foi bem-sucedida, False caso contrário
+        """
+        logger.info(f"Iniciando atualização centralizada de cache para {len(projects)} projetos")
+        
+        try:
+           # Registrar a hora da última atualização
+            self.last_cache_update = datetime.now()
+            
+            # Salvar em um arquivo para persistir entre execuções
+            cache_timestamp_file = os.path.join(self.config.cache_dir, "last_update.txt")
+            with open(cache_timestamp_file, 'w') as f:
+                f.write(self.last_cache_update.isoformat())
+
+            # 1. Primeiro, atualizar dados globais do Construflow (uma única vez)
+            logger.info(f"Iniciando atualização centralizada de cache para {len(projects)} projetos")
+            
+            # Atualizar projetos
+            projects_data = self.processor.construflow.get_data("projects", force_refresh=True, use_cache=False)
+            if projects_data and hasattr(self.cache_manager, 'save_construflow_data'):
+                self.cache_manager.save_construflow_data("projects", projects_data)
+                logger.info(f"Cache de projetos atualizado com {len(projects_data)} registros")
+            
+            # Atualizar issues (todas de uma vez)
+            issues_data = self.processor.construflow.get_data("issues", force_refresh=True, use_cache=False)
+            if issues_data and hasattr(self.cache_manager, 'save_construflow_data'):
+                self.cache_manager.save_construflow_data("issues", issues_data)
+                logger.info(f"Cache de issues atualizado com {len(issues_data)} registros")
+            
+            # Atualizar disciplinas
+            disciplines_data = self.processor.construflow.get_data("disciplines", force_refresh=True, use_cache=False)
+            if disciplines_data and hasattr(self.cache_manager, 'save_construflow_data'):
+                self.cache_manager.save_construflow_data("disciplines", disciplines_data)
+                logger.info(f"Cache de disciplines atualizado com {len(disciplines_data)} registros")
+            
+            # Atualizar issues-disciplines
+            issue_disciplines_data = self.processor.construflow.get_data("issues-disciplines", force_refresh=True, use_cache=False)
+            if issue_disciplines_data and hasattr(self.cache_manager, 'save_construflow_data'):
+                self.cache_manager.save_construflow_data("issues-disciplines", issue_disciplines_data)
+                logger.info(f"Cache de issues-disciplines atualizado com {len(issue_disciplines_data)} registros")
+            
+            # 2. Agora, atualizar os Smartsheets específicos de cada projeto
+            logger.info("Atualizando Smartsheets específicos de cada projeto")
+            for project in projects:
+                project_id = project['id']
+                smartsheet_id = self.get_project_smartsheet_id(project_id)
+                
+                if smartsheet_id:
+                    logger.info(f"Atualizando Smartsheet {smartsheet_id} para projeto {project_id}")
+                    try:
+                        sheet_data = self.processor.smartsheet.get_sheet(smartsheet_id, force_refresh=True)
+                        if sheet_data and hasattr(self.cache_manager, 'save_smartsheet_data'):
+                            self.cache_manager.save_smartsheet_data(smartsheet_id, project_id, sheet_data)
+                            logger.info(f"Cache do Smartsheet {smartsheet_id} atualizado para projeto {project_id}")
+                    except Exception as e:
+                        logger.error(f"Erro ao atualizar Smartsheet para projeto {project_id}: {e}")
+                else:
+                    logger.warning(f"ID do Smartsheet não encontrado para projeto {project_id}")
+            
+            logger.info("Atualização centralizada de cache concluída com sucesso")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Erro na atualização centralizada de cache: {e}", exc_info=True)
+            return False
+
+    def was_cache_recently_updated(self, minutes=10):
+        """
+        Verifica se o cache foi atualizado nos últimos X minutos.
+        
+        Args:
+            minutes: Número de minutos para considerar como "recente"
+            
+        Returns:
+            True se o cache foi atualizado recentemente, False caso contrário
+        """
+        try:
+            # Verificar se temos o atributo last_cache_update
+            if hasattr(self, 'last_cache_update'):
+                last_update = self.last_cache_update
+            else:
+                # Tentar ler do arquivo
+                cache_timestamp_file = os.path.join(self.config.cache_dir, "last_update.txt")
+                if os.path.exists(cache_timestamp_file):
+                    with open(cache_timestamp_file, 'r') as f:
+                        last_update_str = f.read().strip()
+                        last_update = datetime.fromisoformat(last_update_str)
+                else:
+                    # Se não houver arquivo, considerar que nunca foi atualizado
+                    return False
+            
+            # Calcular tempo decorrido desde a última atualização
+            elapsed = datetime.now() - last_update
+            elapsed_minutes = elapsed.total_seconds() / 60
+            
+            return elapsed_minutes < minutes
+        except Exception as e:
+            logger.warning(f"Erro ao verificar última atualização de cache: {e}")
+            return False
+
+    def run_all_projects(self) -> Dict[str, Tuple[bool, str, Optional[str]]]:
+        """
+        Executa o processo para todos os projetos ativos da planilha.
+        
+        Returns:
+            Dicionário com resultados por projeto
+        """
+        results = {}
+        
+        # Obter lista de projetos ativos da planilha
+        projects = self.get_active_projects()
+        
+        if not projects:
+            logger.warning("Nenhum projeto ativo encontrado na planilha de configuração")
+            return results
+        
+        logger.info(f"Iniciando processamento para {len(projects)} projetos")
+
+        # Verificar se o cache foi atualizado recentemente
+        if self.was_cache_recently_updated(minutes=10):
+            # Perguntar ao usuário se deseja atualizar o cache novamente
+            print("\nO cache foi atualizado nos últimos 10 minutos.")
+            update_cache = input("Deseja atualizar o cache novamente? (s/N): ").lower().strip() == 's'
+            
+            if not update_cache:
+                logger.info("Pulando atualização de cache por escolha do usuário")
+            else:
+                # Primeira etapa: atualizar cache de forma centralizada
+                self.update_all_cache(projects)
+
+        # Segunda etapa: processar cada projeto usando cache atualizado
+        for project in tqdm(projects, desc="Processando projetos"):
+            project_id = project['id']
+            logger.info(f"Processando projeto: {project['name']} (ID: {project_id})")
+            # Ao executar run_for_project, solicitar para NÃO atualizar o cache novamente
+            # para isso, passamos um parâmetro adicional skip_cache_update=True
+            results[project_id] = self.run_for_project(project_id, skip_cache_update=True)
+        
+        # Resumo
+        success_count = sum(1 for result in results.values() if result[0])
+        logger.info(f"Processamento concluído: {success_count}/{len(projects)} projetos com sucesso")
+        
+        return results
+    
+    def check_if_friday(self) -> bool:
+        """Verifica se hoje é sexta-feira."""
+        return datetime.now().weekday() == 4  # 0 é segunda, 4 é sexta
+    
+    def run_scheduled(self, force: bool = False, quiet_mode: bool = False):
+        """
+        Executa o processamento se for sexta-feira ou se forçado.
+        
+        Args:
+            force: Se deve forçar a execução independente do dia
+        """
+        if force or self.check_if_friday():
+            logger.info("Iniciando processamento agendado")
+            self.quiet_mode = quiet_mode
+            return self.run_all_projects()
+        else:
+            logger.info("Hoje nzo é sexta-feira. O processamento agendado não será executado.")
+            return {}
+    
+    def get_cache_status(self):
+        """
+        Retorna o status atual do sistema de cache.
+        
+        Returns:
+            DataFrame com status do cache
+        """
+        # Verificar se estamos usando o sistema de 5 arquivos
+        if hasattr(self.cache_manager, 'get_cache_status'):
+            return self.cache_manager.get_cache_status()
+        else:
+            # Se não tiver método de status, criar DataFrame vazio
+            return pd.DataFrame(columns=['cache_key', 'source', 'last_update', 'age_hours', 'is_valid'])
+
+# Funções de utilidade para execução
+def is_running_in_colab():
+    """Verifica se o código está sendo executado no Google Colab."""
+    try:
+        import importlib.util
+        colab_spec = importlib.util.find_spec("google.colab")
+        return colab_spec is not None
+    except ImportError:
+        return False
+
+def setup_for_colab():
+    """Configura o ambiente para execução no Google Colab."""
+    # Verificar se estamos no ambiente Colab
+    if not is_running_in_colab():
+        print("Não estamos no Google Colab, executando localmente")
+        return ".env"  # Path padrão local
+    
+    # Se chegou aqui, estamos no Colab - importa apenas se estiver no Colab
+    from google.colab import drive
+    try:
+        drive.mount('/content/drive')
+        
+        # Configurar path para o arquivo .env
+        env_path = '/content/drive/MyDrive/report_system/.env'
+        
+        # Verificar se o arquivo existe
+        if not os.path.exists(env_path):
+            print(f"Arquivo .env não encontrado em {env_path}")
+            print("Por favor, crie o arquivo .env na pasta /content/drive/MyDrive/report_system/")
+            return None
+        
+        return env_path
+        
+    except Exception as e:
+        print(f"Erro ao configurar Google Drive no Colab: {e}")
+        return None
+
+
+# Execução principal
+if __name__ == "__main__":
+    # Detectar ambiente (Colab ou local)
+    env_path = setup_for_colab()
+    
+    if not env_path:
+        print("Configuração inicial falhou. Encerrando.")
+        exit(1)
+    
+    # Parâmetro para forçar execução mesmo que não seja sexta
+    parser = argparse.ArgumentParser(description='Sistema de Relatórios Semanais')
+    parser.add_argument('--force', action='store_true', help='Forçar execução independente do dia')
+    parser.add_argument('--project', type=str, help='ID do projeto específico para executar')
+    parser.add_argument('--check-cache', action='store_true', help='Verificar status do cache')
+    parser.add_argument('--update-cache', action='store_true', help='Forçar atualização de todo o cache')
+    args = parser.parse_args()
+    
+    # Criar e executar o sistema
+    system = WeeklyReportSystem(env_path)
+    
+    # Verificar se é para mostrar o status do cache
+    if args.check_cache:
+        # Verificar se estamos usando o sistema de 5 arquivos
+        if hasattr(system.cache_manager, 'files'):
+            print("\n=== STATUS DO SISTEMA DE 5 ARQUIVOS ===")
+            
+            # Verificar cada arquivo
+            for data_type, file_path in system.cache_manager.files.items():
+                if os.path.exists(file_path):
+                    file_size = os.path.getsize(file_path) / (1024 * 1024)  # tamanho em MB
+                    modified = datetime.fromtimestamp(os.path.getmtime(file_path))
+                    
+                    # Tentar obter contagem de registros
+                    try:
+                        df = pd.read_parquet(file_path)
+                        record_count = len(df)
+                    except Exception as e:
+                        record_count = f"Erro: {e}"
+                    
+                    print(f"\n{data_type.upper()}:")
+                    print(f"  Arquivo: {os.path.basename(file_path)}")
+                    print(f"  Tamanho: {file_size:.2f} MB")
+                    print(f"  Atualizado: {modified}")
+                    print(f"  Registros: {record_count}")
+                else:
+                    print(f"\n{data_type.upper()}:")
+                    print(f"  Arquivo não encontrado: {os.path.basename(file_path)}")
+        else:
+            # Listar arquivos no diretório de cache
+            cache_dir = system.config.cache_dir
+            print(f"\n=== ARQUIVOS NO DIRETÓRIO DE CACHE ({cache_dir}) ===")
+            if os.path.exists(cache_dir):
+                files = os.listdir(cache_dir)
+                for file in files:
+                    file_path = os.path.join(cache_dir, file)
+                    if os.path.isfile(file_path):
+                        file_size = os.path.getsize(file_path) / (1024 * 1024)  # tamanho em MB
+                        print(f"  - {file}: {file_size:.2f} MB")
+                
+                # Verificar subdiretório construflow
+                construflow_dir = os.path.join(cache_dir, "construflow")
+                if os.path.exists(construflow_dir):
+                    print(f"\n=== ARQUIVOS NO DIRETÓRIO {construflow_dir} ===")
+                    files = os.listdir(construflow_dir)
+                    for file in files:
+                        file_path = os.path.join(construflow_dir, file)
+                        if os.path.isfile(file_path):
+                            file_size = os.path.getsize(file_path) / (1024 * 1024)  # tamanho em MB
+                            print(f"  - {file}: {file_size:.2f} MB")
+            else:
+                print(f"Diretório {cache_dir} não encontrado")
+        
+        # Verificar status do cache antigo se disponível
+        cache_status = system.get_cache_status()
+        if not isinstance(cache_status, pd.DataFrame) or cache_status.empty:
+            print("\nInformações detalhadas do cache não disponíveis")
+        else:
+            print("\n=== STATUS DO CACHE ANTIGO ===")
+            print(f"Total de entradas: {len(cache_status)}")
+            
+            # Agrupar por fonte e status de validade se as colunas estiverem presentes
+            if 'source' in cache_status.columns and 'is_valid' in cache_status.columns:
+                source_stats = cache_status.groupby(['source', 'is_valid']).size().unstack(fill_value=0)
+                print("\nStatus por fonte:")
+                print(source_stats)
+                
+                # Mostrar entradas mais antigas
+                if 'last_update' in cache_status.columns:
+                    print("\nEntradas mais antigas:")
+                    oldest = cache_status.sort_values('last_update').head(5)
+                    for _, row in oldest.iterrows():
+                        if 'age_hours' in row:
+                            age_hours = row['age_hours']
+                            age_days = age_hours / 24
+                            print(f"- {row['cache_key']} ({row['source']}): {age_days:.1f} dias ({row['last_update']})")
+        
+        exit(0)
+    
+    # Verificar se é para atualizar o cache
+    if args.update_cache:
+        print("Forçando atualização de todo o cache...")
+        
+        # Verificar se estamos usando o sistema de 5 arquivos
+        using_five_files = hasattr(system.cache_manager, 'files')
+        
+        if using_five_files:
+            print("Atualizando arquivos do sistema de 5 arquivos...")
+            # Chamar o método de atualização de cache com um projeto qualquer
+            # Isso forçará atualização de todos os 5 arquivos
+            active_projects = system.get_active_projects()
+            if active_projects:
+                first_project = active_projects[0]['id']
+                print(f"Usando o projeto {first_project} para iniciar atualização completa...")
+                system._update_project_cache(first_project)
+                print("\nAtualização de cache concluída!")
+            else:
+                print("Nenhum projeto ativo encontrado para atualizar o cache")
+        else:
+            # Usar método antigo
+            # Atualizar dados do Construflow
+            construflow = system.processor.construflow
+            print("Atualizando projetos...")
+            projects_df = construflow.get_projects(force_refresh=True)
+            print(f"Cache de projetos atualizado: {len(projects_df)} projetos")
+            
+            print("Atualizando issues...")
+            issues_df = construflow.get_issues(force_refresh=True)
+            print(f"Cache de issues atualizado: {len(issues_df)} issues")
+            
+            # Tentar atualizar dados do Smartsheet para projetos ativos
+            projects = system.get_active_projects()
+            print(f"\nAtualizando Smartsheets para {len(projects)} projetos ativos...")
+            for project in projects:
+                if project.get('ID_Smartsheet'):
+                    print(f"Atualizando Smartsheet para {project['name']}...")
+                    try:
+                        sheet_data = system.processor.smartsheet.get_sheet(
+                            project['ID_Smartsheet'], 
+                            force_refresh=True
+                        )
+                        if sheet_data:
+                            print(f"Smartsheet atualizado para {project['name']}")
+                    except Exception as e:
+                        print(f"Erro ao atualizar Smartsheet para {project['name']}: {e}")
+        
+        print("\nAtualização de cache concluída!")
+        exit(0)
+    
+    # Executar o sistema
+    if args.project:
+        # Executar apenas para um projeto específico
+        project_id = args.project
+        print(f"Executando apenas para o projeto {project_id}")
+        result = system.run_for_project(project_id)
+        
+        status = "✅ Sucesso" if result[0] else "❌ Falha"
+        print(f"Projeto {project_id}: {status}")
+        if result[0]:
+            print(f"  - Arquivo local: {result[1]}")
+            if result[2]:
+                print(f"  - ID no Drive: {result[2]}")
+    else:
+        # Executar para todos os projetos ativos
+        results = system.run_scheduled(force=args.force)
+        
+        # Exibir resultados
+        for project_id, (success, file_path, drive_id) in results.items():
+            status = "✅ Sucesso" if success else "❌ Falha"
+            print(f"Projeto {project_id}: {status}")
+            if success:
+                print(f"  - Arquivo local: {file_path}")
+                if drive_id:
+                    print(f"  - ID no Drive: {drive_id}")

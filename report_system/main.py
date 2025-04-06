@@ -850,7 +850,22 @@ class WeeklyReportSystem:
             return False, "", None
 
     def create_google_doc_with_links(self, docs_service, drive_service, title, project_data, parent_folder_id=None):
-        """Cria um documento Google Docs com links funcionais para os apontamentos."""
+        """
+        Cria um documento Google Docs com links funcionais para os apontamentos.
+        
+        Versão simplificada que processa apenas os links de apontamentos no formato #XXXX,
+        sem tentar formatar os cabeçalhos Markdown.
+        
+        Args:
+            docs_service: Serviço Google Docs
+            drive_service: Serviço Google Drive
+            title: Título do documento
+            project_data: Dados do projeto
+            parent_folder_id: ID da pasta onde salvar o documento (opcional)
+            
+        Returns:
+            ID do documento criado no Google Docs
+        """
         # 1. Criar documento vazio
         doc_body = {'title': title}
 
@@ -895,30 +910,35 @@ class WeeklyReportSystem:
         # 3. Gerar relatório com os links já construídos corretamente
         original_report = self.generator.generate_report(project_data)
         
-        # 4. Extrair os links para processá-los corretamente
+        # 4. Extrair os links do formato markdown e substituir por texto simples com os mesmos links
         import re
         
-        # Encontrar todos os links markdown no formato [#código](url)
-        link_matches = re.findall(r'\[#(\d+)\]\((.*?)\)', original_report)
+        # Função para substituir os links em formato markdown por texto simples
+        def replace_markdown_links(text):
+            """Substitui links no formato [#XXXX](URL) por #XXXX sem mostrar a URL"""
+            
+            def replace_func(match):
+                link_text = match.group(1)
+                url = match.group(2)
+                # Armazenar o par código-URL para processamento posterior
+                if link_text.startswith('#'):
+                    code = link_text[1:]  # Remover o '#' para obter apenas o número
+                    links_info.append({
+                        'code': code,
+                        'url': url
+                    })
+                return link_text  # Retornar apenas o texto do link, sem a URL
+                
+            links_info = []
+            # Substituir todos os links markdown [texto](url) por apenas o texto
+            modified_text = re.sub(r'\[(.*?)\]\((.*?)\)', replace_func, text)
+            
+            return modified_text, links_info
         
-        # Criar um dicionário com o mapeamento de código para URL correta
-        code_to_url = {code: url for code, url in link_matches}
+        # Processar o relatório para remover as URLs visíveis
+        clean_report, links_info = replace_markdown_links(original_report)
         
-        # Substituir os links markdown por apenas o código para inserir no documento
-        modified_report = re.sub(r'\[#(\d+)\]\((.*?)\)', r'#\1', original_report)
-        
-        # 5. Procurar por títulos markdown (linhas que começam com # ou ##)
-        # e prepará-los para inserção como cabeçalhos reais do Google Docs
-        heading_matches = re.findall(r'^(#+)\s+(.*?)$', modified_report, re.MULTILINE)
-        heading_positions = {}
-
-        # Vamos substituir os cabeçalhos por marcadores para facilitar a identificação posterior
-        for i, (hashes, heading_text) in enumerate(heading_matches):
-            marker = f"{{HEADING_{i}_{len(hashes)}_{heading_text}}}"
-            heading_positions[marker] = {'level': len(hashes), 'text': heading_text}
-            modified_report = modified_report.replace(f"{hashes} {heading_text}", marker)
-
-        # 6. Inserir o relatório modificado
+        # 5. Inserir o texto limpo no documento
         try:
             execute_with_retry(
                 docs_service.documents().batchUpdate(
@@ -927,7 +947,7 @@ class WeeklyReportSystem:
                         'requests': [{
                             'insertText': {
                                 'location': {'index': 1},
-                                'text': modified_report
+                                'text': clean_report
                             }
                         }]
                     }
@@ -937,8 +957,8 @@ class WeeklyReportSystem:
             logger.error(f"Erro ao inserir texto no documento: {e}")
             return document_id  # Retornar o ID mesmo assim, para que o usuário possa acessar o documento incompleto
         
-        # 7. Obter o documento para encontrar as posições dos marcadores e links
-        try:  # Esta linha está com indentação incorreta (tem um espaço extra no início)
+        # 6. Obter o documento para encontrar as posições dos códigos
+        try:
             search_response = execute_with_retry(
                 docs_service.documents().get(documentId=document_id)
             )
@@ -947,14 +967,16 @@ class WeeklyReportSystem:
             logger.error(f"Erro ao obter conteúdo do documento: {e}")
             return document_id
         
-        # 8. Criar solicitações para formatação de cabeçalhos
-        heading_requests = []
+        # 7. Criar solicitações para adicionar links
+        link_requests = []
         
-        # Procurar por nossos marcadores de cabeçalho
-        for marker, heading_info in heading_positions.items():
-            start_index = None
+        # Processar cada código de apontamento
+        for link_info in links_info:
+            code = link_info['code']
+            url = link_info['url']
+            search_text = f"#{code}"
             
-            # Procurar no documento
+            # Procurar todas as ocorrências do código no documento
             for item in content:
                 if 'paragraph' in item:
                     paragraph = item.get('paragraph', {})
@@ -962,131 +984,47 @@ class WeeklyReportSystem:
                     
                     for element in elements:
                         text_run = element.get('textRun', {})
-                        element_text = text_run.get('content', '')
+                        content_text = text_run.get('content', '')
                         
-                        if marker in element_text:
-                            # Encontrar a posição exata
-                            local_start = element_text.find(marker)
+                        if search_text in content_text:
+                            # Encontrar a posição exata do código no texto
+                            local_start = content_text.find(search_text)
                             start_index = element.get('startIndex', 0) + local_start
-                            end_index = start_index + len(marker)
+                            end_index = start_index + len(search_text)
                             
-                            heading_requests.append({
-                                'deleteContentRange': {  # Primeiro deletamos o conteúdo do marcador
+                            # Aplicar negrito ao código do apontamento
+                            link_requests.append({
+                                'updateTextStyle': {
                                     'range': {
                                         'startIndex': start_index,
                                         'endIndex': end_index
-                                    }
-                                }
-                            })
-
-                            heading_requests.append({
-                                'insertText': {  # Depois inserimos o texto correto
-                                    'location': {
-                                        'index': start_index
                                     },
-                                    'text': heading_info['text']
+                                    'textStyle': {
+                                        'bold': True
+                                    },
+                                    'fields': 'bold'
                                 }
                             })
-
-
-                            # Mapear nível do cabeçalho para o formato do Google Docs
-                            heading_level = 1  # Padrão para H1
-                            if heading_info['level'] == 2:
-                                heading_level = 2
-                            elif heading_info['level'] >= 3:
-                                heading_level = 3
                             
-                            # Adicionar solicitação para formatar como cabeçalho
-                            heading_requests.append({
-                                'updateParagraphStyle': {
+                            # Adicionar o link usando a URL
+                            link_requests.append({
+                                'updateTextStyle': {
                                     'range': {
                                         'startIndex': start_index,
-                                        'endIndex': start_index + len(heading_info['text'])
+                                        'endIndex': end_index
                                     },
-                                    'paragraphStyle': {
-                                        'namedStyleType': f'HEADING_{heading_level}',
+                                    'textStyle': {
+                                        'link': {'url': url}
                                     },
-                                    'fields': 'namedStyleType'
+                                    'fields': 'link'
                                 }
                             })
-                            break
-                    
-                    if start_index is not None:
-                        break
         
-        # 9. Adicionar links usando as URLs extraídas anteriormente
-        link_requests = []
-        
-        for code, url in code_to_url.items():
-            search_text = f"#{code}"
-            
-            try:
-                # Procurar no documento
-                start_index = None
-                
-                # Procurar por instâncias do código nos parágrafos
-                for item in content:
-                    if 'paragraph' in item:
-                        paragraph = item.get('paragraph', {})
-                        elements = paragraph.get('elements', [])
-                        
-                        for element in elements:
-                            text_run = element.get('textRun', {})
-                            content_text = text_run.get('content', '')
-                            
-                            if search_text in content_text:
-                                # Encontrar a posição exata
-                                local_start = content_text.find(search_text)
-                                start_index = element.get('startIndex', 0) + local_start
-                                end_index = start_index + len(search_text)
-                                
-                            # Verificar presença do código antes de adicionar link      
-                            if code_to_url and search_text in content_text:
-                                start_index = content_text.find(search_text)  
-
-                                # Aplicar negrito ao texto
-                                link_requests.append({
-                                    'updateTextStyle': {
-                                        'range': {
-                                            'startIndex': start_index,
-                                            'endIndex': end_index
-                                        },
-                                        'textStyle': {
-                                            'bold': True
-                                        },
-                                        'fields': 'bold'
-                                    }
-                                })
-                                
-                                # Adicionar o link usando a URL extraída anteriormente
-                                link_requests.append({
-                                    'updateTextStyle': {
-                                        'range': {
-                                            'startIndex': start_index,
-                                            'endIndex': end_index
-                                        },
-                                        'textStyle': {
-                                            'link': {'url': url}
-                                        },
-                                        'fields': 'link'
-                                    }
-                                })
-                                break
-                        
-                        if start_index is not None:
-                            break
-                    
-            except Exception as e:
-                logger.warning(f"Erro ao adicionar link para o apontamento #{code}: {e}")
-        
-        # 10. Executar todas as solicitações
-        all_requests = heading_requests + link_requests
-        
-        if all_requests:
-            # Dividir em lotes para evitar exceder limites da API
-            batch_size = 50  # A API do Google Docs tem um limite de requisições por lote
-            for i in range(0, len(all_requests), batch_size):
-                batch = all_requests[i:i+batch_size]
+        # 8. Aplicar os links em lotes
+        if link_requests:
+            batch_size = 20  # Limitar o tamanho dos lotes para evitar erros
+            for i in range(0, len(link_requests), batch_size):
+                batch = link_requests[i:i+batch_size]
                 
                 try:
                     execute_with_retry(
@@ -1095,12 +1033,13 @@ class WeeklyReportSystem:
                             body={'requests': batch}
                         )
                     )
-                    # Adicionar uma pequena pausa entre lotes para evitar atingir limites
-                    if i + batch_size < len(all_requests):
-                        time.sleep(0.5)  # Pausa de 500ms entre lotes
+                    # Adicionar uma pausa entre lotes
+                    if i + batch_size < len(link_requests):
+                        time.sleep(1)  # Pausa de 1 segundo entre lotes
                 except Exception as e:
-                    logger.error(f"Erro ao processar lote de atualizações {i//batch_size + 1}: {e}")
+                    logger.error(f"Erro ao processar lote de links {i//batch_size + 1}: {e}")
                     # Continuar com o próximo lote mesmo em caso de erro
+        
         logger.info(f"Documento criado com sucesso: {document_id}")
         return document_id
 

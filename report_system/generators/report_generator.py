@@ -197,14 +197,15 @@ Qualquer dúvida, estamos à disposição!
             todo_issues = client_issues
             logger.warning("Nenhum apontamento com status 'todo' encontrado, usando lista original")
         
-        # Resultado final - apenas texto sem links
+        # Resultado final com novo formato de link solicitado
         result = ""
         for issue in todo_issues:
             issue_code = str(issue.get('code', 'N/A'))
             issue_title = issue.get('title', 'Apontamento sem título')
+            issue_id = issue.get('id')
             
             # Construir o link para o apontamento
-            construflow_url = f"https://app.construflow.com.br/project/{project_id}/checklist/item/{issue.get('id')}"
+            construflow_url = f"https://app.construflow.com.br/workspace/project/{project_id}/issues?issueId={issue_id}"
         
             # Calcular tempo de abertura
             dias_aberto = ""
@@ -235,7 +236,8 @@ Qualquer dúvida, estamos à disposição!
                 except Exception:
                     pass
             
-            # Adicionar linha de texto simples (sem link)
+            # Apenas o código é o link (apenas o "#1234" será clicável)
+            # O resto do texto (título e dias aberto) ficará como texto normal
             result += f"[#{issue_code}]({construflow_url}) – {issue_title} {dias_aberto}\n"
         
         return result if result else "Sem apontamentos pendentes para o cliente nesta semana."

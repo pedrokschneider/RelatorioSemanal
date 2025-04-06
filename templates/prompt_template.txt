@@ -4,19 +4,19 @@ Espero que essa mensagem os encontre bem.
 
 Segue abaixo um breve resumo do andamento do projeto do empreendimento [NOME_PROJETO]:
 
-##⚠️ Pontos que precisam de respostas [NOME_CLIENTE]:
+## Pontos que precisam de respostas [NOME_CLIENTE]
 [APONTAMENTOS_CLIENTE]
 
-## ✅ Atividades Concluídas:
+## Atividades Concluídas
 [TAREFAS_REALIZADAS]
 
-## 🚩 Atrasos e Desvios Identificados:
+## Atrasos e Desvios Identificados
 [ATRASOS_PERIODO]
 
-## 📅 Planejamento para a Próxima Semana:
+## Planejamento para a Próxima Semana
 [PROGRAMACAO_SEMANA]
 
-## 📊 Resumo por Disciplina:
+## Resumo por Disciplina
 [TABELA_APONTAMENTOS]
 
 Abaixo disponibilizamos os links para acesso ao formulário de feedback, ao cronograma e Construflow para acompanhamento do projeto.

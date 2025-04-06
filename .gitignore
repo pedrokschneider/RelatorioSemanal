@@ -1,0 +1,13 @@
+# Ignorar arquivos de ambiente
+.env
+
+# Ignorar diretórios de dependências
+reports/
+cache/
+config/
+logs/
+reports/
+
+# Ignorar arquivos de log
+*.log
+*.pyc

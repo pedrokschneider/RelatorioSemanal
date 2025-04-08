@@ -7,6 +7,11 @@ import json
 from datetime import datetime
 import time
 from dotenv import load_dotenv
+import pythoncom
+import win32serviceutil
+import win32service
+import win32event
+import servicemanager
 
 # Importar nossa nova classe ReportQueue
 from report_queue import ReportQueue
@@ -42,6 +47,35 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "rep
 
 # Carregar variáveis de ambiente
 load_dotenv()
+
+class DiscordBotService(win32serviceutil.ServiceFramework):
+    _svc_name_ = "DiscordBotService"
+    _svc_display_name_ = "Discord Bot Service"
+    _svc_description_ = "Serviço do Bot Discord para Relatórios Semanais"
+
+    def __init__(self, args):
+        win32serviceutil.ServiceFramework.__init__(self, args)
+        self.stop_event = win32event.CreateEvent(None, 0, 0, None)
+        self.bot = None
+
+    def SvcStop(self):
+        self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING)
+        win32event.SetEvent(self.stop_event)
+
+    def SvcDoRun(self):
+        try:
+            self.bot = DiscordBotAutoChannels()
+            channels = self.bot.get_channels_from_spreadsheet()
+            
+            if not channels:
+                logger.error("Nenhum canal encontrado na planilha")
+                return
+                
+            channel_ids = list(channels.keys())
+            self.bot.start_real_monitoring(channel_ids)
+            
+        except Exception as e:
+            logger.error(f"Erro fatal no serviço: {e}", exc_info=True)
 
 class DiscordBotAutoChannels:
     """Bot do Discord que obtém canais automaticamente da planilha de configuração."""
@@ -526,26 +560,45 @@ class DiscordBotAutoChannels:
 
 def main():
     """Função principal."""
-    try:
-        # Inicializar o bot
-        bot = DiscordBotAutoChannels()
-        
-        # Obter canais da planilha
-        channels = bot.get_channels_from_spreadsheet()
-        
-        if not channels:
-            logger.error("Nenhum canal encontrado na planilha")
-            return 1
+    if len(sys.argv) == 1:
+        try:
+            # Se executado diretamente (não como serviço)
+            pythoncom.CoInitialize()
+            bot = DiscordBotAutoChannels()
+            channels = bot.get_channels_from_spreadsheet()
             
-        # Extrair IDs dos canais
-        channel_ids = list(channels.keys())
-        
-        # Iniciar monitoramento de todos os canais
-        bot.start_real_monitoring(channel_ids)
-        
-    except Exception as e:
-        logger.error(f"Erro fatal: {e}", exc_info=True)
-        return 1
+            if not channels:
+                logger.error("Nenhum canal encontrado na planilha")
+                return 1
+                
+            channel_ids = list(channels.keys())
+            bot.start_real_monitoring(channel_ids)
+            
+        except Exception as e:
+            logger.error(f"Erro fatal: {e}", exc_info=True)
+            return 1
+    else:
+        # Se executado como serviço
+        try:
+            if len(sys.argv) > 1:
+                if sys.argv[1] == 'install':
+                    win32serviceutil.InstallService(
+                        DiscordBotService._svc_name_,
+                        DiscordBotService._svc_display_name_,
+                        DiscordBotService._svc_description_
+                    )
+                    print("Serviço instalado com sucesso!")
+                    return 0
+                elif sys.argv[1] == 'remove':
+                    win32serviceutil.RemoveService(DiscordBotService._svc_name_)
+                    print("Serviço removido com sucesso!")
+                    return 0
+                
+            win32serviceutil.HandleCommandLine(DiscordBotService)
+            
+        except Exception as e:
+            logger.error(f"Erro ao manipular serviço: {e}", exc_info=True)
+            return 1
     
     return 0
 

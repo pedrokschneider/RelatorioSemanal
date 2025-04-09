@@ -582,6 +582,14 @@ def main():
         try:
             if len(sys.argv) > 1:
                 if sys.argv[1] == 'install':
+                    # Forçar remoção do serviço se existir
+                    try:
+                        win32serviceutil.RemoveService(DiscordBotService._svc_name_)
+                        logger.info("Serviço antigo removido com sucesso")
+                    except Exception as e:
+                        logger.warning(f"Não foi possível remover serviço antigo: {e}")
+                    
+                    # Instalar novo serviço
                     win32serviceutil.InstallService(
                         DiscordBotService._svc_name_,
                         DiscordBotService._svc_display_name_,
@@ -590,8 +598,11 @@ def main():
                     print("Serviço instalado com sucesso!")
                     return 0
                 elif sys.argv[1] == 'remove':
-                    win32serviceutil.RemoveService(DiscordBotService._svc_name_)
-                    print("Serviço removido com sucesso!")
+                    try:
+                        win32serviceutil.RemoveService(DiscordBotService._svc_name_)
+                        print("Serviço removido com sucesso!")
+                    except Exception as e:
+                        print(f"Erro ao remover serviço: {e}")
                     return 0
                 
             win32serviceutil.HandleCommandLine(DiscordBotService)

@@ -20,11 +20,7 @@ cd [NOME_DA_PASTA]
 
 2. **Instale as dependências necessárias**
 ```bash
-pip install python-dotenv
-pip install requests
-pip install pandas
-pip install pywin32
-pip install smartsheet-python-sdk
+pip install discord.py pandas openpyxl tqdm smartsheet-python-sdk pywin32 requests python-dotenv setuptools google-api-python-client google-auth-httplib2 google-auth-oauthlib
 ```
 
 3. **Configure o arquivo .env**

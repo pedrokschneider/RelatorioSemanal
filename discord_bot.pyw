@@ -1,3 +1,7 @@
+"""
+Gerenciador de bot Discord que roda como serviço do Windows.
+"""
+
 import os
 import sys
 import subprocess
@@ -12,6 +16,7 @@ import win32serviceutil
 import win32service
 import win32event
 import servicemanager
+import socket
 
 # Importar nossa nova classe ReportQueue
 from report_queue import ReportQueue
@@ -49,33 +54,59 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "rep
 load_dotenv()
 
 class DiscordBotService(win32serviceutil.ServiceFramework):
-    _svc_name_ = "DiscordBotService"
-    _svc_display_name_ = "Discord Bot Service"
+    _svc_name_ = "DiscordWeeklyReportBot"
+    _svc_display_name_ = "Discord Weekly Report Bot"
     _svc_description_ = "Serviço do Bot Discord para Relatórios Semanais"
 
     def __init__(self, args):
         win32serviceutil.ServiceFramework.__init__(self, args)
         self.stop_event = win32event.CreateEvent(None, 0, 0, None)
         self.bot = None
+        self.is_alive = True
 
     def SvcStop(self):
+        """
+        Chamado quando o serviço recebe um comando para parar.
+        """
         self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING)
         win32event.SetEvent(self.stop_event)
+        self.is_alive = False
 
     def SvcDoRun(self):
+        """
+        Método principal do serviço que mantém o bot rodando.
+        """
         try:
+            servicemanager.LogMsg(
+                servicemanager.EVENTLOG_INFORMATION_TYPE,
+                servicemanager.PYS_SERVICE_STARTED,
+                (self._svc_name_, '')
+            )
+            
             self.bot = DiscordBotAutoChannels()
-            channels = self.bot.get_channels_from_spreadsheet()
             
-            if not channels:
-                logger.error("Nenhum canal encontrado na planilha")
-                return
+            while self.is_alive:
+                try:
+                    channels = self.bot.get_channels_from_spreadsheet()
+                    
+                    if not channels:
+                        logger.error("Nenhum canal encontrado na planilha")
+                        time.sleep(60)  # Espera 1 minuto antes de tentar novamente
+                        continue
+                        
+                    channel_ids = list(channels.keys())
+                    self.bot.start_real_monitoring(channel_ids)
+                    
+                    # Aguarda por eventos de parada
+                    win32event.WaitForSingleObject(self.stop_event, win32event.INFINITE)
+                    
+                except Exception as e:
+                    logger.error(f"Erro durante execução do bot: {e}", exc_info=True)
+                    time.sleep(60)  # Espera 1 minuto antes de tentar novamente
                 
-            channel_ids = list(channels.keys())
-            self.bot.start_real_monitoring(channel_ids)
-            
         except Exception as e:
             logger.error(f"Erro fatal no serviço: {e}", exc_info=True)
+            servicemanager.LogErrorMsg(f"Erro fatal no serviço: {str(e)}")
 
 class DiscordBotAutoChannels:
     """Bot do Discord que obtém canais automaticamente da planilha de configuração."""
@@ -559,59 +590,29 @@ class DiscordBotAutoChannels:
             return self.start_real_monitoring(channels_to_monitor, polling_interval)
 
 def main():
-    """Função principal."""
     if len(sys.argv) == 1:
         try:
-            # Se executado diretamente (não como serviço)
-            pythoncom.CoInitialize()
+            servicemanager.Initialize()
+            servicemanager.PrepareToHostSingle(DiscordBotService)
+            servicemanager.StartServiceCtrlDispatcher()
+        except win32service.error as e:
+            logger.error(f"Erro ao iniciar serviço: {e}")
+            
+            # Se não conseguir rodar como serviço, tenta rodar diretamente
             bot = DiscordBotAutoChannels()
             channels = bot.get_channels_from_spreadsheet()
-            
-            if not channels:
-                logger.error("Nenhum canal encontrado na planilha")
-                return 1
-                
-            channel_ids = list(channels.keys())
-            bot.start_real_monitoring(channel_ids)
-            
-        except Exception as e:
-            logger.error(f"Erro fatal: {e}", exc_info=True)
-            return 1
+            if channels:
+                channel_ids = list(channels.keys())
+                bot.start_real_monitoring(channel_ids)
     else:
-        # Se executado como serviço
-        try:
-            if len(sys.argv) > 1:
-                if sys.argv[1] == 'install':
-                    # Forçar remoção do serviço se existir
-                    try:
-                        win32serviceutil.RemoveService(DiscordBotService._svc_name_)
-                        logger.info("Serviço antigo removido com sucesso")
-                    except Exception as e:
-                        logger.warning(f"Não foi possível remover serviço antigo: {e}")
-                    
-                    # Instalar novo serviço
-                    win32serviceutil.InstallService(
-                        DiscordBotService._svc_name_,
-                        DiscordBotService._svc_display_name_,
-                        DiscordBotService._svc_description_
-                    )
-                    print("Serviço instalado com sucesso!")
-                    return 0
-                elif sys.argv[1] == 'remove':
-                    try:
-                        win32serviceutil.RemoveService(DiscordBotService._svc_name_)
-                        print("Serviço removido com sucesso!")
-                    except Exception as e:
-                        print(f"Erro ao remover serviço: {e}")
-                    return 0
-                
-            win32serviceutil.HandleCommandLine(DiscordBotService)
-            
-        except Exception as e:
-            logger.error(f"Erro ao manipular serviço: {e}", exc_info=True)
-            return 1
-    
-    return 0
+        win32serviceutil.HandleCommandLine(DiscordBotService)
 
-if __name__ == "__main__":
-    sys.exit(main())
+if __name__ == '__main__':
+    try:
+        main()
+    except KeyboardInterrupt:
+        logger.info("Execução interrompida pelo usuário")
+        sys.exit(0)
+    except Exception as e:
+        logger.error(f"Erro fatal: {e}", exc_info=True)
+        sys.exit(1)

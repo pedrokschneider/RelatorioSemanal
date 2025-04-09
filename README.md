@@ -69,6 +69,43 @@ net stop DiscordBotService
 python discord_bot.pyw remove
 ```
 
+### Reinicialização do Bot
+Para reinicializar o bot, você tem as seguintes opções:
+
+1. **Reiniciar o serviço** (maneira mais simples):
+```powershell
+Restart-Service -Name "DiscordReportBot"
+```
+
+2. **Parar e iniciar manualmente**:
+```powershell
+Stop-Service -Name "DiscordReportBot"
+Start-Service -Name "DiscordReportBot"
+```
+
+3. **Reiniciar usando o NSSM** (mais robusto):
+```powershell
+.\nssm.exe restart DiscordReportBot
+```
+
+4. **Reiniciar e forçar atualização** (se precisar atualizar configurações):
+```powershell
+Stop-Service -Name "DiscordReportBot"
+.\nssm.exe restart DiscordReportBot
+```
+
+5. **Reiniciar e limpar cache** (se houver problemas com dados antigos):
+```powershell
+Stop-Service -Name "DiscordReportBot"
+Remove-Item "C:\GitHub\RelatorioSemanal\cache\*" -Recurse -Force
+Start-Service -Name "DiscordReportBot"
+```
+
+O comando mais simples e recomendado para um reset normal é:
+```powershell
+Restart-Service -Name "DiscordReportBot"
+```
+
 ## 💬 Comandos do Discord
 
 O bot responde aos seguintes comandos nos canais configurados:
@@ -76,6 +113,7 @@ O bot responde aos seguintes comandos nos canais configurados:
 - `!relatorio` - Gera um novo relatório semanal
 - `!fila` - Mostra o status da fila de relatórios
 - `!status` - Mostra o status atual do bot
+- `!atualizar` - Força atualização do cache
 
 ## 📁 Estrutura de Arquivos
 

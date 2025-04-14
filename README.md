@@ -20,7 +20,7 @@ cd [NOME_DA_PASTA]
 
 2. **Instale as dependências necessárias**
 ```bash
-pip install discord.py pandas openpyxl tqdm smartsheet-python-sdk pywin32 requests python-dotenv setuptools google-api-python-client google-auth-httplib2 google-auth-oauthlib
+pip install -r requirements.txt
 ```
 
 3. **Configure o arquivo .env**

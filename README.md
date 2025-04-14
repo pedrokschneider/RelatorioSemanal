@@ -177,7 +177,7 @@ Este projeto está sob a licença MIT. Veja o arquivo `LICENSE` para mais detalh
 
 ## ✨ Agradecimentos
 
-- Equipe de desenvolvimento
+- Equipe de desenvolvimento da Otus Engenharia
 - Contribuidores
 - Comunidade Python
 - Discord API

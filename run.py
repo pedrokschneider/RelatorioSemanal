@@ -123,6 +123,8 @@ def main():
         if project_id:
             # Executar apenas para um projeto específico
             logger.info(f"Executando apenas para o projeto {project_id}")
+            # Sempre executar com skip_notifications=False quando executando um projeto específico
+            # Isso garante que a notificação final seja enviada
             result = system.run_for_project(project_id, quiet_mode=True, skip_notifications=args.no_notifications) 
             
             status = "✅ Sucesso" if result[0] else "❌ Falha"

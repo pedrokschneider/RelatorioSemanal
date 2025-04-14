@@ -554,7 +554,7 @@ class WeeklyReportSystem:
         
         return "\n".join(message)
 
-    def run_for_project(self, project_id, quiet_mode=False, skip_cache_update=False) -> Tuple[bool, str, Optional[str]]:
+    def run_for_project(self, project_id, quiet_mode=False, skip_cache_update=False, skip_notifications=False) -> Tuple[bool, str, Optional[str]]:
         """
         Executa o processo completo para um projeto, atualizando o cache primeiro.
         
@@ -562,6 +562,7 @@ class WeeklyReportSystem:
             project_id: ID do projeto
             quiet_mode: Se deve operar em modo silencioso
             skip_cache_update: Se True, pula a atualização do cache (use quando já foi atualizado)
+            skip_notifications: Se True, não envia notificações para o Discord
             
         Returns:
             Tupla com (sucesso, caminho_arquivo, id_drive)
@@ -825,14 +826,14 @@ class WeeklyReportSystem:
                             )
                         )
             # Na parte final, se for em modo silencioso e tiver canal Discord, enviar apenas a mensagem final
-                if quiet_mode and discord_channel_id and doc_id:
-                    doc_url = f"https://docs.google.com/document/d/{doc_id}/edit"
-                    folder_url = f"https://drive.google.com/drive/folders/{project_folder_id}" if project_folder_id else None
-                    
-                    final_message = self._format_final_success_message(project_name, doc_url, folder_url)
-                    self.send_discord_notification(discord_channel_id, final_message)
+            if quiet_mode and discord_channel_id and doc_id and not skip_notifications:
+                doc_url = f"https://docs.google.com/document/d/{doc_id}/edit"
+                folder_url = f"https://drive.google.com/drive/folders/{project_folder_id}" if project_folder_id else None
+                
+                final_message = self._format_final_success_message(project_name, doc_url, folder_url)
+                self.send_discord_notification(discord_channel_id, final_message)
 
-                return True, file_path, file_id
+            return True, file_path, file_id
                     
         except Exception as e:
             logger.error(f"Erro ao processar projeto {project_id}: {str(e)}", exc_info=True)
@@ -1150,68 +1151,105 @@ class WeeklyReportSystem:
             logger.warning(f"Erro ao verificar última atualização de cache: {e}")
             return False
 
-    def run_all_projects(self) -> Dict[str, Tuple[bool, str, Optional[str]]]:
-        """
-        Executa o processo para todos os projetos ativos da planilha.
-        
-        Returns:
-            Dicionário com resultados por projeto
-        """
-        results = {}
-        
-        # Obter lista de projetos ativos da planilha
-        projects = self.get_active_projects()
-        
-        if not projects:
-            logger.warning("Nenhum projeto ativo encontrado na planilha de configuração")
-            return results
-        
-        logger.info(f"Iniciando processamento para {len(projects)} projetos")
-
-        # Verificar se o cache foi atualizado recentemente
-        if self.was_cache_recently_updated(minutes=10):
-            # Perguntar ao usuário se deseja atualizar o cache novamente
-            print("\nO cache foi atualizado nos últimos 10 minutos.")
-            update_cache = input("Deseja atualizar o cache novamente? (s/N): ").lower().strip() == 's'
-            
-            if not update_cache:
-                logger.info("Pulando atualização de cache por escolha do usuário")
-            else:
-                # Primeira etapa: atualizar cache de forma centralizada
-                self.update_all_cache(projects)
-
-        # Segunda etapa: processar cada projeto usando cache atualizado
-        for project in tqdm(projects, desc="Processando projetos"):
-            project_id = project['id']
-            logger.info(f"Processando projeto: {project['name']} (ID: {project_id})")
-            # Ao executar run_for_project, solicitar para NÃO atualizar o cache novamente
-            # para isso, passamos um parâmetro adicional skip_cache_update=True
-            results[project_id] = self.run_for_project(project_id, skip_cache_update=True)
-        
-        # Resumo
-        success_count = sum(1 for result in results.values() if result[0])
-        logger.info(f"Processamento concluído: {success_count}/{len(projects)} projetos com sucesso")
-        
-        return results
-    
-    def check_if_friday(self) -> bool:
-        """Verifica se hoje é sexta-feira."""
-        return datetime.now().weekday() == 4  # 0 é segunda, 4 é sexta
-    
-    def run_scheduled(self, force: bool = False, quiet_mode: bool = False):
+    def run_scheduled(self, force: bool = False, quiet_mode: bool = False, skip_notifications: bool = False, notification_delay: int = 0):
         """
         Executa o processamento se for sexta-feira ou se forçado.
         
         Args:
             force: Se deve forçar a execução independente do dia
+            quiet_mode: Se deve operar em modo silencioso
+            skip_notifications: Se True, não envia notificações para o Discord
+            notification_delay: Tempo em segundos a aguardar entre notificações do Discord (para evitar rate limiting)
+            
+        Returns:
+            Dicionário com resultados por projeto
         """
         if force or self.check_if_friday():
             logger.info("Iniciando processamento agendado")
             self.quiet_mode = quiet_mode
-            return self.run_all_projects()
+            
+            # Obter projetos
+            projects = self.get_active_projects()
+            
+            if not projects:
+                logger.warning("Nenhum projeto ativo encontrado na planilha de configuração")
+                return {}
+            
+            logger.info(f"Iniciando processamento para {len(projects)} projetos")
+
+            # Verificar se o cache foi atualizado recentemente
+            if self.was_cache_recently_updated(minutes=10):
+                # Perguntar ao usuário se deseja atualizar o cache novamente
+                print("\nO cache foi atualizado nos últimos 10 minutos.")
+                update_cache = input("Deseja atualizar o cache novamente? (s/N): ").lower().strip() == 's'
+                
+                if not update_cache:
+                    logger.info("Pulando atualização de cache por escolha do usuário")
+                else:
+                    # Primeira etapa: atualizar cache de forma centralizada
+                    self.update_all_cache(projects)
+
+            # Resultados
+            results = {}
+            
+            # Segunda etapa: processar cada projeto usando cache atualizado
+            for i, project in enumerate(projects):
+                project_id = project['id']
+                logger.info(f"Processando projeto: {project['name']} (ID: {project_id}) - {i+1} de {len(projects)}")
+                
+                # Processar o projeto sem enviar notificações
+                results[project_id] = self.run_for_project(
+                    project_id, 
+                    quiet_mode=True, 
+                    skip_cache_update=True, 
+                    skip_notifications=True  # Evitar notificações duplicadas
+                )
+                
+                # Se configurado para enviar notificações no final, fazemos isso com delay
+                if not skip_notifications and results[project_id][0]:  # Se teve sucesso
+                    try:
+                        # Obter detalhes do projeto para notificação
+                        project_name = project['name']
+                        discord_channel_id = self.get_project_discord_channel(project_id)
+                        doc_id = results[project_id][2]
+                        
+                        if discord_channel_id and doc_id:
+                            # Tentar obter folder_id
+                            try:
+                                project_folder_id = self.gdrive.get_project_folder(project_id, project_name)
+                            except:
+                                project_folder_id = None
+                            
+                            # Construir URLs
+                            doc_url = f"https://docs.google.com/document/d/{doc_id}/edit"
+                            folder_url = f"https://drive.google.com/drive/folders/{project_folder_id}" if project_folder_id else None
+                            
+                            # Formatar mensagem final
+                            final_message = self._format_final_success_message(project_name, doc_url, folder_url)
+                            
+                            # Enviar notificação
+                            logger.info(f"Enviando notificação para canal {discord_channel_id} (projeto {project_id})")
+                            self.send_discord_notification(discord_channel_id, final_message)
+                            
+                            # Aguardar para evitar rate limiting
+                            if notification_delay > 0 and i < len(projects) - 1:  # Não aguardar após o último
+                                logger.info(f"Aguardando {notification_delay}s antes da próxima notificação (evitar rate limit)")
+                                time.sleep(notification_delay)
+                    except Exception as e:
+                        logger.error(f"Erro ao enviar notificação para projeto {project_id}: {e}")
+            
+            # Resumo
+            success_count = sum(1 for result in results.values() if result[0])
+            logger.info(f"Processamento concluído: {success_count}/{len(projects)} projetos com sucesso")
+            
+            return results
         else:
-            logger.info("Hoje nzo é sexta-feira. O processamento agendado não será executado.")
+            logger.info("Hoje não é sexta-feira. O processamento agendado não será executado.")
             return {}
+    
+    def check_if_friday(self) -> bool:
+        """Verifica se hoje é sexta-feira."""
+        return datetime.now().weekday() == 4  # 0 é segunda, 4 é sexta
     
     def get_cache_status(self):
         """

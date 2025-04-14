@@ -24,21 +24,24 @@ logger = logging.getLogger("DiscordBotQueue")
 class ReportQueue:
     """Sistema de fila para processar solicitações de relatórios."""
     
-    def __init__(self, discord_bot, max_workers=2):
+    def __init__(self, discord_bot, max_workers=2, notification_delay=2):
         """
         Inicializa o sistema de fila.
         
         Args:
             discord_bot: Instância do bot DiscordBotAutoChannels
             max_workers: Número máximo de workers para processar relatórios simultaneamente
+            notification_delay: Tempo em segundos a aguardar entre mensagens do Discord (para evitar rate limiting)
         """
         self.discord_bot = discord_bot
         self.max_workers = max_workers
+        self.notification_delay = notification_delay
         self.report_queue = queue.Queue()
         self.active_reports = {}  # Dicionário para rastrear relatórios sendo processados
         self.lock = threading.Lock()  # Lock para acesso seguro a active_reports
         self.worker_status = {}  # Status de cada worker
         self.process_timeout = 600  # Timeout para processos (10 minutos)
+        self.last_message_time = 0  # Timestamp da última mensagem enviada
         
         # Iniciar threads de worker
         self.workers = []
@@ -102,7 +105,7 @@ class ReportQueue:
                             f"O relatório anterior para **{project_name}** excedeu o tempo limite de 15 minutos e foi cancelado.\n"
                             f"🔄 Iniciando novo processamento..."
                         )
-                        self.discord_bot.send_message(channel_id, message)
+                        self.send_message_with_rate_limit(channel_id, message)
                     else:
                         # Calcular tempo decorrido para exibição
                         elapsed = f" (em processamento há {int(elapsed_seconds//60)} min e {int(elapsed_seconds%60)} seg)"
@@ -114,13 +117,13 @@ class ReportQueue:
                             f"Já existe um relatório para **{project_name}** em processamento{elapsed}.\n"
                             f"Por favor, aguarde a conclusão ou verifique o status usando `!status`."
                         )
-                        self.discord_bot.send_message(channel_id, message)
+                        self.send_message_with_rate_limit(channel_id, message)
                         return -1  # Código especial indicando que já existe processamento
                 else:
                     # Enviar mensagem de status
                     project_name = self.discord_bot.get_project_name(channel_id)
                     message = f"⏳ Já existe um relatório para {project_name} em processamento. Por favor, aguarde."
-                    self.discord_bot.send_message(channel_id, message)
+                    self.send_message_with_rate_limit(channel_id, message)
                     return -1  # Código especial indicando que já existe processamento
             
             # Verificar quantos itens já estão na fila
@@ -152,7 +155,7 @@ class ReportQueue:
                     f"Você será notificado quando o processamento começar."
                 )
             
-            self.discord_bot.send_message(channel_id, message)
+            self.send_message_with_rate_limit(channel_id, message)
             
             return position
     
@@ -196,7 +199,7 @@ class ReportQueue:
                 
                 # Notificar que está começando o processamento
                 message = f"🔄 Iniciando geração do relatório para {project_name}. Isso pode levar alguns minutos..."
-                self.discord_bot.send_message(channel_id, message)
+                self.send_message_with_rate_limit(channel_id, message)
                 
                 logger.info(f"Worker {worker_id} iniciando relatório para {project_name} (canal {channel_id})")
                 
@@ -209,7 +212,7 @@ class ReportQueue:
                 if not success:
                     # Enviar mensagem de erro se o processo falhou
                     error_message = f"❌ Ocorreu um erro ao gerar o relatório para {project_name}. Tente novamente mais tarde."
-                    self.discord_bot.send_message(channel_id, error_message)
+                    self.send_message_with_rate_limit(channel_id, error_message)
                 
                 # Marcar como concluído
                 with self.lock:
@@ -263,17 +266,17 @@ class ReportQueue:
             if result.returncode == 0:
                 # Mensagem de sucesso
                 message = f"✅ **Relatório de {project_name} gerado com sucesso!**"
-                self.discord_bot.send_message(channel_id, message)
+                self.send_message_with_rate_limit(channel_id, message)
                 return True
             else:
                 # Mensagem de erro
                 message = f"❌ **Erro ao gerar relatório para {project_name}**"
-                self.discord_bot.send_message(channel_id, message)
+                self.send_message_with_rate_limit(channel_id, message)
                 return False
                 
         except Exception as e:
             logger.error(f"Erro ao executar script: {e}")
-            self.discord_bot.send_message(channel_id, f"❌ **Erro: {str(e)}**")
+            self.send_message_with_rate_limit(channel_id, f"❌ **Erro: {str(e)}**")
             return False
     
     def _read_pipe_windows_compatible(self, pipe):
@@ -412,6 +415,35 @@ class ReportQueue:
          # Enviar para o canal específico se fornecido
         formatted_message = "\n".join(message)
         if channel_id:
-            self.discord_bot.send_message(channel_id, formatted_message)
+            self.send_message_with_rate_limit(channel_id, formatted_message)
         
         return formatted_message
+
+    def send_message_with_rate_limit(self, channel_id, content):
+        """
+        Envia uma mensagem respeitando limites de rate do Discord.
+        
+        Args:
+            channel_id: ID do canal
+            content: Conteúdo da mensagem
+            
+        Returns:
+            str: ID da mensagem se enviado com sucesso, None caso contrário
+        """
+        # Verificar se precisamos aguardar antes de enviar a próxima mensagem
+        current_time = time.time()
+        time_since_last = current_time - self.last_message_time
+        
+        if time_since_last < self.notification_delay and self.last_message_time > 0:
+            # Calcular tempo a aguardar
+            wait_time = self.notification_delay - time_since_last
+            logger.debug(f"Aguardando {wait_time:.2f}s antes de enviar próxima mensagem para evitar rate limit")
+            time.sleep(wait_time)
+        
+        # Enviar a mensagem
+        result = self.discord_bot.send_message(channel_id, content)
+        
+        # Atualizar timestamp
+        self.last_message_time = time.time()
+        
+        return result

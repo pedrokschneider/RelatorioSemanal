@@ -3,6 +3,7 @@ import io
 import sys
 import logging
 import argparse
+import time
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -41,6 +42,7 @@ def main():
     parser.add_argument('--channel', type=str, help='ID do canal Discord para identificar o projeto')
     parser.add_argument('--check-only', action='store_true', help='Apenas verificar configurações sem executar')
     parser.add_argument('--quiet', action='store_true', help='Modo silencioso - apenas notificações finais')
+    parser.add_argument('--no-notifications', action='store_true', help='Não enviar notificações para o Discord')
     args = parser.parse_args()
     
     try:
@@ -52,6 +54,10 @@ def main():
             system.quiet_mode = True
         else:
             system.quiet_mode = False
+            
+        # Desativar notificações Discord se solicitado
+        if args.no_notifications:
+            system.disable_notifications = True
         
         # Verificar se o discord foi inicializado
         if not hasattr(system, 'discord') or not system.discord:
@@ -117,7 +123,9 @@ def main():
         if project_id:
             # Executar apenas para um projeto específico
             logger.info(f"Executando apenas para o projeto {project_id}")
-            result = system.run_for_project(project_id, quiet_mode=True) 
+            # Sempre executar com skip_notifications=False quando executando um projeto específico
+            # Isso garante que a notificação final seja enviada
+            result = system.run_for_project(project_id, quiet_mode=True, skip_notifications=args.no_notifications) 
             
             status = "✅ Sucesso" if result[0] else "❌ Falha"
             doc_id = result[2]
@@ -132,7 +140,7 @@ def main():
         else:
             # Executar para todos os projetos ativos
             # Modificar para passar o modo silencioso para o método run_scheduled
-            results = system.run_scheduled(force=args.force, quiet_mode=True)
+            results = system.run_scheduled(force=args.force, quiet_mode=True, skip_notifications=args.no_notifications, notification_delay=2)
             
             # Exibir resultados
             sucessos = 0

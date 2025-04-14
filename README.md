@@ -77,6 +77,28 @@ O bot responde aos seguintes comandos nos canais configurados:
 - `!fila` - Mostra o status da fila de relatórios
 - `!status` - Mostra o status atual do bot
 
+## 🔄 Modos de Execução
+
+O sistema opera em dois modos distintos com comportamentos diferentes de notificação:
+
+### Modo Bot (Interativo)
+- **Comando:** `!relatorio` no canal Discord
+- **Comportamento:** Envia atualizações de progresso durante todo o processamento
+- **Vantagem:** Feedback detalhado em tempo real 
+- **Uso:** Para relatórios individuais sob demanda
+
+### Modo Batch (via run.py)
+- **Comando:** `python run.py [opções]`
+- **Comportamento:** Processa múltiplos relatórios sequencialmente
+- **Notificações:** Apenas mensagem final quando relatório está pronto
+- **Opções:**
+  - `--force` - Executa independente do dia da semana
+  - `--no-notifications` - Desativa completamente as notificações
+  - `--quiet` - Modo silencioso para terminal
+
+### Controle de Rate Limit
+O sistema implementa pausas automáticas entre mensagens do Discord (2s padrão) para evitar bloqueios por limite de taxa, especialmente importante no modo batch.
+
 ## 📁 Estrutura de Arquivos
 
 ```
@@ -155,7 +177,7 @@ Este projeto está sob a licença MIT. Veja o arquivo `LICENSE` para mais detalh
 
 ## ✨ Agradecimentos
 
-- Equipe de desenvolvimento
+- Equipe de desenvolvimento da Otus Engenharia
 - Contribuidores
 - Comunidade Python
-- Discord API 
+- Discord API

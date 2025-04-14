@@ -48,6 +48,10 @@ class WeeklyReportSystem:
         
         self.config = ConfigManager(env_path)
         
+        # Inicializar flags de controle
+        self.quiet_mode = False
+        self.disable_notifications = False
+        
         # Inicializar o gerenciador de cache simplificado
         try:
             from report_system.utils.simple_cache import SimpleCacheManager
@@ -147,18 +151,38 @@ class WeeklyReportSystem:
         """
         projects_df = self._load_project_config()
         
-        if projects_df.empty or 'ID_Construflow' not in projects_df.columns or 'ID_Smartsheet' not in projects_df.columns:
-            logger.warning("Planilha de configuração não contém as colunas necessárias")
+        if projects_df.empty:
+            logger.warning(f"Falha ao obter ID Smartsheet para projeto {project_id}: Planilha de configuração vazia")
             return None
+        
+        if 'ID_Construflow' not in projects_df.columns:
+            logger.warning(f"Falha ao obter ID Smartsheet para projeto {project_id}: Coluna 'ID_Construflow' não encontrada")
+            logger.debug(f"Colunas disponíveis: {', '.join(projects_df.columns)}")
+            return None
+        
+        if 'ID_Smartsheet' not in projects_df.columns:
+            logger.warning(f"Falha ao obter ID Smartsheet para projeto {project_id}: Coluna 'ID_Smartsheet' não encontrada")
+            logger.debug(f"Colunas disponíveis: {', '.join(projects_df.columns)}")
+            return None
+        
+        # Garantir que o ID_Construflow é tratado como string para comparação
+        projects_df['ID_Construflow'] = projects_df['ID_Construflow'].astype(str)
         
         # Filtrar projeto
-        project_row = projects_df[projects_df['ID_Construflow'] == project_id]
+        project_row = projects_df[projects_df['ID_Construflow'] == str(project_id)]
         
-        if project_row.empty or pd.isna(project_row['ID_Smartsheet'].values[0]):
-            logger.warning(f"ID do Smartsheet não encontrado para projeto {project_id}")
+        if project_row.empty:
+            logger.warning(f"Falha ao obter ID Smartsheet para projeto {project_id}: Projeto não encontrado na planilha")
+            logger.debug(f"Total de projetos na planilha: {len(projects_df)}")
             return None
         
-        return project_row['ID_Smartsheet'].values[0]
+        if pd.isna(project_row['ID_Smartsheet'].values[0]):
+            logger.warning(f"Falha ao obter ID Smartsheet para projeto {project_id}: Valor ausente na planilha")
+            return None
+        
+        smartsheet_id = str(project_row['ID_Smartsheet'].values[0])
+        logger.info(f"ID Smartsheet obtido para projeto {project_id}: {smartsheet_id}")
+        return smartsheet_id
     
     def get_active_projects(self) -> List[Dict[str, Any]]:
         """
@@ -346,6 +370,11 @@ class WeeklyReportSystem:
         Returns:
             True se a notificação foi enviada com sucesso, False caso contrário
         """
+        # Verificar se notificações estão desativadas
+        if hasattr(self, 'disable_notifications') and self.disable_notifications:
+            logger.info(f"Notificações desativadas. Mensagem para canal {channel_id} não enviada.")
+            return False
+        
         if not self.discord:
             logger.error("Gerenciador de Discord não inicializado")
             return False
@@ -554,7 +583,7 @@ class WeeklyReportSystem:
         
         return "\n".join(message)
 
-    def run_for_project(self, project_id, quiet_mode=False, skip_cache_update=False) -> Tuple[bool, str, Optional[str]]:
+    def run_for_project(self, project_id, quiet_mode=False, skip_cache_update=False, skip_notifications=False) -> Tuple[bool, str, Optional[str]]:
         """
         Executa o processo completo para um projeto, atualizando o cache primeiro.
         
@@ -562,11 +591,22 @@ class WeeklyReportSystem:
             project_id: ID do projeto
             quiet_mode: Se deve operar em modo silencioso
             skip_cache_update: Se True, pula a atualização do cache (use quando já foi atualizado)
+            skip_notifications: Se True, não envia notificações para o Discord
             
         Returns:
             Tupla com (sucesso, caminho_arquivo, id_drive)
         """
         self.quiet_mode = quiet_mode
+
+        # Verificar se o projeto está ativo
+        projects_df = self._load_project_config()
+        if 'Ativo' in projects_df.columns:
+            project_row = projects_df[projects_df['ID_Construflow'] == project_id]
+            if not project_row.empty and 'Ativo' in project_row.columns:
+                ativo = str(project_row['Ativo'].values[0]).lower()
+                if ativo != 'sim':
+                    logger.warning(f"Projeto {project_id} não está ativo (Ativo={ativo}). Pulando.")
+                    return False, "", None
 
         # Obter canal Discord e nome do projeto
         discord_channel_id = self.get_project_discord_channel(project_id)
@@ -594,6 +634,9 @@ class WeeklyReportSystem:
                 logger.warning("Módulo progress_reporter não encontrado. Continuando sem atualizações de progresso.")
         
         try:
+            # Buscar o ID do Smartsheet para este projeto (independente de atualização de cache)
+            smartsheet_id = self.get_project_smartsheet_id(project_id)
+            
             if not skip_cache_update:
                 # Atualizar o cache para este projeto específico
                 logger.info(f"Atualizando cache para o projeto {project_id} antes de gerar relatório")
@@ -601,23 +644,32 @@ class WeeklyReportSystem:
                 if progress_reporter:
                     progress_reporter.update("Atualização de cache", "Obtendo dados mais recentes...")      
                 self._update_project_cache(project_id)
-            
-                # Buscar o ID do Smartsheet para este projeto
-                smartsheet_id = self.get_project_smartsheet_id(project_id)
-            
             else:
                 logger.info(f"Pulando atualização de cache para o projeto {project_id} (já atualizado)")
             
             if progress_reporter:
-                progress_reporter.update("Usando cache", "Utilizando dados já atualizados...")
-
-            # Processar dados
-            if progress_reporter:
                 progress_reporter.update("Processamento de dados", "Analisando informações do projeto...")
                 
-            project_data = self.processor.process_project_data(project_id, smartsheet_id)
+            # Verificar se temos um ID de Smartsheet válido
+            if not smartsheet_id:
+                logger.warning(f"ID do Smartsheet não encontrado para o projeto {project_id}. Alguns dados podem estar incompletos.")
+                smartsheet_id = None  # Garantir que é None e não outro valor que represente "falso"
             
-            if not project_data.get('project_name'):
+            # Chamar process_project_data com proteção adicional
+            try:
+                project_data = self.processor.process_project_data(project_id, smartsheet_id)
+            except Exception as e:
+                logger.error(f"Erro ao processar dados do projeto {project_id}: {e}")
+                
+                # Se o erro foi causado por dados do Smartsheet, tentar novamente sem usar Smartsheet
+                if smartsheet_id is not None:
+                    logger.info(f"Tentando processar projeto {project_id} novamente sem usar dados do Smartsheet")
+                    project_data = self.processor.process_project_data(project_id, None)
+                else:
+                    # Se já estamos tentando sem Smartsheet, propagar o erro
+                    raise
+            
+            if not project_data or not project_data.get('project_name'):
                 logger.error(f"Projeto {project_id} não encontrado ou sem dados")
                 
                 if progress_reporter:
@@ -771,19 +823,6 @@ class WeeklyReportSystem:
                         final_message=f"❌ **Erro:** Falha ao criar documento no Google Docs para {project_name}."
                     )
                 
-                # Se não enviamos notificação pelo sistema de progresso, enviar a notificação normal
-                if not progress_reporter and discord_channel_id:
-                    doc_url = f"https://docs.google.com/document/d/{doc_id}/edit"
-                    folder_url = f"https://drive.google.com/drive/folders/{project_folder_id}"
-                    
-                    discord_message = (
-                        f"🔔 Novo relatório semanal disponível para o projeto {project_data['project_name']}!\n"
-                        f"📄 Link para o relatório: {doc_url}\n"
-                        f"📁 Link para a pasta: {folder_url}"
-                    )
-                    
-                    self.send_discord_notification(discord_channel_id, discord_message)
-                
                 return True, file_path, doc_id
                 
             except Exception as e:
@@ -809,8 +848,7 @@ class WeeklyReportSystem:
                         progress_reporter.complete(
                             success=True,
                             final_message=(
-                                f"⚠️ **Relatório de {project_name} concluído com limitações**\n"
-                                f"Houve um erro ao criar documento do Google Docs: {str(e)}\n"
+                                f"✅ **Relatório de {project_name} concluído!**\n"
                                 f"O relatório foi enviado como arquivo markdown.\n"
                                 f"📄 [Link para o relatório]({drive_url})"
                             )
@@ -819,19 +857,13 @@ class WeeklyReportSystem:
                         progress_reporter.complete(
                             success=False,
                             final_message=(
-                                f"❌ **Erro ao gerar relatório para {project_name}**\n"
-                                f"Erro ao criar documento no Google Docs: {str(e)}\n"
-                                f"Também falhou o upload alternativo do arquivo."
+                                f"⚠️ **Relatório parcialmente concluído para {project_name}**\n"
+                                f"O relatório foi gerado mas não foi possível enviá-lo ao Google Drive.\n"
+                                f"O arquivo está disponível apenas localmente."
                             )
                         )
-            # Na parte final, se for em modo silencioso e tiver canal Discord, enviar apenas a mensagem final
-                if quiet_mode and discord_channel_id and doc_id:
-                    doc_url = f"https://docs.google.com/document/d/{doc_id}/edit"
-                    folder_url = f"https://drive.google.com/drive/folders/{project_folder_id}" if project_folder_id else None
-                    
-                    final_message = self._format_final_success_message(project_name, doc_url, folder_url)
-                    self.send_discord_notification(discord_channel_id, final_message)
-
+                
+                # Adicionar return aqui para caso de exceção, usando file_id consistentemente
                 return True, file_path, file_id
                     
         except Exception as e:
@@ -1150,68 +1182,133 @@ class WeeklyReportSystem:
             logger.warning(f"Erro ao verificar última atualização de cache: {e}")
             return False
 
-    def run_all_projects(self) -> Dict[str, Tuple[bool, str, Optional[str]]]:
-        """
-        Executa o processo para todos os projetos ativos da planilha.
-        
-        Returns:
-            Dicionário com resultados por projeto
-        """
-        results = {}
-        
-        # Obter lista de projetos ativos da planilha
-        projects = self.get_active_projects()
-        
-        if not projects:
-            logger.warning("Nenhum projeto ativo encontrado na planilha de configuração")
-            return results
-        
-        logger.info(f"Iniciando processamento para {len(projects)} projetos")
-
-        # Verificar se o cache foi atualizado recentemente
-        if self.was_cache_recently_updated(minutes=10):
-            # Perguntar ao usuário se deseja atualizar o cache novamente
-            print("\nO cache foi atualizado nos últimos 10 minutos.")
-            update_cache = input("Deseja atualizar o cache novamente? (s/N): ").lower().strip() == 's'
-            
-            if not update_cache:
-                logger.info("Pulando atualização de cache por escolha do usuário")
-            else:
-                # Primeira etapa: atualizar cache de forma centralizada
-                self.update_all_cache(projects)
-
-        # Segunda etapa: processar cada projeto usando cache atualizado
-        for project in tqdm(projects, desc="Processando projetos"):
-            project_id = project['id']
-            logger.info(f"Processando projeto: {project['name']} (ID: {project_id})")
-            # Ao executar run_for_project, solicitar para NÃO atualizar o cache novamente
-            # para isso, passamos um parâmetro adicional skip_cache_update=True
-            results[project_id] = self.run_for_project(project_id, skip_cache_update=True)
-        
-        # Resumo
-        success_count = sum(1 for result in results.values() if result[0])
-        logger.info(f"Processamento concluído: {success_count}/{len(projects)} projetos com sucesso")
-        
-        return results
-    
-    def check_if_friday(self) -> bool:
-        """Verifica se hoje é sexta-feira."""
-        return datetime.now().weekday() == 4  # 0 é segunda, 4 é sexta
-    
-    def run_scheduled(self, force: bool = False, quiet_mode: bool = False):
+    def run_scheduled(self, force: bool = False, quiet_mode: bool = False, skip_notifications: bool = False, notification_delay: int = 0):
         """
         Executa o processamento se for sexta-feira ou se forçado.
         
         Args:
             force: Se deve forçar a execução independente do dia
+            quiet_mode: Se deve operar em modo silencioso
+            skip_notifications: Se True, não envia notificações para o Discord
+            notification_delay: Tempo em segundos a aguardar entre notificações do Discord (para evitar rate limiting)
+            
+        Returns:
+            Dicionário com resultados por projeto
         """
         if force or self.check_if_friday():
             logger.info("Iniciando processamento agendado")
             self.quiet_mode = quiet_mode
-            return self.run_all_projects()
+            
+            # Obter projetos ativos da planilha
+            projects_df = self._load_project_config()
+            
+            # Filtrar projetos ativos (igual ao que o bot faz)
+            if 'Ativo' in projects_df.columns:
+                active_projects_df = projects_df[projects_df['Ativo'].str.lower() == 'sim']
+                logger.info(f"Filtrando {len(active_projects_df)} projetos ativos de {len(projects_df)} projetos totais")
+            else:
+                # Se não tiver coluna Ativo, considerar todos os projetos
+                active_projects_df = projects_df
+                logger.info(f"Coluna 'Ativo' não encontrada. Considerando todos os {len(projects_df)} projetos.")
+            
+            # Obter lista de projetos ativos com os dados completos
+            projects = self.get_active_projects()
+            
+            if not projects:
+                logger.warning("Nenhum projeto ativo encontrado na planilha de configuração")
+                return {}
+            
+            # Logar detalhes sobre os projetos ativos
+            logger.info(f"Iniciando processamento para {len(projects)} projetos ativos")
+            for i, project in enumerate(projects):
+                logger.info(f"Projeto {i+1}: {project['id']} - {project['name']}")
+            
+            # Verificar se o cache foi atualizado recentemente
+            if self.was_cache_recently_updated(minutes=10):
+                # Perguntar ao usuário se deseja atualizar o cache novamente
+                print("\nO cache foi atualizado nos últimos 10 minutos.")
+                update_cache = input("Deseja atualizar o cache novamente? (s/N): ").lower().strip() == 's'
+                
+                if not update_cache:
+                    logger.info("Pulando atualização de cache por escolha do usuário")
+                else:
+                    # Primeira etapa: atualizar cache de forma centralizada
+                    self.update_all_cache(projects)
+
+            # Resultados
+            results = {}
+            
+            # Definir flag para indicar que estamos em run_scheduled
+            # Isso evita duplicação de notificações
+            self._in_scheduled_run = True
+            
+            try:
+                # Segunda etapa: processar cada projeto usando cache atualizado
+                for i, project in enumerate(projects):
+                    project_id = project['id']
+                    logger.info(f"Processando projeto: {project['name']} (ID: {project_id}) - {i+1} de {len(projects)}")
+                    
+                    # Processar o projeto sem enviar notificações
+                    results[project_id] = self.run_for_project(
+                        project_id, 
+                        quiet_mode=True, 
+                        skip_cache_update=True, 
+                        skip_notifications=True  # Evitar notificações duplicadas
+                    )
+                    
+                    # Se configurado para enviar notificações no final, fazemos isso com delay
+                    if not skip_notifications and results[project_id][0]:  # Se teve sucesso
+                        try:
+                            # Obter detalhes do projeto para notificação
+                            project_name = project['name']
+                            discord_channel_id = self.get_project_discord_channel(project_id)
+                            doc_id = results[project_id][2]
+                            
+                            if discord_channel_id and doc_id:
+                                # Tentar obter folder_id
+                                try:
+                                    project_folder_id = self.gdrive.get_project_folder(project_id, project_name)
+                                except:
+                                    project_folder_id = None
+                                
+                                # Construir URLs
+                                doc_url = f"https://docs.google.com/document/d/{doc_id}/edit"
+                                folder_url = f"https://drive.google.com/drive/folders/{project_folder_id}" if project_folder_id else None
+                                
+                                # Formatar mensagem final
+                                final_message = self._format_final_success_message(project_name, doc_url, folder_url)
+                                
+                                # Enviar notificação
+                                logger.info(f"Enviando notificação para canal {discord_channel_id} (projeto {project_id})")
+                                self.send_discord_notification(discord_channel_id, final_message)
+                                
+                                # Aguardar para evitar rate limiting
+                                if notification_delay > 0 and i < len(projects) - 1:  # Não aguardar após o último
+                                    logger.info(f"Aguardando {notification_delay}s antes da próxima notificação (evitar rate limit)")
+                                    time.sleep(notification_delay)
+                        except Exception as e:
+                            logger.error(f"Erro ao enviar notificação para projeto {project_id}: {e}")
+                
+                # Resumo
+                success_count = sum(1 for result in results.values() if result[0])
+                logger.info(f"Processamento concluído: {success_count}/{len(projects)} projetos com sucesso")
+                
+                # Limpar a flag
+                self._in_scheduled_run = False
+                
+                return results
+            except Exception as e:
+                # Garantir que a flag seja limpa mesmo em caso de erro
+                self._in_scheduled_run = False
+                logger.error(f"Erro em run_scheduled: {e}")
+                raise
         else:
-            logger.info("Hoje nzo é sexta-feira. O processamento agendado não será executado.")
+            logger.info("Hoje não é sexta-feira. O processamento agendado não será executado.")
             return {}
+    
+    def check_if_friday(self) -> bool:
+        """Verifica se hoje é sexta-feira."""
+        return datetime.now().weekday() == 4  # 0 é segunda, 4 é sexta
     
     def get_cache_status(self):
         """
@@ -1280,10 +1377,11 @@ if __name__ == "__main__":
     parser.add_argument('--project', type=str, help='ID do projeto específico para executar')
     parser.add_argument('--check-cache', action='store_true', help='Verificar status do cache')
     parser.add_argument('--update-cache', action='store_true', help='Forçar atualização de todo o cache')
+    parser.add_argument('--no-notifications', action='store_true', help='Desativar notificações do Discord')
     args = parser.parse_args()
     
     # Criar e executar o sistema
-    system = WeeklyReportSystem(env_path)
+    system = WeeklyReportSystem(env_path, disable_notifications=args.no_notifications)
     
     # Verificar se é para mostrar o status do cache
     if args.check_cache:

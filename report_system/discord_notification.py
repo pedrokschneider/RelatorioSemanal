@@ -236,9 +236,17 @@ class DiscordNotificationManager:
                     
                     # Tratamento especial para rate limiting
                     if response.status_code == 429:
-                        retry_after = response.json().get('retry_after', retry_delay)
-                        logger.warning(f"Rate limit atingido. Aguardando {retry_after} segundos...")
-                        time.sleep(retry_after)
+                        retry_info = response.json()
+                        retry_after = retry_info.get('retry_after', retry_delay)
+                        global_rate_limit = retry_info.get('global', False)
+                        
+                        if global_rate_limit:
+                            logger.warning(f"Rate limit GLOBAL atingido. Aguardando {retry_after} segundos...")
+                        else:
+                            logger.warning(f"Rate limit atingido para o canal {clean_channel_id}. Aguardando {retry_after} segundos...")
+                        
+                        # Adicionamos 1s de margem para garantir
+                        time.sleep(retry_after + 1)
                         continue
                     
                     # Verificar se o problema é com o token
@@ -337,9 +345,22 @@ class DiscordNotificationManager:
                 
                 # Tratamento especial para rate limiting
                 if response.status_code == 429:
-                    retry_after = response.json().get('retry_after', retry_delay)
-                    logger.warning(f"Rate limit atingido. Aguardando {retry_after} segundos...")
-                    time.sleep(retry_after)
+                    try:
+                        retry_info = response.json()
+                        retry_after = retry_info.get('retry_after', retry_delay)
+                        global_rate_limit = retry_info.get('global', False)
+                        
+                        if global_rate_limit:
+                            logger.warning(f"Rate limit GLOBAL atingido no webhook. Aguardando {retry_after} segundos...")
+                        else:
+                            logger.warning(f"Rate limit atingido no webhook. Aguardando {retry_after} segundos...")
+                        
+                        # Adicionamos 1s de margem para garantir
+                        time.sleep(retry_after + 1)
+                    except Exception as e:
+                        # Se não conseguimos extrair o retry_after, usamos o valor padrão
+                        logger.warning(f"Erro ao extrair retry_after: {e}. Usando valor padrão de {retry_delay}s.")
+                        time.sleep(retry_delay * (2 ** attempt))  # Backoff exponencial
                     continue
                 
                 logger.error(f"Erro ao enviar notificação webhook. Status: {response.status_code}, Resposta: {response.text}")
@@ -449,9 +470,22 @@ class DiscordNotificationManager:
                 
                 # Tratamento especial para rate limiting
                 if response.status_code == 429:
-                    retry_after = response.json().get('retry_after', retry_delay)
-                    logger.warning(f"Rate limit atingido. Aguardando {retry_after} segundos...")
-                    time.sleep(retry_after)
+                    try:
+                        retry_info = response.json()
+                        retry_after = retry_info.get('retry_after', retry_delay)
+                        global_rate_limit = retry_info.get('global', False)
+                        
+                        if global_rate_limit:
+                            logger.warning(f"Rate limit GLOBAL atingido ao atualizar mensagem. Aguardando {retry_after} segundos...")
+                        else:
+                            logger.warning(f"Rate limit atingido ao atualizar mensagem no canal {clean_channel_id}. Aguardando {retry_after} segundos...")
+                        
+                        # Adicionamos 1s de margem para garantir
+                        time.sleep(retry_after + 1)
+                    except Exception as e:
+                        # Se não conseguimos extrair o retry_after, usamos o valor padrão
+                        logger.warning(f"Erro ao extrair retry_after: {e}. Usando valor padrão de {retry_delay}s.")
+                        time.sleep(retry_delay * (2 ** (attempt // len(token_variations))))  # Backoff exponencial
                     continue
                 
                 # Verificar se o problema é com o token

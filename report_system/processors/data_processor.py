@@ -157,7 +157,7 @@ class DataProcessor:
                     project_row = projects_df[projects_df['construflow_id'] == project_id]
                     if not project_row.empty and pd.notna(project_row['construflow_disciplinasclientes'].values[0]):
                         disciplinas_str = project_row['construflow_disciplinasclientes'].values[0]
-                        disciplinas_cliente = [d.strip() for d in disciplinas_str.split(',')]
+                        disciplinas_cliente = [d.strip() for d in disciplinas_str.split(';')]
             except Exception as e:
                 logger.warning(f"Erro ao obter disciplinas do cliente da planilha: {e}")
         

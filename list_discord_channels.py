@@ -202,7 +202,7 @@ class DiscordChannelLister:
                                         'topico_nome': thread['name'],
                                         'topico_id': thread['id'],
                                         'topico_status': ', '.join(status),
-                                        'topico_tipo': thread_type,
+                                        'discord_tipo': thread_type,
                                         'ultima_atividade': thread.get('last_message_timestamp')
                                     }
                                     channels_data.append(thread_info)
@@ -238,7 +238,7 @@ class DiscordChannelLister:
             # Reordenar as colunas
             columns_order = [
                 'servidor_nome', 'servidor_id', 'canal_nome', 'canal_id',
-                'tipo', 'topico_nome', 'topico_id', 'topico_status', 'topico_tipo',
+                'tipo', 'topico_nome', 'topico_id', 'topico_status', 'discord_tipo',
                 'ultima_atividade'
             ]
             df = df[columns_order]
@@ -267,7 +267,7 @@ class DiscordChannelLister:
                     print(f"- {status}: {count}")
                 
                 print("\nTipos de tópicos:")
-                type_counts = topicos_df['topico_tipo'].value_counts()
+                type_counts = topicos_df['discord_tipo'].value_counts()
                 for tipo, count in type_counts.items():
                     print(f"- {tipo}: {count}")
             

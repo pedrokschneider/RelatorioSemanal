@@ -223,8 +223,8 @@ class WeeklyReportSystem:
                 if 'construflow_disciplinasclientes' in row and pd.notna(row['construflow_disciplinasclientes']):
                     disciplines_str = str(row['construflow_disciplinasclientes'])
                     if disciplines_str:
-                        # Separar por vírgula e remover espaços extras
-                        disciplines = [d.strip() for d in disciplines_str.split(',')]
+                        # Separar por ponto e vírgula e remover espaços extras
+                        disciplines = [d.strip() for d in disciplines_str.split(';')]
                         project_dict['disciplinas_cliente'] = disciplines
                 
                 projects_list.append(project_dict)
@@ -281,22 +281,39 @@ class WeeklyReportSystem:
         """
         projects_df = self._load_project_config()
         
-        if projects_df.empty or 'discord_id' not in projects_df.columns:
-            logger.warning("Planilha não contém coluna discord_id")
+        if projects_df.empty:
+            logger.warning("Planilha de projetos vazia")
             return None
+            
+        # Verificar se a coluna discord_id existe
+        if 'discord_id' not in projects_df.columns:
+            # Tentar com o nome antigo da coluna
+            if 'Canal_Discord' in projects_df.columns:
+                logger.warning("Usando nome antigo da coluna: Canal_Discord")
+                discord_column = 'Canal_Discord'
+            else:
+                logger.warning("Planilha não contém coluna de canal Discord")
+                return None
+        else:
+            discord_column = 'discord_id'
         
         # Limpar IDs para comparação
         channel_id_clean = ''.join(c for c in channel_id if c.isdigit())
         
         # Verificar cada linha
         for _, row in projects_df.iterrows():
-            if 'discord_id' in row and pd.notna(row['discord_id']):
-                row_channel = str(row['discord_id'])
+            if discord_column in row and pd.notna(row[discord_column]):
+                row_channel = str(row[discord_column])
                 row_channel_clean = ''.join(c for c in row_channel if c.isdigit())
                 
                 if row_channel_clean == channel_id_clean:
+                    # Verificar coluna construflow_id
                     if 'construflow_id' in row and pd.notna(row['construflow_id']):
                         return str(row['construflow_id'])
+                    # Tentar com o nome antigo da coluna
+                    elif 'ID_Construflow' in row and pd.notna(row['ID_Construflow']):
+                        logger.warning("Usando nome antigo da coluna: ID_Construflow")
+                        return str(row['ID_Construflow'])
         
         return None
 
@@ -337,23 +354,42 @@ class WeeklyReportSystem:
         """
         projects_df = self._load_project_config()
         
-        if projects_df.empty or 'construflow_id' not in projects_df.columns:
-            logger.warning("Planilha de configuração não contém as colunas necessárias")
+        if projects_df.empty:
+            logger.warning("Planilha de configuração vazia")
             return None
+            
+        # Verificar colunas do ID do projeto
+        if 'construflow_id' not in projects_df.columns:
+            # Tentar com o nome antigo da coluna
+            if 'ID_Construflow' in projects_df.columns:
+                logger.warning("Usando nome antigo da coluna: ID_Construflow")
+                project_id_column = 'ID_Construflow'
+            else:
+                logger.warning("Planilha de configuração não contém coluna de ID do projeto")
+                return None
+        else:
+            project_id_column = 'construflow_id'
         
-        # Verificar se a coluna discord_id existe
+        # Verificar coluna do canal Discord
         if 'discord_id' not in projects_df.columns:
-            logger.warning("Coluna discord_id não encontrada na planilha")
-            return None
+            # Tentar com o nome antigo da coluna
+            if 'Canal_Discord' in projects_df.columns:
+                logger.warning("Usando nome antigo da coluna: Canal_Discord")
+                discord_column = 'Canal_Discord'
+            else:
+                logger.warning("Coluna de canal Discord não encontrada na planilha")
+                return None
+        else:
+            discord_column = 'discord_id'
         
-        # Filtrar projeto
-        project_row = projects_df[projects_df['construflow_id'] == project_id]
+        # Filtrar projeto - converter project_id para string para comparação segura
+        project_row = projects_df[projects_df[project_id_column].astype(str) == str(project_id)]
         
-        if project_row.empty or pd.isna(project_row['discord_id'].values[0]):
+        if project_row.empty or pd.isna(project_row[discord_column].values[0]):
             logger.warning(f"Canal Discord não encontrado para projeto {project_id}")
             return None
         
-        channel_id = project_row['discord_id'].values[0]
+        channel_id = project_row[discord_column].values[0]
         logger.info(f"ID do canal Discord obtido: {channel_id}")
         return str(channel_id)
     

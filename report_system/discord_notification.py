@@ -574,3 +574,139 @@ class DiscordNotificationManager:
         except Exception as e:
             logger.error(f"Erro em send_report_notification para projeto {project_id}: {str(e)}")
             return False
+    
+    def send_direct_message(self, user_id: str, message: str, embeds: Optional[List[Dict[str, Any]]] = None,
+                      max_retries: int = 3, retry_delay: float = 1.0) -> bool:
+        """
+        Envia uma mensagem direta para um usuário específico do Discord.
+        
+        Args:
+            user_id: ID do usuário do Discord
+            message: Mensagem a ser enviada
+            embeds: Lista de embeds para incluir na mensagem (opcional)
+            max_retries: Número máximo de tentativas em caso de falha
+            retry_delay: Tempo de espera entre tentativas (em segundos)
+            
+        Returns:
+            True se enviado com sucesso, False caso contrário
+        """
+        if not self.discord_token:
+            logger.error("Token do Discord não configurado. Impossível enviar mensagem direta.")
+            return False
+        
+        # Limpar ID do usuário
+        clean_user_id = self._validate_channel_id(user_id)  # Podemos reutilizar este método
+        
+        if not clean_user_id:
+            logger.error(f"ID do usuário inválido: {user_id}")
+            return False
+        
+        logger.info(f"Tentando enviar mensagem direta para o usuário {clean_user_id}")
+        
+        # Precisamos primeiro criar um canal DM com o usuário
+        create_dm_url = "https://discord.com/api/v9/users/@me/channels"
+        
+        # Headers com o token formatado
+        headers = {
+            "Authorization": self._format_token(self.discord_token),
+            "Content-Type": "application/json"
+        }
+        
+        # Payload para criar o canal DM
+        create_dm_payload = {
+            "recipient_id": clean_user_id
+        }
+        
+        # Tentar criar o canal DM
+        try:
+            create_dm_response = requests.post(
+                create_dm_url,
+                data=json.dumps(create_dm_payload),
+                headers=headers,
+                timeout=10
+            )
+            
+            if create_dm_response.status_code not in [200, 201]:
+                logger.error(f"Falha ao criar canal DM. Status: {create_dm_response.status_code}")
+                if create_dm_response.status_code == 401:
+                    logger.error("Token não autorizado para criar DMs. O token precisa ser de um bot com intents adequadas.")
+                return False
+            
+            # Extrair o ID do canal DM da resposta
+            dm_data = create_dm_response.json()
+            dm_channel_id = dm_data.get('id')
+            
+            if not dm_channel_id:
+                logger.error("Não foi possível obter o ID do canal DM")
+                return False
+            
+            # Agora enviamos a mensagem para o canal DM
+            return self.send_notification(
+                channel_id=dm_channel_id,
+                message=message,
+                embeds=embeds,
+                max_retries=max_retries,
+                retry_delay=retry_delay
+            )
+            
+        except Exception as e:
+            logger.error(f"Erro ao enviar mensagem direta: {e}")
+            return False
+    
+    def send_admin_notification(self, message: str, embeds: Optional[List[Dict[str, Any]]] = None) -> bool:
+        """
+        Envia uma notificação para o administrador usando o canal de administração configurado.
+        
+        Args:
+            message: Mensagem a ser enviada
+            embeds: Lista de embeds para incluir na mensagem (opcional)
+            
+        Returns:
+            True se enviado com sucesso, False caso contrário
+        """
+        # Primeiro tenta usar o canal de administração
+        admin_channel_id = ""
+        
+        if self.config:
+            try:
+                if hasattr(self.config, 'get_env_var') and callable(getattr(self.config, 'get_env_var')):
+                    admin_channel_id = self.config.get_env_var("DISCORD_ADMIN_CHANNEL_ID", "")
+            except Exception:
+                pass
+        
+        if not admin_channel_id or admin_channel_id == "COLOQUE_AQUI_O_ID_DO_CANAL":
+            admin_channel_id = os.getenv("DISCORD_ADMIN_CHANNEL_ID", "")
+        
+        # Usar o canal se estiver configurado
+        if admin_channel_id and admin_channel_id != "COLOQUE_AQUI_O_ID_DO_CANAL":
+            logger.info(f"Enviando notificação para o canal de administração {admin_channel_id}")
+            return self.send_notification(
+                channel_id=admin_channel_id,
+                message=message,
+                embeds=embeds
+            )
+            
+        # Caso contrário, tenta usar DM como fallback (menos provável de funcionar)
+        # Obter o ID do administrador do Discord
+        admin_id = ""
+        
+        if self.config:
+            try:
+                if hasattr(self.config, 'get_env_var') and callable(getattr(self.config, 'get_env_var')):
+                    admin_id = self.config.get_env_var("DISCORD_ADMIN_USER_ID", "")
+            except Exception:
+                pass
+        
+        if not admin_id:
+            admin_id = os.getenv("DISCORD_ADMIN_USER_ID", "")
+        
+        if not admin_id or admin_id == "SEU_ID_AQUI":
+            logger.warning("Nem o canal nem o ID do administrador foram configurados corretamente. Impossível enviar notificação.")
+            return False
+        
+        logger.info(f"Tentando enviar DM para o usuário {admin_id} (pode falhar se o token não tiver permissões adequadas)")
+        return self.send_direct_message(
+            user_id=admin_id,
+            message=message,
+            embeds=embeds
+        )

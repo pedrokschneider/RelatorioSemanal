@@ -144,30 +144,30 @@ class DiscordBotAutoChannels:
                 return {}
                 
             # Verificar se as colunas necessárias existem
-            if 'Canal_Discord' not in projects_df.columns:
-                logger.error(f"Coluna 'Canal_Discord' não encontrada. Colunas disponíveis: {', '.join(projects_df.columns)}")
+            if 'discord_id' not in projects_df.columns:
+                logger.error(f"Coluna 'discord_id' não encontrada. Colunas disponíveis: {', '.join(projects_df.columns)}")
                 return {}
                 
-            # Verificar se há coluna Ativo
-            if 'Ativo' in projects_df.columns:
+            # Verificar se há coluna relatoriosemanal_status
+            if 'relatoriosemanal_status' in projects_df.columns:
                 # Filtrar apenas projetos ativos
-                active_projects = projects_df[projects_df['Ativo'].str.lower() == 'sim']
+                active_projects = projects_df[projects_df['relatoriosemanal_status'].str.lower() == 'sim']
                 logger.debug(f"Filtrando projetos ativos: {len(active_projects)}/{len(projects_df)}")
             else:
-                # Se não houver coluna Ativo, considerar todos
+                # Se não houver coluna relatoriosemanal_status, considerar todos
                 active_projects = projects_df
-                logger.debug(f"Coluna 'Ativo' não encontrada, considerando todos os {len(projects_df)} projetos")
+                logger.debug(f"Coluna 'relatoriosemanal_status' não encontrada, considerando todos os {len(projects_df)} projetos")
             
-            # Filtrar projetos com Canal_Discord preenchido
-            projects_with_channel = active_projects[active_projects['Canal_Discord'].notna()]
+            # Filtrar projetos com discord_id preenchido
+            projects_with_channel = active_projects[active_projects['discord_id'].notna()]
             
             # Criar dicionário de canal -> informações do projeto
             channels_dict = {}
             
             for _, row in projects_with_channel.iterrows():
-                channel_id = str(row['Canal_Discord']).strip()
-                project_id = str(row.get('ID_Construflow', '')).strip()
-                project_name = str(row.get('Nome_Projeto', 'Projeto sem nome')).strip()
+                channel_id = str(row['discord_id']).strip()
+                project_id = str(row.get('construflow_id', '')).strip()
+                project_name = str(row.get('Projeto - PR', 'Projeto sem nome')).strip()
                 
                 # Limpar o canal_id (remover caracteres não numéricos)
                 channel_id_clean = ''.join(c for c in channel_id if c.isdigit())

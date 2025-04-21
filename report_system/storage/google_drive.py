@@ -98,11 +98,38 @@ class GoogleDriveManager:
             # Criar DataFrame
             if header:
                 if len(values) > 1:
-                    df = pd.DataFrame(values[1:], columns=values[0])
+                    # Pegar os cabeçalhos da primeira linha
+                    headers = values[0]
+                    
+                    # Preparar os dados normalizando o número de colunas
+                    data = []
+                    for row in values[1:]:
+                        # Se a linha tiver menos colunas que o cabeçalho, preencher com None
+                        if len(row) < len(headers):
+                            row_padded = row + [None] * (len(headers) - len(row))
+                            data.append(row_padded)
+                        # Se a linha tiver mais colunas que o cabeçalho, truncar
+                        elif len(row) > len(headers):
+                            logger.warning(f"Linha com mais colunas ({len(row)}) que o cabeçalho ({len(headers)}). Truncando dados.")
+                            data.append(row[:len(headers)])
+                        else:
+                            data.append(row)
+                    
+                    # Criar o DataFrame com os dados normalizados
+                    df = pd.DataFrame(data, columns=headers)
                 else:
                     df = pd.DataFrame(columns=values[0])
             else:
-                df = pd.DataFrame(values)
+                # Se não estiver usando a primeira linha como cabeçalho,
+                # normalizar o número de colunas para a linha mais longa
+                max_cols = max(len(row) for row in values)
+                data = []
+                for row in values:
+                    if len(row) < max_cols:
+                        data.append(row + [None] * (max_cols - len(row)))
+                    else:
+                        data.append(row)
+                df = pd.DataFrame(data)
             
             return df
             
@@ -354,8 +381,8 @@ class GoogleDriveManager:
                 return pd.DataFrame()
             
             # Garantir que o ID do Construflow seja string
-            if 'ID_Construflow' in df.columns:
-                df['ID_Construflow'] = df['ID_Construflow'].astype(str)
+            if 'construflow_id' in df.columns:
+                df['construflow_id'] = df['construflow_id'].astype(str)
             
             logger.info(f"Carregados {len(df)} projetos da planilha de configuração")
             return df
@@ -381,13 +408,13 @@ class GoogleDriveManager:
             # 1. Primeiro, tentar encontrar na planilha de configuração
             projects_df = self.load_project_config_from_sheet()
             
-            if not projects_df.empty and 'ID_Construflow' in projects_df.columns and 'ID_Pasta_Drive' in projects_df.columns:
+            if not projects_df.empty and 'construflow_id' in projects_df.columns and 'pastaemails_id' in projects_df.columns:
                 # Converter para string para comparação segura
-                projects_df['ID_Construflow'] = projects_df['ID_Construflow'].astype(str)
-                project_row = projects_df[projects_df['ID_Construflow'] == str(project_id)]
+                projects_df['construflow_id'] = projects_df['construflow_id'].astype(str)
+                project_row = projects_df[projects_df['construflow_id'] == str(project_id)]
                 
-                if not project_row.empty and pd.notna(project_row['ID_Pasta_Drive'].iloc[0]):
-                    folder_id = str(project_row['ID_Pasta_Drive'].iloc[0])
+                if not project_row.empty and pd.notna(project_row['pastaemails_id'].iloc[0]):
+                    folder_id = str(project_row['pastaemails_id'].iloc[0])
                     logger.info(f"ID da pasta encontrado na planilha: {folder_id}")
                     return folder_id
             

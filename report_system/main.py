@@ -155,32 +155,32 @@ class WeeklyReportSystem:
             logger.warning(f"Falha ao obter ID Smartsheet para projeto {project_id}: Planilha de configuração vazia")
             return None
         
-        if 'ID_Construflow' not in projects_df.columns:
-            logger.warning(f"Falha ao obter ID Smartsheet para projeto {project_id}: Coluna 'ID_Construflow' não encontrada")
+        if 'construflow_id' not in projects_df.columns:
+            logger.warning(f"Falha ao obter ID Smartsheet para projeto {project_id}: Coluna 'construflow_id' não encontrada")
             logger.debug(f"Colunas disponíveis: {', '.join(projects_df.columns)}")
             return None
         
-        if 'ID_Smartsheet' not in projects_df.columns:
-            logger.warning(f"Falha ao obter ID Smartsheet para projeto {project_id}: Coluna 'ID_Smartsheet' não encontrada")
+        if 'smartsheet_id' not in projects_df.columns:
+            logger.warning(f"Falha ao obter ID Smartsheet para projeto {project_id}: Coluna 'smartsheet_id' não encontrada")
             logger.debug(f"Colunas disponíveis: {', '.join(projects_df.columns)}")
             return None
         
-        # Garantir que o ID_Construflow é tratado como string para comparação
-        projects_df['ID_Construflow'] = projects_df['ID_Construflow'].astype(str)
+        # Garantir que o construflow_id é tratado como string para comparação
+        projects_df['construflow_id'] = projects_df['construflow_id'].astype(str)
         
         # Filtrar projeto
-        project_row = projects_df[projects_df['ID_Construflow'] == str(project_id)]
+        project_row = projects_df[projects_df['construflow_id'] == str(project_id)]
         
         if project_row.empty:
             logger.warning(f"Falha ao obter ID Smartsheet para projeto {project_id}: Projeto não encontrado na planilha")
             logger.debug(f"Total de projetos na planilha: {len(projects_df)}")
             return None
         
-        if pd.isna(project_row['ID_Smartsheet'].values[0]):
+        if pd.isna(project_row['smartsheet_id'].values[0]):
             logger.warning(f"Falha ao obter ID Smartsheet para projeto {project_id}: Valor ausente na planilha")
             return None
         
-        smartsheet_id = str(project_row['ID_Smartsheet'].values[0])
+        smartsheet_id = str(project_row['smartsheet_id'].values[0])
         logger.info(f"ID Smartsheet obtido para projeto {project_id}: {smartsheet_id}")
         return smartsheet_id
     
@@ -198,39 +198,38 @@ class WeeklyReportSystem:
             return []
         
         # Converter IDs para string
-        projects_df['ID_Construflow'] = projects_df['ID_Construflow'].astype(str)
+        projects_df['construflow_id'] = projects_df['construflow_id'].astype(str)
         
-        # Verificar se temos a coluna Ativo
-        if 'Ativo' in projects_df.columns:
-            active_projects = projects_df[projects_df['Ativo'].str.lower() == 'sim']
+        # Verificar se temos a coluna relatoriosemanal_status
+        if 'relatoriosemanal_status' in projects_df.columns:
+            active_projects = projects_df[projects_df['relatoriosemanal_status'].str.lower() == 'sim']
         else:
-            # Se não tiver coluna Ativo, considerar todos os projetos
+            # Se não tiver coluna relatoriosemanal_status, considerar todos os projetos
             active_projects = projects_df
         
         logger.info(f"Total de projetos ativos: {len(active_projects)}")
         
         # Converter para lista de dicionários
         projects_list = []
-        
         for _, row in active_projects.iterrows():
-            project = {
-                'id': str(row.get('ID_Construflow', '')),
-                'name': row.get('Nome_Projeto', 'Projeto sem nome'),
-                'smartsheet_id': str(row.get('ID_Smartsheet', '')),
-                'drive_folder_id': row.get('ID_Pasta_Drive', ''),
-                'nome_cliente': [],
-                'disciplinas_cliente': []
-            }
-            
-            # Processar nomes de cliente
-            if 'Nome_Cliente' in row and pd.notna(row['Nome_Cliente']):
-                project['nome_cliente'] = [nome.strip() for nome in str(row['Nome_Cliente']).split(';') if nome.strip()]
-            
-            # Processar disciplinas do cliente
-            if 'Disciplinas_Cliente' in row and pd.notna(row['Disciplinas_Cliente']):
-                project['disciplinas_cliente'] = [disc.strip() for disc in str(row['Disciplinas_Cliente']).split(';') if disc.strip()]
-            
-            projects_list.append(project)
+            try:
+                project_dict = {
+                    'id': str(row['construflow_id']),
+                    'name': row.get('Projeto - PR', 'Projeto sem nome'), 
+                    'smartsheet_id': str(row.get('smartsheet_id', '')),
+                }
+                
+                # Adicionar disciplinas do cliente se disponível 
+                if 'construflow_disciplinasclientes' in row and pd.notna(row['construflow_disciplinasclientes']):
+                    disciplines_str = str(row['construflow_disciplinasclientes'])
+                    if disciplines_str:
+                        # Separar por vírgula e remover espaços extras
+                        disciplines = [d.strip() for d in disciplines_str.split(',')]
+                        project_dict['disciplinas_cliente'] = disciplines
+                
+                projects_list.append(project_dict)
+            except Exception as e:
+                logger.error(f"Erro ao processar projeto na linha {_}: {e}")
         
         return projects_list
         
@@ -282,8 +281,8 @@ class WeeklyReportSystem:
         """
         projects_df = self._load_project_config()
         
-        if projects_df.empty or 'Canal_Discord' not in projects_df.columns:
-            logger.warning("Planilha não contém coluna Canal_Discord")
+        if projects_df.empty or 'discord_id' not in projects_df.columns:
+            logger.warning("Planilha não contém coluna discord_id")
             return None
         
         # Limpar IDs para comparação
@@ -291,13 +290,13 @@ class WeeklyReportSystem:
         
         # Verificar cada linha
         for _, row in projects_df.iterrows():
-            if 'Canal_Discord' in row and pd.notna(row['Canal_Discord']):
-                row_channel = str(row['Canal_Discord'])
+            if 'discord_id' in row and pd.notna(row['discord_id']):
+                row_channel = str(row['discord_id'])
                 row_channel_clean = ''.join(c for c in row_channel if c.isdigit())
                 
                 if row_channel_clean == channel_id_clean:
-                    if 'ID_Construflow' in row and pd.notna(row['ID_Construflow']):
-                        return str(row['ID_Construflow'])
+                    if 'construflow_id' in row and pd.notna(row['construflow_id']):
+                        return str(row['construflow_id'])
         
         return None
 
@@ -338,23 +337,23 @@ class WeeklyReportSystem:
         """
         projects_df = self._load_project_config()
         
-        if projects_df.empty or 'ID_Construflow' not in projects_df.columns:
+        if projects_df.empty or 'construflow_id' not in projects_df.columns:
             logger.warning("Planilha de configuração não contém as colunas necessárias")
             return None
         
-        # Verificar se a coluna Canal_Discord existe
-        if 'Canal_Discord' not in projects_df.columns:
-            logger.warning("Coluna Canal_Discord não encontrada na planilha")
+        # Verificar se a coluna discord_id existe
+        if 'discord_id' not in projects_df.columns:
+            logger.warning("Coluna discord_id não encontrada na planilha")
             return None
         
         # Filtrar projeto
-        project_row = projects_df[projects_df['ID_Construflow'] == project_id]
+        project_row = projects_df[projects_df['construflow_id'] == project_id]
         
-        if project_row.empty or pd.isna(project_row['Canal_Discord'].values[0]):
+        if project_row.empty or pd.isna(project_row['discord_id'].values[0]):
             logger.warning(f"Canal Discord não encontrado para projeto {project_id}")
             return None
         
-        channel_id = project_row['Canal_Discord'].values[0]
+        channel_id = project_row['discord_id'].values[0]
         logger.info(f"ID do canal Discord obtido: {channel_id}")
         return str(channel_id)
     
@@ -600,12 +599,12 @@ class WeeklyReportSystem:
 
         # Verificar se o projeto está ativo
         projects_df = self._load_project_config()
-        if 'Ativo' in projects_df.columns:
-            project_row = projects_df[projects_df['ID_Construflow'] == project_id]
-            if not project_row.empty and 'Ativo' in project_row.columns:
-                ativo = str(project_row['Ativo'].values[0]).lower()
+        if 'relatoriosemanal_status' in projects_df.columns:
+            project_row = projects_df[projects_df['construflow_id'] == project_id]
+            if not project_row.empty and 'relatoriosemanal_status' in project_row.columns:
+                ativo = str(project_row['relatoriosemanal_status'].values[0]).lower()
                 if ativo != 'sim':
-                    logger.warning(f"Projeto {project_id} não está ativo (Ativo={ativo}). Pulando.")
+                    logger.warning(f"Projeto {project_id} não está ativo (relatoriosemanal_status={ativo}). Pulando.")
                     return False, "", None
 
         # Obter canal Discord e nome do projeto
@@ -614,10 +613,10 @@ class WeeklyReportSystem:
         
         # Obter nome mais amigável do projeto se possível
         projects_df = self._load_project_config()
-        if not projects_df.empty and 'ID_Construflow' in projects_df.columns:
-            project_row = projects_df[projects_df['ID_Construflow'] == project_id]
-            if not project_row.empty and 'Nome_Projeto' in project_row.columns:
-                project_name = project_row['Nome_Projeto'].values[0]
+        if not projects_df.empty and 'construflow_id' in projects_df.columns:
+            project_row = projects_df[projects_df['construflow_id'] == project_id]
+            if not project_row.empty and 'Projeto - PR' in project_row.columns:
+                project_name = project_row['Projeto - PR'].values[0]
         
          # Inicializar reporter de progresso somente se NÃO estiver em modo silencioso
         progress_reporter = None
@@ -1203,13 +1202,13 @@ class WeeklyReportSystem:
             projects_df = self._load_project_config()
             
             # Filtrar projetos ativos (igual ao que o bot faz)
-            if 'Ativo' in projects_df.columns:
-                active_projects_df = projects_df[projects_df['Ativo'].str.lower() == 'sim']
+            if 'relatoriosemanal_status' in projects_df.columns:
+                active_projects_df = projects_df[projects_df['relatoriosemanal_status'].str.lower() == 'sim']
                 logger.info(f"Filtrando {len(active_projects_df)} projetos ativos de {len(projects_df)} projetos totais")
             else:
-                # Se não tiver coluna Ativo, considerar todos os projetos
+                # Se não tiver coluna relatoriosemanal_status, considerar todos os projetos
                 active_projects_df = projects_df
-                logger.info(f"Coluna 'Ativo' não encontrada. Considerando todos os {len(projects_df)} projetos.")
+                logger.info(f"Coluna 'relatoriosemanal_status' não encontrada. Considerando todos os {len(projects_df)} projetos.")
             
             # Obter lista de projetos ativos com os dados completos
             projects = self.get_active_projects()
@@ -1496,11 +1495,11 @@ if __name__ == "__main__":
             projects = system.get_active_projects()
             print(f"\nAtualizando Smartsheets para {len(projects)} projetos ativos...")
             for project in projects:
-                if project.get('ID_Smartsheet'):
+                if project.get('smartsheet_id'):
                     print(f"Atualizando Smartsheet para {project['name']}...")
                     try:
                         sheet_data = system.processor.smartsheet.get_sheet(
-                            project['ID_Smartsheet'], 
+                            project['smartsheet_id'], 
                             force_refresh=True
                         )
                         if sheet_data:

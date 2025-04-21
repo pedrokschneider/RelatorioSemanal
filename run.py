@@ -78,24 +78,24 @@ def main():
                 logger.error("Planilha de configuração vazia!")
             else:
                 # Verificar se a coluna existe
-                if 'Canal_Discord' in project_df.columns:
-                    logger.info("✅ Coluna Canal_Discord encontrada na planilha")
+                if 'discord_id' in project_df.columns:
+                    logger.info("✅ Coluna discord_id encontrada na planilha")
                     
                     # Contar quantos projetos têm valor nessa coluna
-                    projetos_com_canal = project_df['Canal_Discord'].notna().sum()
+                    projetos_com_canal = project_df['discord_id'].notna().sum()
                     total_projetos = len(project_df)
                     
                     logger.info(f"Projetos com canal Discord: {projetos_com_canal}/{total_projetos}")
                     
                     # Verificar projetos ativos
-                    if 'Ativo' in project_df.columns:
-                        projetos_ativos = project_df[project_df['Ativo'].str.lower() == 'sim']
-                        projetos_ativos_com_canal = projetos_ativos['Canal_Discord'].notna().sum()
+                    if 'relatoriosemanal_status' in project_df.columns:
+                        projetos_ativos = project_df[project_df['relatoriosemanal_status'].str.lower() == 'sim']
+                        projetos_ativos_com_canal = projetos_ativos['discord_id'].notna().sum()
                         total_ativos = len(projetos_ativos)
                         
                         logger.info(f"Projetos ATIVOS com canal Discord: {projetos_ativos_com_canal}/{total_ativos}")
                 else:
-                    logger.error("❌ Coluna Canal_Discord NÃO encontrada na planilha!")
+                    logger.error("❌ Coluna discord_id NÃO encontrada na planilha!")
                     logger.info(f"Colunas disponíveis: {', '.join(project_df.columns)}")
         except Exception as e:
             logger.error(f"Erro ao verificar colunas: {e}")

@@ -153,11 +153,11 @@ class DataProcessor:
             # Tentar carregar da planilha
             try:
                 projects_df = self.gdrive.load_project_config_from_sheet()
-                if not projects_df.empty and 'ID_Construflow' in projects_df.columns and 'Disciplinas_Cliente' in projects_df.columns:
-                    project_row = projects_df[projects_df['ID_Construflow'] == project_id]
-                    if not project_row.empty and pd.notna(project_row['Disciplinas_Cliente'].values[0]):
-                        disciplinas_str = project_row['Disciplinas_Cliente'].values[0]
-                        disciplinas_cliente = [d.strip() for d in disciplinas_str.split(';')]
+                if not projects_df.empty and 'construflow_id' in projects_df.columns and 'construflow_disciplinasclientes' in projects_df.columns:
+                    project_row = projects_df[projects_df['construflow_id'] == project_id]
+                    if not project_row.empty and pd.notna(project_row['construflow_disciplinasclientes'].values[0]):
+                        disciplinas_str = project_row['construflow_disciplinasclientes'].values[0]
+                        disciplinas_cliente = [d.strip() for d in disciplinas_str.split(',')]
             except Exception as e:
                 logger.warning(f"Erro ao obter disciplinas do cliente da planilha: {e}")
         

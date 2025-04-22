@@ -62,10 +62,40 @@ class DiscordCommandHandler:
         # Normalizar o comando
         command = command.strip().lower()
         
+        # Limpar o ID do canal (remover caracteres não numéricos)
+        clean_channel_id = re.sub(r'\D', '', str(channel_id))
+        channel_id = clean_channel_id if clean_channel_id else channel_id
+        
         # Caso não tenha project_id, tentar obter do canal
         if not project_id and self.report_system:
             try:
+                # Tenta buscar diretamente pelo método do sistema
                 project_id = self.report_system.get_project_by_discord_channel(channel_id)
+                
+                # Se não encontrou, tenta buscar manualmente com compatibilidade para nomes antigos
+                if not project_id:
+                    logger.warning(f"Projeto não encontrado pelo método get_project_by_discord_channel, tentando manualmente")
+                    
+                    # Carregar planilha de configuração
+                    projects_df = self.report_system._load_project_config(force_refresh=True)
+                    
+                    if projects_df is not None and not projects_df.empty:
+                        # Verificar colunas disponíveis
+                        if 'discord_id' in projects_df.columns:
+                            # Usando nome de coluna novo
+                            project_row = projects_df[projects_df['discord_id'] == str(channel_id)]
+                            if not project_row.empty:
+                                id_col = 'construflow_id' if 'construflow_id' in projects_df.columns else 'ID_Construflow'
+                                if id_col in project_row.columns:
+                                    project_id = str(project_row[id_col].iloc[0])
+                        elif 'Canal_Discord' in projects_df.columns:
+                            # Usando nome de coluna antigo
+                            project_row = projects_df[projects_df['Canal_Discord'] == str(channel_id)]
+                            if not project_row.empty:
+                                id_col = 'ID_Construflow' if 'ID_Construflow' in projects_df.columns else 'construflow_id'
+                                if id_col in project_row.columns:
+                                    project_id = str(project_row[id_col].iloc[0])
+                    
                 if project_id:
                     logger.info(f"ID do projeto obtido do canal Discord: {project_id}")
             except Exception as e:
@@ -76,7 +106,7 @@ class DiscordCommandHandler:
             self.discord.send_notification(
                 channel_id,
                 "❌ Erro: Não foi possível identificar o projeto associado a este canal. " +
-                "Por favor, especifique o ID do projeto."
+                "Por favor, especifique o ID do projeto ou verifique a configuração na planilha."
             )
             return False
         
@@ -96,73 +126,117 @@ class DiscordCommandHandler:
             )
             return False
     
-    def _process_report_command(self, ctx, no_wait=False):
+    def _process_report_command(self, channel_id: str, project_id: str) -> bool:
         """
         Processa um comando de relatório.
         
         Args:
-            ctx: Contexto do comando
-            no_wait: Se True, não aguarda o processamento da fila
+            channel_id: ID do canal do Discord
+            project_id: ID do projeto
             
         Returns:
             True se o comando foi processado com sucesso, False caso contrário
         """
-        if not self.report_system.is_available():
+        if not self.report_system:
             logger.error("Sistema de relatórios não está disponível")
             return False
             
         try:
-            # Carregar a configuração do projeto
-            projects_df = self.report_system._load_project_config(force_refresh=True)
-            if projects_df is None or projects_df.empty:
-                logger.error("Não foi possível carregar a configuração dos projetos")
+            # Enviar mensagem inicial
+            message_id = self.discord.send_notification(
+                channel_id,
+                f"🔄 Gerando relatório para o projeto {project_id}...",
+                return_message_id=True
+            )
+            
+            # Atualizar cache antes de gerar relatório
+            self._update_project_cache(channel_id, project_id)
+            
+            # Executar relatório
+            start_time = time.time()
+            success, file_path, doc_id = self.report_system.run_for_project(
+                project_id, 
+                quiet_mode=True, 
+                skip_notifications=False
+            )
+            
+            elapsed_time = time.time() - start_time
+            
+            # Formatar tempo decorrido
+            if elapsed_time < 60:
+                time_str = f"{elapsed_time:.1f} segundos"
+            else:
+                minutes = int(elapsed_time // 60)
+                seconds = int(elapsed_time % 60)
+                time_str = f"{minutes} minutos e {seconds} segundos"
+            
+            # Verificar resultado
+            if success:
+                logger.info(f"Relatório gerado com sucesso para projeto {project_id}")
+                
+                # Tentar obter nome do projeto
+                project_name = None
+                try:
+                    projects_df = self.report_system._load_project_config()
+                    if projects_df is not None and not projects_df.empty:
+                        # Verificar e ajustar nomes de colunas conforme necessário
+                        id_col = 'construflow_id' if 'construflow_id' in projects_df.columns else 'ID_Construflow'
+                        name_col = 'Projeto - PR' if 'Projeto - PR' in projects_df.columns else 'Nome_Projeto'
+                        
+                        if id_col in projects_df.columns and name_col in projects_df.columns:
+                            project_row = projects_df[projects_df[id_col].astype(str) == str(project_id)]
+                            if not project_row.empty:
+                                project_name = project_row[name_col].iloc[0]
+                except Exception as e:
+                    logger.error(f"Erro ao obter nome do projeto: {e}")
+                
+                # Verificar se temos um documento no Drive
+                if doc_id:
+                    doc_url = f"https://docs.google.com/document/d/{doc_id}/edit"
+                    
+                    # Enviar notificação mais informativa
+                    if project_name:
+                        message = f"✅ Relatório para **{project_name}** gerado com sucesso! (tempo: {time_str})\n\n"
+                    else:
+                        message = f"✅ Relatório para projeto **{project_id}** gerado com sucesso! (tempo: {time_str})\n\n"
+                    
+                    message += f"📄 [Acessar relatório no Google Docs]({doc_url})"
+                    
+                    self.discord.update_message(channel_id, message_id, message)
+                else:
+                    # Sem link do Drive, apenas local
+                    if project_name:
+                        message = f"⚠️ Relatório para **{project_name}** gerado localmente! (tempo: {time_str})\n\n"
+                    else:
+                        message = f"⚠️ Relatório para projeto **{project_id}** gerado localmente! (tempo: {time_str})\n\n"
+                    
+                    message += "O arquivo não pôde ser enviado para o Google Drive. Verifique as configurações."
+                    
+                    self.discord.update_message(channel_id, message_id, message)
+                
+                return True
+            else:
+                # Falha ao gerar relatório
+                self.discord.update_message(
+                    channel_id,
+                    message_id,
+                    f"❌ Erro ao gerar relatório para o projeto {project_id}. (tempo: {time_str})"
+                )
                 return False
                 
-            # Verificar e corrigir colunas para compatibilidade
-            has_old_columns = 'Canal_Discord' in projects_df.columns
-            has_new_columns = 'discord_id' in projects_df.columns
-            
-            # Situação problemática: Temos nomes novos nos métodos mas nomes antigos na planilha
-            if has_old_columns and not has_new_columns:
-                logger.warning("Detectada incompatibilidade de colunas no _process_report_command")
-                
-                # Criar cópias das colunas antigas com nomes novos para compatibilidade
-                column_map = {
-                    'ID_Construflow': 'construflow_id',
-                    'ID_Smartsheet': 'smartsheet_id',
-                    'Nome_Projeto': 'Projeto - PR',
-                    'Canal_Discord': 'discord_id',
-                    'Tipo_Discord': 'discord_tipo',
-                    'ID_Pasta_Drive': 'pastaemails_id',
-                    'Disciplinas_Cliente': 'construflow_disciplinasclientes',
-                    'Ativo': 'relatoriosemanal_status'
-                }
-                
-                # Adicionar colunas novas com dados das antigas para compatibilidade
-                for old_col, new_col in column_map.items():
-                    if old_col in projects_df.columns and new_col not in projects_df.columns:
-                        projects_df[new_col] = projects_df[old_col]
-                        logger.info(f"Adicionada coluna {new_col} como cópia de {old_col} para compatibilidade no _process_report_command")
-                
-                # Substituir o DataFrame no sistema
-                self.report_system.project_config_df = projects_df
-            
-            # Obter o ID do canal
-            channel_id = str(ctx.channel.id)
-            author = f"{ctx.author.name}#{ctx.author.discriminator}"
-            
-            # Enfileirar o relatório
-            future = self.enqueue_report(channel_id, author, no_wait=no_wait)
-            
-            if not future and not no_wait:
-                logger.error(f"Não foi possível enfileirar o relatório para o canal {channel_id}")
-                return False
-                
-            return True
-            
         except Exception as e:
             logger.error(f"Erro ao processar comando de relatório: {e}")
             logger.error(traceback.format_exc())
+            
+            # Tentar enviar mensagem de erro
+            try:
+                self.discord.send_notification(
+                    channel_id,
+                    f"❌ Erro ao gerar relatório: {str(e)}"
+                )
+            except Exception:
+                pass
+                
             return False
     
     def _process_update_command(self, channel_id: str, project_id: str) -> bool:
@@ -298,9 +372,20 @@ class DiscordCommandHandler:
         """
         if not self.report_system:
             logger.error("Sistema de relatórios não disponível")
+            self.discord.send_notification(
+                channel_id,
+                "❌ Erro: Sistema de relatórios não inicializado corretamente."
+            )
             return False
         
         try:
+            # Enviar mensagem de início
+            message_id = self.discord.send_notification(
+                channel_id,
+                f"🔄 Iniciando atualização de cache para o projeto {project_id}...",
+                return_message_id=True
+            )
+            
             # Verificar compatibilidade de colunas na planilha
             projects_df = self.report_system._load_project_config(force_refresh=True)
             if projects_df is not None and not projects_df.empty:
@@ -335,7 +420,6 @@ class DiscordCommandHandler:
             
             # Atualizar o cache para o projeto específico
             start_time = time.time()
-            message = f"🔄 Atualizando cache para o projeto {project_id}..."
             
             # Atualizar cache usando o método do sistema
             result = self.report_system._update_project_cache(project_id)
@@ -353,13 +437,27 @@ class DiscordCommandHandler:
             # Enviar mensagem de conclusão
             if result:
                 logger.info(f"Cache atualizado para projeto {project_id} em {time_str}")
+                self.discord.update_message(
+                    channel_id,
+                    message_id,
+                    f"✅ Cache atualizado com sucesso para o projeto {project_id}! (tempo: {time_str})"
+                )
                 return True
             else:
                 logger.error(f"Falha ao atualizar cache para projeto {project_id}")
+                self.discord.update_message(
+                    channel_id,
+                    message_id,
+                    f"❌ Erro ao atualizar cache para o projeto {project_id}. (tempo: {time_str})"
+                )
                 return False
                 
         except Exception as e:
             logger.error(f"Erro ao atualizar cache: {e}")
+            self.discord.send_notification(
+                channel_id,
+                f"❌ Erro ao atualizar cache: {str(e)}"
+            )
             return False
 
     def enqueue_report(self, channel_id, author, no_wait=False):

@@ -365,15 +365,39 @@ class GoogleDriveManager:
         Returns:
             DataFrame com configurações de projetos
         """
-        if not self.sheets_service or not self.config.projects_sheet_id:
-            logger.warning("Serviço do Sheets não disponível ou ID da planilha não configurado")
+        if not self.sheets_service:
+            logger.warning("Serviço do Sheets não disponível")
             return pd.DataFrame()
         
+        # Obter ID da planilha - tentar config.projects_sheet_id primeiro
+        spreadsheet_id = self.config.projects_sheet_id
+        
+        # Se não tiver, tentar obter diretamente a variável 'sheet_id'
+        if not spreadsheet_id:
+            sheet_id = os.getenv('sheet_id')
+            if sheet_id:
+                logger.info(f"Usando variável de ambiente 'sheet_id' diretamente: {sheet_id}")
+                spreadsheet_id = sheet_id
+        
+        if not spreadsheet_id:
+            logger.warning("ID da planilha não configurado")
+            return pd.DataFrame()
+            
+        # Obter nome da aba - tentar config.projects_sheet_name primeiro
+        sheet_name = self.config.projects_sheet_name
+        
+        # Se for o valor padrão, tentar obter diretamente a variável 'sheet_name'
+        if sheet_name == "Projetos":
+            env_sheet_name = os.getenv('sheet_name')
+            if env_sheet_name:
+                logger.info(f"Usando variável de ambiente 'sheet_name' diretamente: {env_sheet_name}")
+                sheet_name = env_sheet_name
+            
         try:
             # Carregar planilha de configuração de projetos
             df = self.read_sheet(
-                spreadsheet_id=self.config.projects_sheet_id,
-                range_name=f"{self.config.projects_sheet_name}!A1:Z1000"
+                spreadsheet_id=spreadsheet_id,
+                range_name=f"{sheet_name}!A1:Z1000"
             )
             
             if df.empty:
@@ -450,11 +474,8 @@ class GoogleDriveManager:
             logger.info(f"Pasta não encontrada. Criando nova pasta para o projeto {project_name}")
             
             # Determinar pasta pai
-            parent_id = self.report_base_folder_id
-            if not parent_id:
-                # Se não tiver ID de pasta base, usar raiz
-                parent_id = 'root'
-                logger.warning("ID da pasta base não configurado, usando pasta raiz")
+            parent_id = 'root'
+            logger.warning("ID da pasta base não configurado, usando pasta raiz")
             
             try:
                 folder_metadata = {

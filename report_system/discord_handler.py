@@ -7,6 +7,12 @@ import os
 import logging
 import time
 from typing import Optional, Tuple
+import re
+import pandas as pd
+from concurrent.futures import Future
+import threading
+import traceback
+from queue import Queue
 
 from report_system.config import ConfigManager
 from report_system.utils.simple_cache import SimpleCacheManager
@@ -90,88 +96,73 @@ class DiscordCommandHandler:
             )
             return False
     
-    def _process_report_command(self, channel_id: str, project_id: str) -> bool:
+    def _process_report_command(self, ctx, no_wait=False):
         """
-        Processa o comando para gerar relatório.
+        Processa um comando de relatório.
         
         Args:
-            channel_id: ID do canal do Discord
-            project_id: ID do projeto
+            ctx: Contexto do comando
+            no_wait: Se True, não aguarda o processamento da fila
             
         Returns:
             True se o comando foi processado com sucesso, False caso contrário
         """
-        if not self.report_system:
-            logger.error("Sistema de relatórios não disponível")
-            self.discord.send_notification(
-                channel_id,
-                "❌ Erro: Sistema de relatórios não disponível."
-            )
+        if not self.report_system.is_available():
+            logger.error("Sistema de relatórios não está disponível")
             return False
-        
-        # Enviar mensagem inicial
-        #self.discord.send_notification(
-        #    channel_id,
-        #    f"🔄 Iniciando geração de relatório para o projeto {project_id}..."
-        #)
-        
-        # Atualizar cache do projeto primeiro de forma otimizada
-        success = self._update_project_cache(channel_id, project_id)
-        
-        if not success:
-            self.discord.send_notification(
-                channel_id,
-                f"⚠️ Atenção: Não foi possível atualizar o cache para o projeto {project_id}. " +
-                "Continuando com os dados existentes."
-            )
-        
-        # Gerar relatório
-        try:
-            result = self.report_system.run_for_project(project_id)
-            success, file_path, drive_id = result
             
-            if success:
-                # Mensagem de sucesso
-                if drive_id:
-                    doc_url = f"https://docs.google.com/document/d/{drive_id}/edit"
-                    
-                    # Tentar obter pasta do projeto
-                    folder_url = ""
-                    try:
-                        project_folder_id = self.report_system.gdrive.get_project_folder(
-                            project_id, 
-                            self.report_system.processor.construflow.get_projects()[
-                                self.report_system.processor.construflow.get_projects()['id'] == project_id
-                            ]['name'].values[0]
-                        )
-                        folder_url = f"\n📁 [Link para a pasta do projeto](https://drive.google.com/drive/folders/{project_folder_id})"
-                    except Exception:
-                        pass
-                    
-                    self.discord.send_notification(
-                        channel_id,
-                        f"✅ Relatório gerado com sucesso!\n" +
-                        f"📄 [Link para o relatório]({doc_url})" +
-                        folder_url
-                    )
-                else:
-                    self.discord.send_notification(
-                        channel_id,
-                        f"✅ Relatório gerado localmente com sucesso, mas não foi possível enviá-lo ao Google Drive."
-                    )
-                return True
-            else:
-                self.discord.send_notification(
-                    channel_id,
-                    f"❌ Erro ao gerar relatório para o projeto {project_id}. Por favor, tente novamente mais tarde."
-                )
+        try:
+            # Carregar a configuração do projeto
+            projects_df = self.report_system._load_project_config(force_refresh=True)
+            if projects_df is None or projects_df.empty:
+                logger.error("Não foi possível carregar a configuração dos projetos")
                 return False
+                
+            # Verificar e corrigir colunas para compatibilidade
+            has_old_columns = 'Canal_Discord' in projects_df.columns
+            has_new_columns = 'discord_id' in projects_df.columns
+            
+            # Situação problemática: Temos nomes novos nos métodos mas nomes antigos na planilha
+            if has_old_columns and not has_new_columns:
+                logger.warning("Detectada incompatibilidade de colunas no _process_report_command")
+                
+                # Criar cópias das colunas antigas com nomes novos para compatibilidade
+                column_map = {
+                    'ID_Construflow': 'construflow_id',
+                    'ID_Smartsheet': 'smartsheet_id',
+                    'Nome_Projeto': 'Projeto - PR',
+                    'Canal_Discord': 'discord_id',
+                    'Tipo_Discord': 'discord_tipo',
+                    'ID_Pasta_Drive': 'pastaemails_id',
+                    'Disciplinas_Cliente': 'construflow_disciplinasclientes',
+                    'Ativo': 'relatoriosemanal_status'
+                }
+                
+                # Adicionar colunas novas com dados das antigas para compatibilidade
+                for old_col, new_col in column_map.items():
+                    if old_col in projects_df.columns and new_col not in projects_df.columns:
+                        projects_df[new_col] = projects_df[old_col]
+                        logger.info(f"Adicionada coluna {new_col} como cópia de {old_col} para compatibilidade no _process_report_command")
+                
+                # Substituir o DataFrame no sistema
+                self.report_system.project_config_df = projects_df
+            
+            # Obter o ID do canal
+            channel_id = str(ctx.channel.id)
+            author = f"{ctx.author.name}#{ctx.author.discriminator}"
+            
+            # Enfileirar o relatório
+            future = self.enqueue_report(channel_id, author, no_wait=no_wait)
+            
+            if not future and not no_wait:
+                logger.error(f"Não foi possível enfileirar o relatório para o canal {channel_id}")
+                return False
+                
+            return True
+            
         except Exception as e:
-            logger.error(f"Erro ao gerar relatório: {e}")
-            self.discord.send_notification(
-                channel_id,
-                f"❌ Erro ao gerar relatório: {str(e)}"
-            )
+            logger.error(f"Erro ao processar comando de relatório: {e}")
+            logger.error(traceback.format_exc())
             return False
     
     def _process_update_command(self, channel_id: str, project_id: str) -> bool:
@@ -303,56 +294,154 @@ class DiscordCommandHandler:
             project_id: ID do projeto
             
         Returns:
-            True se a atualização foi bem-sucedida, False caso contrário
+            True se o cache foi atualizado com sucesso, False caso contrário
+        """
+        if not self.report_system:
+            logger.error("Sistema de relatórios não disponível")
+            return False
+        
+        try:
+            # Verificar compatibilidade de colunas na planilha
+            projects_df = self.report_system._load_project_config(force_refresh=True)
+            if projects_df is not None and not projects_df.empty:
+                # Verificar e corrigir colunas para compatibilidade
+                has_old_columns = 'ID_Construflow' in projects_df.columns
+                has_new_columns = 'construflow_id' in projects_df.columns
+                
+                # Situação problemática: Temos nomes novos nos métodos mas nomes antigos na planilha
+                if has_old_columns and not has_new_columns:
+                    logger.warning("Detectada incompatibilidade de colunas na atualização de cache")
+                    
+                    # Criar cópias das colunas antigas com nomes novos para compatibilidade
+                    column_map = {
+                        'ID_Construflow': 'construflow_id',
+                        'ID_Smartsheet': 'smartsheet_id',
+                        'Nome_Projeto': 'Projeto - PR',
+                        'Canal_Discord': 'discord_id',
+                        'Tipo_Discord': 'discord_tipo',
+                        'ID_Pasta_Drive': 'pastaemails_id',
+                        'Disciplinas_Cliente': 'construflow_disciplinasclientes',
+                        'Ativo': 'relatoriosemanal_status'
+                    }
+                    
+                    # Adicionar colunas novas com dados das antigas para compatibilidade
+                    for old_col, new_col in column_map.items():
+                        if old_col in projects_df.columns and new_col not in projects_df.columns:
+                            projects_df[new_col] = projects_df[old_col]
+                            logger.info(f"Adicionada coluna {new_col} como cópia de {old_col} para compatibilidade no cache")
+                    
+                    # Substituir o DataFrame no sistema
+                    self.report_system.project_config_df = projects_df
+            
+            # Atualizar o cache para o projeto específico
+            start_time = time.time()
+            message = f"🔄 Atualizando cache para o projeto {project_id}..."
+            
+            # Atualizar cache usando o método do sistema
+            result = self.report_system._update_project_cache(project_id)
+            
+            elapsed_time = time.time() - start_time
+            
+            # Formatar o tempo decorrido
+            if elapsed_time < 60:
+                time_str = f"{elapsed_time:.1f} segundos"
+            else:
+                minutes = int(elapsed_time // 60)
+                seconds = int(elapsed_time % 60)
+                time_str = f"{minutes} minutos e {seconds} segundos"
+            
+            # Enviar mensagem de conclusão
+            if result:
+                logger.info(f"Cache atualizado para projeto {project_id} em {time_str}")
+                return True
+            else:
+                logger.error(f"Falha ao atualizar cache para projeto {project_id}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Erro ao atualizar cache: {e}")
+            return False
+
+    def enqueue_report(self, channel_id, author, no_wait=False):
+        """
+        Adiciona uma solicitação de relatório à fila para processamento assíncrono.
+        
+        Args:
+            channel_id: ID do canal Discord
+            author: Autor da solicitação
+            no_wait: Se True, não aguarda o processamento da fila
+            
+        Returns:
+            Future se no_wait=False, None caso contrário
         """
         try:
-            # Verificar se o sistema de relatórios está disponível
-            if not self.report_system:
-                logger.error("Sistema de relatórios não disponível")
-                return False
+            # Limpar o ID do canal (remover caracteres não numéricos)
+            clean_channel_id = re.sub(r'\D', '', str(channel_id))
+            channel_id = clean_channel_id if clean_channel_id else channel_id
             
-            # Verificar se o cache manager foi inicializado
-            if not self.cache_manager:
-                logger.error("Cache manager não inicializado")
-                return False
+            # Carregar a configuração do projeto
+            projects_df = self.report_system._load_project_config(force_refresh=True)
+            if projects_df is None or projects_df.empty:
+                logger.error("Não foi possível carregar a configuração dos projetos")
+                return None
+                
+            # Verificar e corrigir colunas para compatibilidade
+            has_old_columns = 'Canal_Discord' in projects_df.columns
+            has_new_columns = 'discord_id' in projects_df.columns
             
-            # Atualizar dados do Construflow
-            logger.info(f"Atualizando dados de issues do Construflow para projeto {project_id}")
-            construflow = self.report_system.processor.construflow
+            # Situação problemática: Temos nomes novos nos métodos mas nomes antigos na planilha
+            if has_old_columns and not has_new_columns:
+                logger.warning("Detectada incompatibilidade de colunas no enqueue_report")
+                
+                # Criar cópias das colunas antigas com nomes novos para compatibilidade
+                column_map = {
+                    'ID_Construflow': 'construflow_id',
+                    'ID_Smartsheet': 'smartsheet_id',
+                    'Nome_Projeto': 'Projeto - PR',
+                    'Canal_Discord': 'discord_id',
+                    'Tipo_Discord': 'discord_tipo',
+                    'ID_Pasta_Drive': 'pastaemails_id',
+                    'Disciplinas_Cliente': 'construflow_disciplinasclientes',
+                    'Ativo': 'relatoriosemanal_status'
+                }
+                
+                # Adicionar colunas novas com dados das antigas para compatibilidade
+                for old_col, new_col in column_map.items():
+                    if old_col in projects_df.columns and new_col not in projects_df.columns:
+                        projects_df[new_col] = projects_df[old_col]
+                        logger.info(f"Adicionada coluna {new_col} como cópia de {old_col} para compatibilidade no enqueue_report")
+                
+                # Substituir o DataFrame no sistema
+                self.report_system.project_config_df = projects_df
+                
+            # Filtrar projetos com o ID do canal correspondente
+            projects = projects_df[projects_df['discord_id'] == str(channel_id)]
             
-            # Obter issues do projeto
-            issues_df = construflow.get_project_issues(project_id, force_refresh=True)
-            logger.info(f"Cache de issues atualizado para projeto {project_id}: {len(issues_df)} issues")
+            if projects.empty:
+                logger.error(f"Nenhum projeto encontrado para o canal {channel_id}")
+                return None
+                
+            # Obter o primeiro projeto correspondente
+            project = projects.iloc[0]
             
-            # Salvar issues no novo sistema de cache
-            if not issues_df.empty:
-                self.cache_manager.save_construflow_data('issues', issues_df.to_dict('records'))
+            # Criar opções de relatório
+            report_options = {
+                'author': author,
+                'channel_id': channel_id,
+                'project_id': project['construflow_id'] if 'construflow_id' in project and not pd.isna(project['construflow_id']) else None,
+                'project_name': project['Projeto - PR'] if 'Projeto - PR' in project and not pd.isna(project['Projeto - PR']) else None,
+            }
             
-            # Buscar ID do Smartsheet para este projeto
-            smartsheet_id = self.report_system.get_project_smartsheet_id(project_id)
-            
-            if smartsheet_id:
-                # Atualizar dados do Smartsheet
-                logger.info(f"Atualizando dados do Smartsheet para projeto {project_id} (ID: {smartsheet_id})")
-                try:
-                    sheet_data = self.report_system.processor.smartsheet.get_sheet(
-                        smartsheet_id, 
-                        force_refresh=True
-                    )
-                    if sheet_data:
-                        logger.info(f"Cache do Smartsheet atualizado para projeto {project_id}")
-                        
-                        # Salvar dados do Smartsheet usando o novo método
-                        self.cache_manager.save_smartsheet_data(
-                            smartsheet_id, 
-                            project_id, 
-                            sheet_data
-                        )
-                except Exception as e:
-                    logger.error(f"Erro ao atualizar Smartsheet para {project_id}: {e}")
-            
-            logger.info(f"Atualização de cache para projeto {project_id} concluída")
-            return True
+            # Adicionar à fila
+            if no_wait:
+                self.report_queue.put(report_options)
+                return None
+            else:
+                future = Future()
+                self.report_queue.put((report_options, future))
+                return future
+                
         except Exception as e:
-            logger.error(f"Erro ao atualizar cache para projeto {project_id}: {e}")
-            return False
+            logger.error(f"Erro ao enfileirar relatório para o canal {channel_id}: {e}")
+            logger.error(traceback.format_exc())
+            return None

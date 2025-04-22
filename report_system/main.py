@@ -197,14 +197,50 @@ class WeeklyReportSystem:
             logger.warning("Planilha de configuração vazia ou inacessível")
             return []
         
-        # Converter IDs para string
-        projects_df['construflow_id'] = projects_df['construflow_id'].astype(str)
+        # Verificar colunas e usar fallback se necessário
+        project_id_column = 'construflow_id'
+        project_name_column = 'Projeto - PR'
+        smartsheet_id_column = 'smartsheet_id'
+        disciplines_column = 'construflow_disciplinasclientes'
+        status_column = 'relatoriosemanal_status'
         
-        # Verificar se temos a coluna relatoriosemanal_status
-        if 'relatoriosemanal_status' in projects_df.columns:
-            active_projects = projects_df[projects_df['relatoriosemanal_status'].str.lower() == 'sim']
+        # Verificar e ajustar colunas se necessário
+        if project_id_column not in projects_df.columns:
+            logger.warning(f"Coluna '{project_id_column}' não encontrada, tentando usar 'ID_Construflow'")
+            if 'ID_Construflow' in projects_df.columns:
+                project_id_column = 'ID_Construflow'
+            else:
+                logger.error("Não foi possível encontrar coluna de ID do projeto")
+                return []
+                
+        if project_name_column not in projects_df.columns:
+            logger.warning(f"Coluna '{project_name_column}' não encontrada, tentando usar 'Nome_Projeto'")
+            if 'Nome_Projeto' in projects_df.columns:
+                project_name_column = 'Nome_Projeto'
+                
+        if smartsheet_id_column not in projects_df.columns:
+            logger.warning(f"Coluna '{smartsheet_id_column}' não encontrada, tentando usar 'ID_Smartsheet'")
+            if 'ID_Smartsheet' in projects_df.columns:
+                smartsheet_id_column = 'ID_Smartsheet'
+                
+        if disciplines_column not in projects_df.columns:
+            logger.warning(f"Coluna '{disciplines_column}' não encontrada, tentando usar 'Disciplinas_Cliente'")
+            if 'Disciplinas_Cliente' in projects_df.columns:
+                disciplines_column = 'Disciplinas_Cliente'
+                
+        if status_column not in projects_df.columns:
+            logger.warning(f"Coluna '{status_column}' não encontrada, tentando usar 'Ativo'")
+            if 'Ativo' in projects_df.columns:
+                status_column = 'Ativo'
+        
+        # Converter IDs para string
+        projects_df[project_id_column] = projects_df[project_id_column].astype(str)
+        
+        # Verificar se temos a coluna de status
+        if status_column in projects_df.columns:
+            active_projects = projects_df[projects_df[status_column].str.lower() == 'sim']
         else:
-            # Se não tiver coluna relatoriosemanal_status, considerar todos os projetos
+            # Se não tiver coluna de status, considerar todos os projetos
             active_projects = projects_df
         
         logger.info(f"Total de projetos ativos: {len(active_projects)}")
@@ -214,14 +250,17 @@ class WeeklyReportSystem:
         for _, row in active_projects.iterrows():
             try:
                 project_dict = {
-                    'id': str(row['construflow_id']),
-                    'name': row.get('Projeto - PR', 'Projeto sem nome'), 
-                    'smartsheet_id': str(row.get('smartsheet_id', '')),
+                    'id': str(row[project_id_column]),
+                    'name': row.get(project_name_column, 'Projeto sem nome'), 
                 }
                 
+                # Adicionar smartsheet_id se disponível
+                if smartsheet_id_column in row and pd.notna(row[smartsheet_id_column]):
+                    project_dict['smartsheet_id'] = str(row[smartsheet_id_column])
+                
                 # Adicionar disciplinas do cliente se disponível 
-                if 'construflow_disciplinasclientes' in row and pd.notna(row['construflow_disciplinasclientes']):
-                    disciplines_str = str(row['construflow_disciplinasclientes'])
+                if disciplines_column in row and pd.notna(row[disciplines_column]):
+                    disciplines_str = str(row[disciplines_column])
                     if disciplines_str:
                         # Separar por ponto e vírgula e remover espaços extras
                         disciplines = [d.strip() for d in disciplines_str.split(';')]

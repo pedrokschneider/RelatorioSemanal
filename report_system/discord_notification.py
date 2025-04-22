@@ -144,137 +144,163 @@ class DiscordNotificationManager:
             logger.debug("Token tratado como token genérico (possivelmente webhook)")
             return token
     
-    def send_notification(self, channel_id: str, message: str, embeds: Optional[List[Dict[str, Any]]] = None, 
-                   max_retries: int = 3, retry_delay: float = 1.0, return_message_id: bool = False) -> Union[bool, str]:
+    def _split_long_message(self, message: str, max_length: int = 4000) -> List[str]:
         """
-        Envia uma notificação para um canal específico do Discord com retry automático.
+        Divide uma mensagem longa em partes menores que o limite do Discord.
         
         Args:
-            channel_id: ID do canal do Discord
-            message: Mensagem a ser enviada
-            embeds: Lista de embeds para incluir na mensagem (opcional)
-            max_retries: Número máximo de tentativas em caso de falha
-            retry_delay: Tempo de espera entre tentativas (em segundos)
-            return_message_id: Se True, retorna o ID da mensagem em vez de um booleano
+            message: Mensagem original
+            max_length: Tamanho máximo de cada parte (default: 4000)
             
         Returns:
-            True/ID da mensagem se enviado com sucesso, False/None caso contrário
+            Lista de partes da mensagem
+        """
+        if len(message) <= max_length:
+            return [message]
+            
+        parts = []
+        current_part = ""
+        
+        # Dividir por linhas para manter a formatação
+        lines = message.split('\n')
+        
+        for line in lines:
+            # Se a linha atual + a próxima linha exceder o limite
+            if len(current_part) + len(line) + 1 > max_length:
+                if current_part:
+                    parts.append(current_part.strip())
+                current_part = line
+            else:
+                if current_part:
+                    current_part += '\n' + line
+                else:
+                    current_part = line
+        
+        # Adicionar a última parte se houver
+        if current_part:
+            parts.append(current_part.strip())
+            
+        return parts
+
+    def send_notification(self, channel_id: str, message: str, embeds: Optional[List[Dict[str, Any]]] = None, 
+                   max_retries: int = 3, retry_delay: float = 2.0, return_message_id: bool = False) -> Union[bool, str]:
+        """
+        Envia uma notificação para um canal do Discord.
+        
+        Args:
+            channel_id: ID do canal
+            message: Mensagem a ser enviada
+            embeds: Lista de embeds (opcional)
+            max_retries: Número máximo de tentativas
+            retry_delay: Delay entre tentativas em segundos (default: 2.0)
+            return_message_id: Se True, retorna o ID da mensagem em vez de bool
+            
+        Returns:
+            True se enviado com sucesso, False caso contrário
+            Se return_message_id=True, retorna o ID da mensagem ou False
         """
         if not self.discord_token:
-            logger.error("Token do Discord não configurado. Impossível enviar notificação.")
-            return False if not return_message_id else None
+            logger.error("Token do Discord não configurado")
+            return False
+            
+        channel_id = self._validate_channel_id(channel_id)
+        if not channel_id:
+            logger.error("ID do canal inválido")
+            return False
+            
+        # Dividir mensagem longa em partes
+        message_parts = self._split_long_message(message)
         
-        # Limpar ID do canal
-        clean_channel_id = self._validate_channel_id(channel_id)
+        last_message_id = None
+        success = True
         
-        if not clean_channel_id:
-            logger.error(f"ID do canal inválido: {channel_id}")
-            return False if not return_message_id else None
-        
-        # Tentar todas as variações possíveis do token
-        token_variations = [
-            self.discord_token,
-            f"Bot {self.discord_token}",
-            self.discord_token.replace("Bot ", "")
-        ]
-        
-        # Verificar se é uma URL de webhook
-        is_webhook = '/api/webhooks/' in clean_channel_id or clean_channel_id.startswith(('https://', 'http://'))
-        
-        # Payload
-        payload = {
-            "content": message
+        for i, part in enumerate(message_parts):
+            # Adicionar indicador de parte se houver mais de uma
+            if len(message_parts) > 1:
+                part = f"Parte {i+1}/{len(message_parts)}:\n{part}"
+                
+            # Usar embeds apenas na última parte
+            current_embeds = embeds if i == len(message_parts) - 1 else None
+            
+            # Aumentar o delay entre partes de uma mensagem longa
+            current_retry_delay = retry_delay * (1.5 ** i)  # Backoff exponencial entre partes
+            
+            result = self._send_single_notification(
+                channel_id, part, current_embeds,
+                max_retries, current_retry_delay, return_message_id
+            )
+            
+            if not result:
+                success = False
+                break
+                
+            if return_message_id:
+                last_message_id = result
+                
+            # Aguardar entre partes da mensagem
+            if i < len(message_parts) - 1:  # Não esperar após a última parte
+                wait_time = 3.0 * (1.5 ** i)  # Aumenta o tempo de espera entre partes
+                logger.info(f"Aguardando {wait_time:.1f} segundos antes de enviar a próxima parte...")
+                time.sleep(wait_time)
+                
+        return last_message_id if return_message_id else success
+
+    def _send_single_notification(self, channel_id: str, message: str, embeds: Optional[List[Dict[str, Any]]] = None,
+                           max_retries: int = 3, retry_delay: float = 2.0, return_message_id: bool = False) -> Union[bool, str]:
+        """
+        Envia uma única parte de uma notificação.
+        """
+        headers = {
+            "Authorization": f"Bot {self.discord_token}",
+            "Content-Type": "application/json"
         }
         
-        # Adicionar embeds se fornecidos
+        payload = {"content": message}
         if embeds:
             payload["embeds"] = embeds
-        
-        # Tentar todas as variações de token e retry
-        for attempt in range(max_retries * len(token_variations)):
-            token_index = attempt % len(token_variations)
-            current_token = token_variations[token_index]
             
-            try:
-                if is_webhook:
-                    # Tratamento para webhook
-                    result = self._send_webhook_notification(clean_channel_id, message, embeds, return_message_id=return_message_id)
-                    if result:
-                        return result
-                else:
-                    # URL da API
-                    url = f"https://discord.com/api/v9/channels/{clean_channel_id}/messages"
-                    
-                    # Headers
-                    headers = {
-                        "Authorization": current_token,
-                        "Content-Type": "application/json"
-                    }
-                    
-                    logger.info(f"Enviando mensagem para o canal Discord {clean_channel_id} (tentativa {attempt+1}/{max_retries*len(token_variations)})")
-                    
-                    response = requests.post(
-                        url,
-                        data=json.dumps(payload),
-                        headers=headers,
-                        timeout=10  # 10 segundos de timeout
-                    )
-                    
-                    if response.status_code in [200, 201, 204]:
-                        logger.info(f"Notificação enviada com sucesso. Status: {response.status_code}")
-                        
-                        # Se precisamos retornar o ID da mensagem
-                        if return_message_id:
-                            try:
-                                message_data = response.json()
-                                return message_data.get('id')
-                            except Exception as e:
-                                logger.error(f"Erro ao extrair ID da mensagem: {e}")
-                                return None
-                        
-                        return True
-                    
-                    # Tratamento especial para rate limiting
-                    if response.status_code == 429:
-                        retry_info = response.json()
-                        retry_after = retry_info.get('retry_after', retry_delay)
-                        global_rate_limit = retry_info.get('global', False)
-                        
-                        if global_rate_limit:
-                            logger.warning(f"Rate limit GLOBAL atingido. Aguardando {retry_after} segundos...")
-                        else:
-                            logger.warning(f"Rate limit atingido para o canal {clean_channel_id}. Aguardando {retry_after} segundos...")
-                        
-                        # Adicionamos 1s de margem para garantir
-                        time.sleep(retry_after + 1)
-                        continue
-                    
-                    # Verificar se o problema é com o token
-                    if response.status_code == 401:
-                        logger.error(f"Token inválido (401 Unauthorized). Resposta: {response.text}")
-                        # A próxima iteração usará um formato de token diferente
-                    else:
-                        logger.error(f"Erro ao enviar notificação. Status: {response.status_code}, Resposta: {response.text}")
-                    
-                    # Aguardar antes de tentar novamente
-                    if (attempt + 1) % len(token_variations) != 0:  # Se não é o último formato de token
-                        continue  # Não aguardar, tentar próximo formato imediatamente
-                    
-                    # Backoff exponencial
-                    delay = retry_delay * (2 ** (attempt // len(token_variations)))
-                    logger.info(f"Aguardando {delay:.2f} segundos antes da próxima tentativa")
-                    time.sleep(delay)
-                    
-            except requests.RequestException as e:
-                logger.error(f"Erro de requisição HTTP: {str(e)}")
-                
-                # Backoff exponencial
-                delay = retry_delay * (2 ** (attempt // len(token_variations)))
-                logger.info(f"Aguardando {delay:.2f} segundos antes da próxima tentativa")
-                time.sleep(delay)
+        url = f"https://discord.com/api/v10/channels/{channel_id}/messages"
         
-        logger.error(f"Todas as {max_retries * len(token_variations)} tentativas falharam")
-        return False if not return_message_id else None
+        for attempt in range(max_retries):
+            try:
+                # Aumentar o delay entre tentativas
+                current_delay = retry_delay * (2 ** attempt)  # Backoff exponencial
+                if attempt > 0:
+                    logger.info(f"Tentativa {attempt + 1}/{max_retries}. Aguardando {current_delay:.1f} segundos...")
+                    time.sleep(current_delay)
+                
+                response = requests.post(url, headers=headers, json=payload)
+                
+                if response.status_code == 200:
+                    if return_message_id:
+                        return response.json()["id"]
+                    return True
+                    
+                elif response.status_code == 401:
+                    logger.error(f"Token inválido (401 Unauthorized). Resposta: {response.text}")
+                    return False
+                    
+                elif response.status_code == 429:  # Rate limit
+                    retry_after = float(response.headers.get('Retry-After', current_delay))
+                    logger.warning(f"Rate limit atingido. Aguardando {retry_after:.1f} segundos...")
+                    time.sleep(retry_after)
+                    continue
+                    
+                else:
+                    logger.error(f"Erro ao enviar notificação. Status: {response.status_code}, Resposta: {response.text}")
+                    if attempt < max_retries - 1:
+                        continue
+                    else:
+                        return False
+                        
+            except Exception as e:
+                logger.error(f"Erro ao enviar notificação: {str(e)}")
+                if attempt < max_retries - 1:
+                    continue
+                else:
+                    return False
+                    
+        return False
     
     def _send_webhook_notification(self, webhook_url: str, message: str, 
                                 embeds: Optional[List[Dict[str, Any]]] = None,

@@ -369,31 +369,33 @@ class GoogleDriveManager:
             logger.warning("Serviço do Sheets não disponível")
             return pd.DataFrame()
         
-        # Obter ID da planilha - tentar config.projects_sheet_id primeiro
-        spreadsheet_id = self.config.projects_sheet_id
-        
-        # Se não tiver, tentar obter diretamente a variável 'sheet_id'
+        # Priorizar obter o ID diretamente da variável sheet_id do .env
+        spreadsheet_id = os.getenv('sheet_id')
         if not spreadsheet_id:
-            sheet_id = os.getenv('sheet_id')
-            if sheet_id:
-                logger.info(f"Usando variável de ambiente 'sheet_id' diretamente: {sheet_id}")
-                spreadsheet_id = sheet_id
-        
+            # Se não encontrar, tentar config.projects_sheet_id (que também vem do .env)
+            spreadsheet_id = self.config.projects_sheet_id
+            logger.info(f"Usando PROJECTS_SHEET_ID: {spreadsheet_id}")
+        else:
+            logger.info(f"Usando sheet_id do .env: {spreadsheet_id}")
+            
+        # Se ainda não tiver ID, não pode continuar
         if not spreadsheet_id:
-            logger.warning("ID da planilha não configurado")
+            logger.warning("ID da planilha não configurado no .env")
             return pd.DataFrame()
-            
-        # Obter nome da aba - tentar config.projects_sheet_name primeiro
-        sheet_name = self.config.projects_sheet_name
         
-        # Se for o valor padrão, tentar obter diretamente a variável 'sheet_name'
-        if sheet_name == "Projetos":
-            env_sheet_name = os.getenv('sheet_name')
-            if env_sheet_name:
-                logger.info(f"Usando variável de ambiente 'sheet_name' diretamente: {env_sheet_name}")
-                sheet_name = env_sheet_name
-            
+        # Priorizar obter o nome da aba diretamente da variável sheet_name do .env
+        sheet_name = os.getenv('sheet_name')
+        if not sheet_name:
+            # Se não encontrar, tentar config.projects_sheet_name (que também vem do .env)
+            sheet_name = self.config.projects_sheet_name
+            logger.info(f"Usando PROJECTS_SHEET_NAME: {sheet_name}")
+        else:
+            logger.info(f"Usando sheet_name do .env: {sheet_name}")
+        
         try:
+            # Log da combinação final utilizada
+            logger.info(f"Carregando planilha com ID={spreadsheet_id}, aba={sheet_name}")
+            
             # Carregar planilha de configuração de projetos
             df = self.read_sheet(
                 spreadsheet_id=spreadsheet_id,
@@ -413,6 +415,7 @@ class GoogleDriveManager:
             
         except Exception as e:
             logger.error(f"Erro ao carregar planilha de configuração de projetos: {e}")
+            logger.error(f"Verifique se o ID da planilha {spreadsheet_id} e a aba {sheet_name} estão corretos")
             return pd.DataFrame()
     
     def get_project_folder(self, project_id, project_name):

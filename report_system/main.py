@@ -197,14 +197,50 @@ class WeeklyReportSystem:
             logger.warning("Planilha de configuração vazia ou inacessível")
             return []
         
-        # Converter IDs para string
-        projects_df['construflow_id'] = projects_df['construflow_id'].astype(str)
+        # Verificar colunas e usar fallback se necessário
+        project_id_column = 'construflow_id'
+        project_name_column = 'Projeto - PR'
+        smartsheet_id_column = 'smartsheet_id'
+        disciplines_column = 'construflow_disciplinasclientes'
+        status_column = 'relatoriosemanal_status'
         
-        # Verificar se temos a coluna relatoriosemanal_status
-        if 'relatoriosemanal_status' in projects_df.columns:
-            active_projects = projects_df[projects_df['relatoriosemanal_status'].str.lower() == 'sim']
+        # Verificar e ajustar colunas se necessário
+        if project_id_column not in projects_df.columns:
+            logger.warning(f"Coluna '{project_id_column}' não encontrada, tentando usar 'ID_Construflow'")
+            if 'ID_Construflow' in projects_df.columns:
+                project_id_column = 'ID_Construflow'
+            else:
+                logger.error("Não foi possível encontrar coluna de ID do projeto")
+                return []
+                
+        if project_name_column not in projects_df.columns:
+            logger.warning(f"Coluna '{project_name_column}' não encontrada, tentando usar 'Nome_Projeto'")
+            if 'Nome_Projeto' in projects_df.columns:
+                project_name_column = 'Nome_Projeto'
+                
+        if smartsheet_id_column not in projects_df.columns:
+            logger.warning(f"Coluna '{smartsheet_id_column}' não encontrada, tentando usar 'ID_Smartsheet'")
+            if 'ID_Smartsheet' in projects_df.columns:
+                smartsheet_id_column = 'ID_Smartsheet'
+                
+        if disciplines_column not in projects_df.columns:
+            logger.warning(f"Coluna '{disciplines_column}' não encontrada, tentando usar 'Disciplinas_Cliente'")
+            if 'Disciplinas_Cliente' in projects_df.columns:
+                disciplines_column = 'Disciplinas_Cliente'
+                
+        if status_column not in projects_df.columns:
+            logger.warning(f"Coluna '{status_column}' não encontrada, tentando usar 'Ativo'")
+            if 'Ativo' in projects_df.columns:
+                status_column = 'Ativo'
+        
+        # Converter IDs para string
+        projects_df[project_id_column] = projects_df[project_id_column].astype(str)
+        
+        # Verificar se temos a coluna de status
+        if status_column in projects_df.columns:
+            active_projects = projects_df[projects_df[status_column].str.lower() == 'sim']
         else:
-            # Se não tiver coluna relatoriosemanal_status, considerar todos os projetos
+            # Se não tiver coluna de status, considerar todos os projetos
             active_projects = projects_df
         
         logger.info(f"Total de projetos ativos: {len(active_projects)}")
@@ -214,17 +250,20 @@ class WeeklyReportSystem:
         for _, row in active_projects.iterrows():
             try:
                 project_dict = {
-                    'id': str(row['construflow_id']),
-                    'name': row.get('Projeto - PR', 'Projeto sem nome'), 
-                    'smartsheet_id': str(row.get('smartsheet_id', '')),
+                    'id': str(row[project_id_column]),
+                    'name': row.get(project_name_column, 'Projeto sem nome'), 
                 }
                 
+                # Adicionar smartsheet_id se disponível
+                if smartsheet_id_column in row and pd.notna(row[smartsheet_id_column]):
+                    project_dict['smartsheet_id'] = str(row[smartsheet_id_column])
+                
                 # Adicionar disciplinas do cliente se disponível 
-                if 'construflow_disciplinasclientes' in row and pd.notna(row['construflow_disciplinasclientes']):
-                    disciplines_str = str(row['construflow_disciplinasclientes'])
+                if disciplines_column in row and pd.notna(row[disciplines_column]):
+                    disciplines_str = str(row[disciplines_column])
                     if disciplines_str:
-                        # Separar por vírgula e remover espaços extras
-                        disciplines = [d.strip() for d in disciplines_str.split(',')]
+                        # Separar por ponto e vírgula e remover espaços extras
+                        disciplines = [d.strip() for d in disciplines_str.split(';')]
                         project_dict['disciplinas_cliente'] = disciplines
                 
                 projects_list.append(project_dict)
@@ -281,22 +320,39 @@ class WeeklyReportSystem:
         """
         projects_df = self._load_project_config()
         
-        if projects_df.empty or 'discord_id' not in projects_df.columns:
-            logger.warning("Planilha não contém coluna discord_id")
+        if projects_df.empty:
+            logger.warning("Planilha de projetos vazia")
             return None
+            
+        # Verificar se a coluna discord_id existe
+        if 'discord_id' not in projects_df.columns:
+            # Tentar com o nome antigo da coluna
+            if 'Canal_Discord' in projects_df.columns:
+                logger.warning("Usando nome antigo da coluna: Canal_Discord")
+                discord_column = 'Canal_Discord'
+            else:
+                logger.warning("Planilha não contém coluna de canal Discord")
+                return None
+        else:
+            discord_column = 'discord_id'
         
         # Limpar IDs para comparação
         channel_id_clean = ''.join(c for c in channel_id if c.isdigit())
         
         # Verificar cada linha
         for _, row in projects_df.iterrows():
-            if 'discord_id' in row and pd.notna(row['discord_id']):
-                row_channel = str(row['discord_id'])
+            if discord_column in row and pd.notna(row[discord_column]):
+                row_channel = str(row[discord_column])
                 row_channel_clean = ''.join(c for c in row_channel if c.isdigit())
                 
                 if row_channel_clean == channel_id_clean:
+                    # Verificar coluna construflow_id
                     if 'construflow_id' in row and pd.notna(row['construflow_id']):
                         return str(row['construflow_id'])
+                    # Tentar com o nome antigo da coluna
+                    elif 'ID_Construflow' in row and pd.notna(row['ID_Construflow']):
+                        logger.warning("Usando nome antigo da coluna: ID_Construflow")
+                        return str(row['ID_Construflow'])
         
         return None
 
@@ -337,23 +393,42 @@ class WeeklyReportSystem:
         """
         projects_df = self._load_project_config()
         
-        if projects_df.empty or 'construflow_id' not in projects_df.columns:
-            logger.warning("Planilha de configuração não contém as colunas necessárias")
+        if projects_df.empty:
+            logger.warning("Planilha de configuração vazia")
             return None
+            
+        # Verificar colunas do ID do projeto
+        if 'construflow_id' not in projects_df.columns:
+            # Tentar com o nome antigo da coluna
+            if 'ID_Construflow' in projects_df.columns:
+                logger.warning("Usando nome antigo da coluna: ID_Construflow")
+                project_id_column = 'ID_Construflow'
+            else:
+                logger.warning("Planilha de configuração não contém coluna de ID do projeto")
+                return None
+        else:
+            project_id_column = 'construflow_id'
         
-        # Verificar se a coluna discord_id existe
+        # Verificar coluna do canal Discord
         if 'discord_id' not in projects_df.columns:
-            logger.warning("Coluna discord_id não encontrada na planilha")
-            return None
+            # Tentar com o nome antigo da coluna
+            if 'Canal_Discord' in projects_df.columns:
+                logger.warning("Usando nome antigo da coluna: Canal_Discord")
+                discord_column = 'Canal_Discord'
+            else:
+                logger.warning("Coluna de canal Discord não encontrada na planilha")
+                return None
+        else:
+            discord_column = 'discord_id'
         
-        # Filtrar projeto
-        project_row = projects_df[projects_df['construflow_id'] == project_id]
+        # Filtrar projeto - converter project_id para string para comparação segura
+        project_row = projects_df[projects_df[project_id_column].astype(str) == str(project_id)]
         
-        if project_row.empty or pd.isna(project_row['discord_id'].values[0]):
+        if project_row.empty or pd.isna(project_row[discord_column].values[0]):
             logger.warning(f"Canal Discord não encontrado para projeto {project_id}")
             return None
         
-        channel_id = project_row['discord_id'].values[0]
+        channel_id = project_row[discord_column].values[0]
         logger.info(f"ID do canal Discord obtido: {channel_id}")
         return str(channel_id)
     
@@ -416,7 +491,7 @@ class WeeklyReportSystem:
             True se a atualização foi bem-sucedida, False caso contrário
         """
         try:
-            from concurrent.futures import ThreadPoolExecutor
+            from concurrent.futures import ThreadPoolExecutor, as_completed
             
             logger.info(f"Atualizando cache para o projeto {project_id} antes de gerar relatório")
             
@@ -444,77 +519,46 @@ class WeeklyReportSystem:
                 except Exception as e:
                     logger.error(f"Erro ao atualizar disciplines em thread paralela: {e}")
                     return None
-                    
-            def update_issue_disciplines():
-                try:
-                    logger.info("Atualizando arquivo issues-disciplines (thread paralela)")
-                    issue_disciplines_data = construflow.get_data("issues-disciplines", force_refresh=True, use_cache=False)
-                    if issue_disciplines_data and hasattr(cache, 'save_construflow_data'):
-                        cache.save_construflow_data("issues-disciplines", issue_disciplines_data)
-                        logger.info(f"Arquivo issues-disciplines atualizado com {len(issue_disciplines_data)} registros")
-                        return issue_disciplines_data
-                    return None
-                except Exception as e:
-                    logger.error(f"Erro ao atualizar issues-disciplines em thread paralela: {e}")
-                    return None
-                    
+            
             def update_issues():
                 try:
                     logger.info("Atualizando arquivo issues (thread paralela)")
-                    # Obter todas as issues sem filtro
                     issues_data = construflow.get_data("issues", force_refresh=True, use_cache=False)
-                    
                     if issues_data and hasattr(cache, 'save_construflow_data'):
-                        # Converter para DataFrame para verificação (apenas para log)
-                        issues_df = pd.DataFrame(issues_data)
-                        
-                        # Salvar todas as issues no cache
                         cache.save_construflow_data("issues", issues_data)
-                        
-                        # Log informativo sobre issues deste projeto
-                        try:
-                            issues_df['projectId'] = issues_df['projectId'].astype(str)
-                            project_issues = issues_df[issues_df['projectId'] == str(project_id)]
-                            logger.info(f"Identificadas {len(project_issues)} issues para o projeto {project_id} " +
-                                    f"de um total de {len(issues_df)} issues")
-                        except Exception as e:
-                            logger.warning(f"Erro ao analisar issues para o projeto {project_id}: {e}")
-                        
+                        logger.info(f"Arquivo issues atualizado com {len(issues_data)} registros")
                         return issues_data
                     return None
                 except Exception as e:
                     logger.error(f"Erro ao atualizar issues em thread paralela: {e}")
                     return None
             
-            def update_projects():
+            def update_issues_disciplines():
                 try:
-                    logger.info("Atualizando arquivo projects (thread paralela)")
-                    projects_data = construflow.get_data("projects", force_refresh=True, use_cache=False)
-                    if projects_data and hasattr(cache, 'save_construflow_data'):
-                        cache.save_construflow_data("projects", projects_data)
-                        logger.info(f"Arquivo projects atualizado")
-                        return projects_data
+                    logger.info("Atualizando arquivo issues-disciplines (thread paralela)")
+                    issues_disciplines_data = construflow.get_data("issues-disciplines", force_refresh=True, use_cache=False)
+                    if issues_disciplines_data and hasattr(cache, 'save_construflow_data'):
+                        cache.save_construflow_data("issues-disciplines", issues_disciplines_data)
+                        logger.info(f"Arquivo issues-disciplines atualizado com {len(issues_disciplines_data)} registros")
+                        return issues_disciplines_data
                     return None
                 except Exception as e:
-                    logger.error(f"Erro ao atualizar projects em thread paralela: {e}")
+                    logger.error(f"Erro ao atualizar issues-disciplines em thread paralela: {e}")
                     return None
             
-            # 1. Atualizar projects, disciplines, issues-disciplines e issues em paralelo
-            with ThreadPoolExecutor(max_workers=4) as executor:
-                # Submeter tarefas
-                logger.info("Iniciando atualização paralela de projects, disciplines, issues-disciplines e issues")
-                future_projects = executor.submit(update_projects)
-                future_disciplines = executor.submit(update_disciplines)
-                future_issue_disciplines = executor.submit(update_issue_disciplines)
-                future_issues = executor.submit(update_issues)
+            # Executar atualizações em paralelo
+            futures = []
+            with ThreadPoolExecutor(max_workers=3) as executor:
+                futures.append(executor.submit(update_disciplines))
+                futures.append(executor.submit(update_issues))
+                futures.append(executor.submit(update_issues_disciplines))
                 
-                # Aguardar conclusão e obter resultados
-                projects_data = future_projects.result()
-                disciplines_data = future_disciplines.result()
-                issue_disciplines_data = future_issue_disciplines.result()
-                issues_data = future_issues.result()
-                
-                logger.info("Atualização paralela concluída")
+                # Aguardar conclusão de todas as threads
+                for future in as_completed(futures):
+                    try:
+                        future.result()
+                    except Exception as e:
+                        logger.error(f"Erro em thread paralela: {e}")
             
             # 2. Buscar e atualizar o Smartsheet separadamente (precisa do ID do Smartsheet)
             try:
@@ -545,11 +589,99 @@ class WeeklyReportSystem:
             except Exception as e:
                 logger.error(f"Erro ao atualizar dados do Smartsheet: {e}")
             
-            logger.info(f"Atualização de cache para projeto {project_id} concluída")
             return True
+            
         except Exception as e:
             logger.error(f"Erro ao atualizar cache para projeto {project_id}: {e}")
             return False
+
+    def execute_with_retry(self, request, max_retries=3, initial_delay=1):
+        """
+        Executa uma requisição com retry em caso de falha.
+        
+        Args:
+            request: Requisição a ser executada
+            max_retries: Número máximo de tentativas
+            initial_delay: Delay inicial entre tentativas em segundos
+            
+        Returns:
+            Resposta da requisição
+        """
+        for attempt in range(max_retries):
+            try:
+                return request.execute()
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    raise
+                delay = initial_delay * (2 ** attempt)  # Exponential backoff
+                logger.warning(f"Tentativa {attempt + 1} falhou. Aguardando {delay} segundos antes de tentar novamente.")
+                time.sleep(delay)
+
+    def create_google_doc_with_links(self, docs_service, drive_service, title, project_data, parent_folder_id=None):
+        """
+        Cria um documento do Google com links formatados.
+        
+        Args:
+            docs_service: Serviço do Google Docs
+            drive_service: Serviço do Google Drive
+            title: Título do documento
+            project_data: Dados do projeto
+            parent_folder_id: ID da pasta pai (opcional)
+            
+        Returns:
+            ID do documento criado
+        """
+        try:
+            # 1. Criar documento
+            document = {
+                'title': title
+            }
+            
+            if parent_folder_id:
+                document['parents'] = [{'id': parent_folder_id}]
+            
+            document = self.execute_with_retry(
+                drive_service.files().create(
+                    body=document,
+                    fields='id'
+                )
+            )
+            document_id = document.get('id')
+            
+            if not document_id:
+                raise Exception("Não foi possível criar o documento")
+            
+            # 2. Preparar conteúdo
+            content = []
+            if 'issues' in project_data:
+                for issue in project_data['issues']:
+                    if 'url' in issue:
+                        content.append(f"- {issue.get('title', 'Sem título')}: {issue['url']}")
+            
+            # 3. Inserir conteúdo
+            requests = [{
+                'insertText': {
+                    'location': {
+                        'index': 1
+                    },
+                    'text': '\n'.join(content)
+                }
+            }]
+            
+            # 4. Aplicar formatação
+            self.execute_with_retry(
+                docs_service.documents().batchUpdate(
+                    documentId=document_id,
+                    body={'requests': requests}
+                )
+            )
+            
+            logger.info(f"Documento criado com sucesso: {document_id}")
+            return document_id
+            
+        except Exception as e:
+            logger.error(f"Erro ao criar documento: {e}")
+            return None
 
     def _format_final_success_message(self, project_name, doc_url, folder_url=None):
         """
@@ -582,497 +714,58 @@ class WeeklyReportSystem:
         
         return "\n".join(message)
 
-    def run_for_project(self, project_id, quiet_mode=False, skip_cache_update=False, skip_notifications=False) -> Tuple[bool, str, Optional[str]]:
+    def run_for_project(self, project_id: str) -> Tuple[bool, str, str]:
         """
-        Executa o processo completo para um projeto, atualizando o cache primeiro.
+        Executa o relatório para um projeto específico.
         
-        Args:
-            project_id: ID do projeto
-            quiet_mode: Se deve operar em modo silencioso
-            skip_cache_update: Se True, pula a atualização do cache (use quando já foi atualizado)
-            skip_notifications: Se True, não envia notificações para o Discord
-            
         Returns:
-            Tupla com (sucesso, caminho_arquivo, id_drive)
+            Tuple[bool, str, str]: (sucesso, nome_do_projeto, id_do_documento)
         """
-        self.quiet_mode = quiet_mode
-
-        # Verificar se o projeto está ativo
-        projects_df = self._load_project_config()
-        if 'relatoriosemanal_status' in projects_df.columns:
-            project_row = projects_df[projects_df['construflow_id'] == project_id]
-            if not project_row.empty and 'relatoriosemanal_status' in project_row.columns:
-                ativo = str(project_row['relatoriosemanal_status'].values[0]).lower()
-                if ativo != 'sim':
-                    logger.warning(f"Projeto {project_id} não está ativo (relatoriosemanal_status={ativo}). Pulando.")
-                    return False, "", None
-
-        # Obter canal Discord e nome do projeto
-        discord_channel_id = self.get_project_discord_channel(project_id)
-        project_name = "Projeto"  # Valor padrão
-        
-        # Obter nome mais amigável do projeto se possível
-        projects_df = self._load_project_config()
-        if not projects_df.empty and 'construflow_id' in projects_df.columns:
-            project_row = projects_df[projects_df['construflow_id'] == project_id]
-            if not project_row.empty and 'Projeto - PR' in project_row.columns:
-                project_name = project_row['Projeto - PR'].values[0]
-        
-         # Inicializar reporter de progresso somente se NÃO estiver em modo silencioso
-        progress_reporter = None
-        if discord_channel_id and not quiet_mode:
-            try:
-                from report_system.utils.progress_reporter import ProgressReporter
-                progress_reporter = ProgressReporter(
-                    channel_id=discord_channel_id,
-                    project_name=project_name,
-                    send_message_func=self.send_discord_notification
-                )
-                progress_reporter.start()
-            except ImportError:
-                logger.warning("Módulo progress_reporter não encontrado. Continuando sem atualizações de progresso.")
-        
         try:
-            # Buscar o ID do Smartsheet para este projeto (independente de atualização de cache)
-            smartsheet_id = self.get_project_smartsheet_id(project_id)
+            logger.info(f"Processando dados para projeto {project_id}")
             
-            if not skip_cache_update:
-                # Atualizar o cache para este projeto específico
-                logger.info(f"Atualizando cache para o projeto {project_id} antes de gerar relatório")
-  
-                if progress_reporter:
-                    progress_reporter.update("Atualização de cache", "Obtendo dados mais recentes...")      
-                self._update_project_cache(project_id)
-            else:
-                logger.info(f"Pulando atualização de cache para o projeto {project_id} (já atualizado)")
-            
-            if progress_reporter:
-                progress_reporter.update("Processamento de dados", "Analisando informações do projeto...")
-                
-            # Verificar se temos um ID de Smartsheet válido
-            if not smartsheet_id:
-                logger.warning(f"ID do Smartsheet não encontrado para o projeto {project_id}. Alguns dados podem estar incompletos.")
-                smartsheet_id = None  # Garantir que é None e não outro valor que represente "falso"
-            
-            # Chamar process_project_data com proteção adicional
-            try:
-                project_data = self.processor.process_project_data(project_id, smartsheet_id)
-            except Exception as e:
-                logger.error(f"Erro ao processar dados do projeto {project_id}: {e}")
-                
-                # Se o erro foi causado por dados do Smartsheet, tentar novamente sem usar Smartsheet
-                if smartsheet_id is not None:
-                    logger.info(f"Tentando processar projeto {project_id} novamente sem usar dados do Smartsheet")
-                    project_data = self.processor.process_project_data(project_id, None)
-                else:
-                    # Se já estamos tentando sem Smartsheet, propagar o erro
-                    raise
-            
-            if not project_data or not project_data.get('project_name'):
-                logger.error(f"Projeto {project_id} não encontrado ou sem dados")
-                
-                if progress_reporter:
-                    progress_reporter.complete(
-                        success=False, 
-                        final_message=f"❌ **Erro:** Não foi possível encontrar dados para o projeto {project_name}."
-                    )
-                    
-                return False, "", None
-            
-            # Atualizar o nome do projeto se necessário
-            if project_name == "Projeto" and project_data.get('project_name'):
-                project_name = project_data['project_name']
-            
+            # Carregar dados do projeto
+            project_data = self._load_project_data(project_id)
+            if not project_data:
+                logger.error(f"Não foi possível carregar dados para o projeto {project_id}")
+                return False, "", ""
+
+            # Verificar se temos dados necessários
+            if not project_data.get('construflow_data'):
+                logger.warning(f"Dados do Construflow não encontrados para o projeto {project_id}")
+                return False, "", ""
+
             # Gerar relatório
-            if progress_reporter:
-                progress_reporter.update("Geração de relatório", "Criando conteúdo do relatório...")
-                
             report_text = self.generator.generate_report(project_data)
-            
-            # Salvar localmente primeiro
-            file_path = self.generator.save_report(
-                report_text, 
-                project_data['project_name']
-            )
-            
-            if not file_path:
-                logger.error(f"Erro ao salvar relatório para projeto {project_id}")
-                
-                if progress_reporter:
-                    progress_reporter.complete(
-                        success=False, 
-                        final_message=f"❌ **Erro:** Falha ao salvar o relatório para {project_name}."
-                    )
-                    
-                return False, "", None
-            
-            # Obter a pasta específica do projeto a partir da planilha de configuração
-            if progress_reporter:
-                progress_reporter.update("Upload do relatório", "Preparando o upload para o Google Drive...")
-                
-            project_folder_id = self.gdrive.get_project_folder(
-                project_id, 
-                project_data['project_name']
-            )
-            
-            if not project_folder_id:
-                logger.warning(f"ID da pasta do Drive não encontrado para projeto {project_id}")
-                logger.warning(f"Relatório salvo apenas localmente em {file_path}")
-                
-                if progress_reporter:
-                    progress_reporter.complete(
-                        success=True, 
-                        final_message=(
-                            f"⚠️ **Relatório parcialmente concluído para {project_name}**\n"
-                            f"O relatório foi gerado mas não foi possível encontrar a pasta do Google Drive.\n"
-                            f"O arquivo está disponível apenas localmente."
-                        )
-                    )
-                    
-                return True, file_path, None
-            
-            # Formatar data atual
-            today_str = datetime.now().strftime("%d/%m/%Y")
-            
-            # Inicializar serviços do Google
-            try:
-                from googleapiclient.discovery import build
-                
-                # Obter credenciais do gerenciador de configuração
-                creds = self.config.get_google_creds()
-                
-                if not creds:
-                    logger.error("Credenciais do Google não disponíveis")
-                    
-                    # Fazer upload do arquivo como fallback
-                    if progress_reporter:
-                        progress_reporter.update(
-                            "Upload alternativo", 
-                            "Tentando método alternativo de upload (sem credenciais)..."
-                        )
-                    
-                    file_name = f"Relatório Semanal - {project_data['project_name']} - {today_str}.md"
-                    file_id = self.gdrive.upload_file(
-                        file_path=file_path,
-                        name=file_name,
-                        parent_id=project_folder_id
-                    )
-                    
-                    if progress_reporter:
-                        if file_id:
-                            drive_url = f"https://drive.google.com/file/d/{file_id}/view"
-                            progress_reporter.complete(
-                                success=True,
-                                final_message=(
-                                    f"✅ **Relatório de {project_name} concluído!**\n"
-                                    f"O relatório foi enviado como arquivo markdown.\n"
-                                    f"📄 [Link para o relatório]({drive_url})"
-                                )
-                            )
-                        else:
-                            progress_reporter.complete(
-                                success=False,
-                                final_message=(
-                                    f"⚠️ **Relatório parcialmente concluído para {project_name}**\n"
-                                    f"O relatório foi gerado mas não foi possível enviá-lo ao Google Drive.\n"
-                                    f"O arquivo está disponível apenas localmente."
-                                )
-                            )
-                    
-                    return True, file_path, file_id
-                
-                # Criar serviços do Google
-                if progress_reporter:
-                    progress_reporter.update("Criação de documento", "Configurando serviços do Google Docs...")
-                    
-                drive_service = build('drive', 'v3', credentials=creds)
-                docs_service = build('docs', 'v1', credentials=creds)
-                
-                # Criar documento do Google Docs com links funcionais
-                doc_title = f"Relatório Semanal - {project_data['project_name']} - {today_str}"
-                
-                if progress_reporter:
-                    progress_reporter.update("Finalização", "Gerando documento do Google Docs com links...")
-                    
-                doc_id = self.create_google_doc_with_links(
-                    docs_service=docs_service,
-                    drive_service=drive_service,
-                    title=doc_title,
-                    project_data=project_data,
-                    parent_folder_id=project_folder_id
-                )
-                
-                logger.info(f"Documento Google Docs criado com ID: {doc_id}")
-                
-                # Finalizar e enviar mensagem final
-                if doc_id and progress_reporter:
-                    doc_url = f"https://docs.google.com/document/d/{doc_id}/edit"
-                    folder_url = f"https://drive.google.com/drive/folders/{project_folder_id}"
-                    
-                    final_message = (
-                        f"✅ **Relatório de {project_name} concluído com sucesso!**\n\n"
-                        f"📄 [Link para o relatório]({doc_url})\n"
-                        f"📁 [Link para a pasta do projeto]({folder_url})"
-                    )
-                    
-                    progress_reporter.complete(success=True, final_message=final_message)
-                elif progress_reporter:
-                    progress_reporter.complete(
-                        success=False, 
-                        final_message=f"❌ **Erro:** Falha ao criar documento no Google Docs para {project_name}."
-                    )
-                
-                return True, file_path, doc_id
-                
-            except Exception as e:
-                logger.error(f"Erro ao criar documento no Google Docs: {e}")
-                
-                # Fazer upload do arquivo como fallback
-                if progress_reporter:
-                    progress_reporter.update(
-                        "Upload alternativo", 
-                        "Tentando método alternativo de upload após erro..."
-                    )
-                
-                file_name = f"Relatório Semanal - {project_data['project_name']} - {today_str}.md"
-                file_id = self.gdrive.upload_file(
-                    file_path=file_path,
-                    name=file_name,
-                    parent_id=project_folder_id
-                )
-                
-                if progress_reporter:
-                    if file_id:
-                        drive_url = f"https://drive.google.com/file/d/{file_id}/view"
-                        progress_reporter.complete(
-                            success=True,
-                            final_message=(
-                                f"✅ **Relatório de {project_name} concluído!**\n"
-                                f"O relatório foi enviado como arquivo markdown.\n"
-                                f"📄 [Link para o relatório]({drive_url})"
-                            )
-                        )
-                    else:
-                        progress_reporter.complete(
-                            success=False,
-                            final_message=(
-                                f"⚠️ **Relatório parcialmente concluído para {project_name}**\n"
-                                f"O relatório foi gerado mas não foi possível enviá-lo ao Google Drive.\n"
-                                f"O arquivo está disponível apenas localmente."
-                            )
-                        )
-                
-                # Adicionar return aqui para caso de exceção, usando file_id consistentemente
-                return True, file_path, file_id
-                    
-        except Exception as e:
-            logger.error(f"Erro ao processar projeto {project_id}: {str(e)}", exc_info=True)
-            
-            if progress_reporter:
-                progress_reporter.complete(
-                    success=False,
-                    final_message=(
-                        f"❌ **Erro fatal ao gerar relatório para {project_name}**\n"
-                        f"Erro: {str(e)}\n"
-                        f"Por favor, contate o suporte técnico."
-                    )
-                )
-            
-            return False, "", None
+            if not report_text:
+                logger.error(f"Não foi possível gerar relatório para o projeto {project_id}")
+                return False, "", ""
 
-    def create_google_doc_with_links(self, docs_service, drive_service, title, project_data, parent_folder_id=None):
-        """
-        Cria um documento Google Docs com links funcionais para os apontamentos.
-        
-        Versão simplificada que processa apenas os links de apontamentos no formato #XXXX,
-        sem tentar formatar os cabeçalhos Markdown.
-        
-        Args:
-            docs_service: Serviço Google Docs
-            drive_service: Serviço Google Drive
-            title: Título do documento
-            project_data: Dados do projeto
-            parent_folder_id: ID da pasta onde salvar o documento (opcional)
+            # Salvar relatório
+            project_name = project_data.get('project_name', 'Projeto sem nome')
+            doc_path = self.generator.save_report(report_text, project_name)
             
-        Returns:
-            ID do documento criado no Google Docs
-        """
-        # 1. Criar documento vazio
-        doc_body = {'title': title}
+            if not doc_path:
+                logger.error(f"Não foi possível salvar relatório para o projeto {project_id}")
+                return False, project_name, ""
 
-        # Função auxiliar para fazer requisições com retry e backoff
-        def execute_with_retry(request, max_retries=5):
-            for retry in range(max_retries):
-                try:
-                    return request.execute()
-                except googleapiclient.errors.HttpError as e:
-                    if e.resp.status == 429 or e.resp.status in [500, 503]:  
-                        wait_time = 60  # Wait for 1 minute
-                        logger.warning(f"Rate limit hit. Waiting {wait_time}s before retry.")
-                        time.sleep(wait_time)
-                    else:
-                        raise
-                except Exception as e:
-                    logger.error(f"Error executing request: {e}")
-                    raise
-
-            raise Exception(f"Failed after {max_retries} attempts")
-
-        # Criar documento com retry
-        try:
-            doc = execute_with_retry(docs_service.documents().create(body=doc_body))
-            document_id = doc.get('documentId')
-        except Exception as e:
-            logger.error(f"Erro ao criar documento: {e}")
-            return None
-        
-        # 2. Mover para a pasta correta, se especificada
-        if parent_folder_id:
-            try:
-                drive_service.files().update(
-                    fileId=document_id,
-                    addParents=parent_folder_id,
-                    fields='id, parents',
-                    supportsAllDrives=True
-                ).execute()
-            except Exception as e:
-                logger.warning(f"Erro ao mover documento para pasta: {e}")
-        
-        # 3. Gerar relatório com os links já construídos corretamente
-        original_report = self.generator.generate_report(project_data)
-        
-        # 4. Extrair os links do formato markdown e substituir por texto simples com os mesmos links
-        import re
-        
-        # Função para substituir os links em formato markdown por texto simples
-        def replace_markdown_links(text):
-            """Substitui links no formato [#XXXX](URL) por #XXXX sem mostrar a URL"""
-            
-            def replace_func(match):
-                link_text = match.group(1)
-                url = match.group(2)
-                # Armazenar o par código-URL para processamento posterior
-                if link_text.startswith('#'):
-                    code = link_text[1:]  # Remover o '#' para obter apenas o número
-                    links_info.append({
-                        'code': code,
-                        'url': url
-                    })
-                return link_text  # Retornar apenas o texto do link, sem a URL
-                
-            links_info = []
-            # Substituir todos os links markdown [texto](url) por apenas o texto
-            modified_text = re.sub(r'\[(.*?)\]\((.*?)\)', replace_func, text)
-            
-            return modified_text, links_info
-        
-        # Processar o relatório para remover as URLs visíveis
-        clean_report, links_info = replace_markdown_links(original_report)
-        
-        # 5. Inserir o texto limpo no documento
-        try:
-            execute_with_retry(
-                docs_service.documents().batchUpdate(
-                    documentId=document_id,
-                    body={
-                        'requests': [{
-                            'insertText': {
-                                'location': {'index': 1},
-                                'text': clean_report
-                            }
-                        }]
-                    }
-                )
+            # Criar documento no Google Drive
+            doc_id = self.gdrive.create_google_doc_with_links(
+                self.gdrive.docs_service,
+                self.gdrive.drive_service,
+                f"Relatório Semanal - {project_name}",
+                project_data
             )
-        except Exception as e:
-            logger.error(f"Erro ao inserir texto no documento: {e}")
-            return document_id  # Retornar o ID mesmo assim, para que o usuário possa acessar o documento incompleto
-        
-        # 6. Obter o documento para encontrar as posições dos códigos
-        try:
-            search_response = execute_with_retry(
-                docs_service.documents().get(documentId=document_id)
-            )
-            content = search_response.get('body', {}).get('content', [])
-        except Exception as e:
-            logger.error(f"Erro ao obter conteúdo do documento: {e}")
-            return document_id
-        
-        # 7. Criar solicitações para adicionar links
-        link_requests = []
-        
-        # Processar cada código de apontamento
-        for link_info in links_info:
-            code = link_info['code']
-            url = link_info['url']
-            search_text = f"#{code}"
+
+            if not doc_id:
+                logger.error(f"Não foi possível criar documento no Google Drive para o projeto {project_id}")
+                return False, project_name, ""
+
+            return True, project_name, doc_id
             
-            # Procurar todas as ocorrências do código no documento
-            for item in content:
-                if 'paragraph' in item:
-                    paragraph = item.get('paragraph', {})
-                    elements = paragraph.get('elements', [])
-                    
-                    for element in elements:
-                        text_run = element.get('textRun', {})
-                        content_text = text_run.get('content', '')
-                        
-                        if search_text in content_text:
-                            # Encontrar a posição exata do código no texto
-                            local_start = content_text.find(search_text)
-                            start_index = element.get('startIndex', 0) + local_start
-                            end_index = start_index + len(search_text)
-                            
-                            # Aplicar negrito ao código do apontamento
-                            link_requests.append({
-                                'updateTextStyle': {
-                                    'range': {
-                                        'startIndex': start_index,
-                                        'endIndex': end_index
-                                    },
-                                    'textStyle': {
-                                        'bold': True
-                                    },
-                                    'fields': 'bold'
-                                }
-                            })
-                            
-                            # Adicionar o link usando a URL
-                            link_requests.append({
-                                'updateTextStyle': {
-                                    'range': {
-                                        'startIndex': start_index,
-                                        'endIndex': end_index
-                                    },
-                                    'textStyle': {
-                                        'link': {'url': url}
-                                    },
-                                    'fields': 'link'
-                                }
-                            })
-        
-        # 8. Aplicar os links em lotes
-        if link_requests:
-            batch_size = 20  # Limitar o tamanho dos lotes para evitar erros
-            for i in range(0, len(link_requests), batch_size):
-                batch = link_requests[i:i+batch_size]
-                
-                try:
-                    execute_with_retry(
-                        docs_service.documents().batchUpdate(
-                            documentId=document_id,
-                            body={'requests': batch}
-                        )
-                    )
-                    # Adicionar uma pausa entre lotes
-                    if i + batch_size < len(link_requests):
-                        time.sleep(1)  # Pausa de 1 segundo entre lotes
-                except Exception as e:
-                    logger.error(f"Erro ao processar lote de links {i//batch_size + 1}: {e}")
-                    # Continuar com o próximo lote mesmo em caso de erro
-        
-        logger.info(f"Documento criado com sucesso: {document_id}")
-        return document_id
+        except Exception as e:
+            logger.error(f"Erro ao processar projeto {project_id}: {e}")
+            return False, "", ""
 
     def update_all_cache(self, projects):
         """
@@ -1323,6 +1016,40 @@ class WeeklyReportSystem:
             # Se não tiver método de status, criar DataFrame vazio
             return pd.DataFrame(columns=['cache_key', 'source', 'last_update', 'age_hours', 'is_valid'])
 
+    def _load_project_data(self, project_id: str) -> Optional[Dict]:
+        """Carrega os dados do projeto a partir do cache."""
+        try:
+            # Usar o cache_manager da instância
+            if not self.cache_manager:
+                logger.error("Cache manager não inicializado")
+                return None
+            
+            # Carregar dados do Construflow
+            construflow_data = {
+                'projects': self.cache_manager.load_cache('construflow', 'projects'),
+                'issues': self.cache_manager.load_cache('construflow', 'issues'),
+                'disciplines': self.cache_manager.load_cache('construflow', 'disciplines'),
+                'issues_disciplines': self.cache_manager.load_cache('construflow', 'issues-disciplines')
+            }
+            
+            # Carregar dados do Smartsheet
+            smartsheet_id = self.get_project_smartsheet_id(project_id)
+            if smartsheet_id:
+                smartsheet_data = self.cache_manager.load_cache('smartsheet', f'sheet_{smartsheet_id}')
+                if smartsheet_data:
+                    construflow_data['smartsheet'] = smartsheet_data
+            
+            # Processar dados
+            project_data = self.processor.process_project_data(project_id, smartsheet_id)
+            if project_data:
+                project_data['construflow_data'] = construflow_data
+            
+            return project_data
+            
+        except Exception as e:
+            logger.error(f"Erro ao carregar dados do projeto {project_id}: {e}")
+            return None
+
 # Funções de utilidade para execução
 def is_running_in_colab():
     """Verifica se o código está sendo executado no Google Colab."""
@@ -1517,21 +1244,17 @@ if __name__ == "__main__":
         print(f"Executando apenas para o projeto {project_id}")
         result = system.run_for_project(project_id)
         
-        status = "✅ Sucesso" if result[0] else "❌ Falha"
+        status = "✅ Sucesso" if result else "❌ Falha"
         print(f"Projeto {project_id}: {status}")
-        if result[0]:
-            print(f"  - Arquivo local: {result[1]}")
-            if result[2]:
-                print(f"  - ID no Drive: {result[2]}")
+        if result:
+            print(f"  - Arquivo local: {result}")
     else:
         # Executar para todos os projetos ativos
         results = system.run_scheduled(force=args.force)
         
         # Exibir resultados
-        for project_id, (success, file_path, drive_id) in results.items():
-            status = "✅ Sucesso" if success else "❌ Falha"
+        for project_id, result in results.items():
+            status = "✅ Sucesso" if result else "❌ Falha"
             print(f"Projeto {project_id}: {status}")
-            if success:
-                print(f"  - Arquivo local: {file_path}")
-                if drive_id:
-                    print(f"  - ID no Drive: {drive_id}")
+            if result:
+                print(f"  - Arquivo local: {result}")

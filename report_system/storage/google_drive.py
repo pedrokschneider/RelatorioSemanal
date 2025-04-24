@@ -365,15 +365,41 @@ class GoogleDriveManager:
         Returns:
             DataFrame com configurações de projetos
         """
-        if not self.sheets_service or not self.config.projects_sheet_id:
-            logger.warning("Serviço do Sheets não disponível ou ID da planilha não configurado")
+        if not self.sheets_service:
+            logger.warning("Serviço do Sheets não disponível")
             return pd.DataFrame()
         
+        # Priorizar obter o ID diretamente da variável sheet_id do .env
+        spreadsheet_id = os.getenv('sheet_id')
+        if not spreadsheet_id:
+            # Se não encontrar, tentar config.projects_sheet_id (que também vem do .env)
+            spreadsheet_id = self.config.projects_sheet_id
+            logger.info(f"Usando PROJECTS_SHEET_ID: {spreadsheet_id}")
+        else:
+            logger.info(f"Usando sheet_id do .env: {spreadsheet_id}")
+            
+        # Se ainda não tiver ID, não pode continuar
+        if not spreadsheet_id:
+            logger.warning("ID da planilha não configurado no .env")
+            return pd.DataFrame()
+        
+        # Priorizar obter o nome da aba diretamente da variável sheet_name do .env
+        sheet_name = os.getenv('sheet_name')
+        if not sheet_name:
+            # Se não encontrar, tentar config.projects_sheet_name (que também vem do .env)
+            sheet_name = self.config.projects_sheet_name
+            logger.info(f"Usando PROJECTS_SHEET_NAME: {sheet_name}")
+        else:
+            logger.info(f"Usando sheet_name do .env: {sheet_name}")
+        
         try:
+            # Log da combinação final utilizada
+            logger.info(f"Carregando planilha com ID={spreadsheet_id}, aba={sheet_name}")
+            
             # Carregar planilha de configuração de projetos
             df = self.read_sheet(
-                spreadsheet_id=self.config.projects_sheet_id,
-                range_name=f"{self.config.projects_sheet_name}!A1:Z1000"
+                spreadsheet_id=spreadsheet_id,
+                range_name=f"{sheet_name}!A1:Z1000"
             )
             
             if df.empty:
@@ -389,6 +415,7 @@ class GoogleDriveManager:
             
         except Exception as e:
             logger.error(f"Erro ao carregar planilha de configuração de projetos: {e}")
+            logger.error(f"Verifique se o ID da planilha {spreadsheet_id} e a aba {sheet_name} estão corretos")
             return pd.DataFrame()
     
     def get_project_folder(self, project_id, project_name):
@@ -450,11 +477,8 @@ class GoogleDriveManager:
             logger.info(f"Pasta não encontrada. Criando nova pasta para o projeto {project_name}")
             
             # Determinar pasta pai
-            parent_id = self.report_base_folder_id
-            if not parent_id:
-                # Se não tiver ID de pasta base, usar raiz
-                parent_id = 'root'
-                logger.warning("ID da pasta base não configurado, usando pasta raiz")
+            parent_id = 'root'
+            logger.warning("ID da pasta base não configurado, usando pasta raiz")
             
             try:
                 folder_metadata = {

@@ -150,17 +150,28 @@ Qualquer dúvida, estamos à disposição!
         # e se foi passado por um WeeklyReportSystem
         return None
     
-    def _gerar_apontamentos_cliente(self, data: Dict[str, Any]) -> str:
-        """Gera a seção de apontamentos que precisam de resposta do cliente."""
-        project_id = data.get('project_id', '')
-        
+    def _gerar_apontamentos_cliente(self, data: Dict) -> str:
+        """Gera a seção de apontamentos do cliente."""
+        if not data or not isinstance(data, dict):
+            logger.warning("Dados inválidos para geração de apontamentos do cliente")
+            return ""
+
+        construflow_data = data.get('construflow_data', {})
+        if not construflow_data:
+            logger.warning("Dados do Construflow não encontrados")
+            return ""
+
+        active_issues = construflow_data.get('active_issues', [])
+        if not active_issues:
+            logger.info("Nenhuma issue ativa encontrada para o projeto")
+            return ""
+
         # Verificar se temos dados de apontamentos
         if not data.get('construflow_data', {}).get('active_issues'):
             return "Sem apontamentos pendentes para o cliente nesta semana."
             
         # Obter apontamentos do cliente
         system = self._get_system_instance()
-        active_issues = data.get('construflow_data', {}).get('active_issues', [])
         client_issues = data.get('construflow_data', {}).get('client_issues', [])
         
         # Usar client_issues se disponível, caso contrário tentar filtrar active_issues
@@ -172,7 +183,7 @@ Qualquer dúvida, estamos à disposição!
                 import pandas as pd
                 if system and hasattr(system, 'filter_client_issues') and active_issues:
                     df_issues = pd.DataFrame(active_issues)
-                    filtered_issues = system.filter_client_issues(df_issues, project_id).to_dict('records')
+                    filtered_issues = system.filter_client_issues(df_issues, data.get('project_id', '')).to_dict('records')
                     client_issues = filtered_issues
                     logger.info(f"Filtrados {len(client_issues)} apontamentos via system.filter_client_issues")
             except Exception as e:

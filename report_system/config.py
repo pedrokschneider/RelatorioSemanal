@@ -52,6 +52,9 @@ class ConfigManager:
         self.projects_sheet_id = self.get_env_var("PROJECTS_SHEET_ID")
         self.projects_sheet_name = self.get_env_var("PROJECTS_SHEET_NAME", "Projetos")
         
+        # API key do Google Sheets (opcional)
+        self.sheet_api_key = self.get_env_var("sheet_api_key")
+        
         # Caminho para templates de prompt
         self.prompt_template_path = self.get_env_var("PROMPT_TEMPLATE_PATH", "templates/prompt_template.txt")
         

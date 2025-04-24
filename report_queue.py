@@ -248,25 +248,72 @@ class ReportQueue:
         logger.info(f"Worker {worker_id} executando relatório para {project_name} (canal {channel_id})")
         
         try:
-            # Executar o processo redirecionando saída para console
+            # Executar o processo redirecionando saída para capturar o URL
             cmd = [sys.executable, script_path, "--channel", channel_id, "--quiet"]
             
             # Imprimir comando que será executado
             logger.info(f"Executando: {' '.join(cmd)}")
             
-            # Processo com saída redirecionada para o console atual
+            # Processo com saída capturada para obter URL
             result = subprocess.run(
                 cmd,
-                stdout=sys.stdout,  # Redirecionar para console
-                stderr=sys.stderr,  # Redirecionar para console
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True
             )
             
             # Verificar resultado
             if result.returncode == 0:
-                # Mensagem de sucesso
-                message = f"✅ **Relatório de {project_name} gerado com sucesso!**"
-                self.send_message_with_rate_limit(channel_id, message)
+                # Procurar URL do documento na saída
+                doc_url = None
+                for line in result.stdout.split('\n'):
+                    if "docs.google.com/document" in line:
+                        doc_url = line.strip()
+                        break
+                
+                # Importamos aqui para evitar importação circular
+                from report_system.main import WeeklyReportSystem
+                system = WeeklyReportSystem()
+                
+                # Se temos um URL do documento, formatar a mensagem completa
+                if doc_url:
+                    # Tentar obter o ID do projeto a partir do canal
+                    project_id = system.get_project_by_discord_channel(channel_id)
+                    
+                    # Tentar obter a pasta do projeto
+                    folder_url = None
+                    if project_id:
+                        try:
+                            project_folder_id = system.gdrive.get_project_folder(project_id, project_name)
+                            if project_folder_id:
+                                folder_url = f"https://drive.google.com/drive/folders/{project_folder_id}"
+                        except Exception as e:
+                            logger.warning(f"Erro ao obter pasta do projeto: {e}")
+                    
+                    # Usar o formato de mensagem padrão
+                    message = [
+                        "🎉 Relatório Semanal Concluído!",
+                        "",
+                        f"📋 Projeto: {project_name}",
+                        "",
+                        f"📄 [Abrir Relatório]({doc_url})"
+                    ]
+                    
+                    if folder_url:
+                        message.append(f"📁 [Abrir Pasta do Projeto]({folder_url})")
+                    
+                    message.extend([
+                        "",
+                        "✅ O relatório foi gerado com sucesso e está pronto para ser compartilhado.",
+                        "🔄 Para gerar um novo relatório, use o comando !relatorio neste canal."
+                    ])
+                    
+                    formatted_message = "\n".join(message)
+                    self.send_message_with_rate_limit(channel_id, formatted_message)
+                else:
+                    # Mensagem de sucesso simplificada se não encontrarmos o URL
+                    message = f"✅ **Relatório de {project_name} gerado com sucesso!**"
+                    self.send_message_with_rate_limit(channel_id, message)
                 return True
             else:
                 # Mensagem de erro

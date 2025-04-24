@@ -109,12 +109,6 @@ class DiscordCommandHandler:
             )
             return False
         
-        # Enviar mensagem inicial
-        #self.discord.send_notification(
-        #    channel_id,
-        #    f"🔄 Iniciando geração de relatório para o projeto {project_id}..."
-        #)
-        
         # Atualizar cache do projeto primeiro de forma otimizada
         success = self._update_project_cache(channel_id, project_id)
         
@@ -136,23 +130,31 @@ class DiscordCommandHandler:
                     doc_url = f"https://docs.google.com/document/d/{drive_id}/edit"
                     
                     # Tentar obter pasta do projeto
-                    folder_url = ""
+                    project_folder_id = None
                     try:
+                        # Obter nome do projeto
+                        project_name = self.report_system.processor.construflow.get_projects()[
+                            self.report_system.processor.construflow.get_projects()['id'] == project_id
+                        ]['name'].values[0]
+                        
                         project_folder_id = self.report_system.gdrive.get_project_folder(
                             project_id, 
-                            self.report_system.processor.construflow.get_projects()[
-                                self.report_system.processor.construflow.get_projects()['id'] == project_id
-                            ]['name'].values[0]
+                            project_name
                         )
-                        folder_url = f"\n📁 [Link para a pasta do projeto](https://drive.google.com/drive/folders/{project_folder_id})"
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.warning(f"Erro ao obter pasta do projeto: {e}")
+                        project_name = "Projeto"
                     
+                    # Usar o formato de mensagem padrão do sistema
+                    folder_url = f"https://drive.google.com/drive/folders/{project_folder_id}" if project_folder_id else None
+                    
+                    # Usar a função de formatação do sistema principal
+                    final_message = self.report_system._format_final_success_message(project_name, doc_url, folder_url)
+                    
+                    # Enviar a mensagem formatada
                     self.discord.send_notification(
                         channel_id,
-                        f"✅ Relatório gerado com sucesso!\n" +
-                        f"📄 [Link para o relatório]({doc_url})" +
-                        folder_url
+                        final_message
                     )
                 else:
                     self.discord.send_notification(

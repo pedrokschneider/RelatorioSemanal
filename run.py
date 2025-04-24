@@ -154,11 +154,13 @@ def main():
                 
                 # Criar mensagem de resumo
                 message = f"### Resumo da Execução do Relatório\n"
-                message += f"**Projeto:** {project_name} (ID: {project_id})\n"
-                message += f"**Status:** {status}\n"
+                message += f"**Projeto com Sucesso:**\n- {project_name}\n\n"
+                message += f"**Projeto com Falha:**\n- Nenhum\n\n"
                 
-                if result[0] and doc_id:
-                    message += f"**Link do Relatório:** https://docs.google.com/document/d/{doc_id}/edit\n"
+                if not result[0]:
+                    message = f"### Resumo da Execução do Relatório\n"
+                    message += f"**Projeto com Sucesso:**\n- Nenhum\n\n"
+                    message += f"**Projeto com Falha:**\n- {project_name}\n\n"
                 
                 # Enviar notificação
                 system.discord.send_admin_notification(message)
@@ -198,12 +200,12 @@ def main():
                     if drive_id:
                         doc_url = f"https://docs.google.com/document/d/{drive_id}/edit"
                         logger.info(f"  - Link do relatório: {doc_url}")
-                        success_projects.append(f"- **{project_name}** (ID: {project_id}): [Link do Relatório]({doc_url})")
+                        success_projects.append(f"- {project_name}")
                     else:
-                        success_projects.append(f"- **{project_name}** (ID: {project_id})")
+                        success_projects.append(f"- {project_name}")
                 else:
                     falhas += 1
-                    failed_projects.append(f"- **{project_name}** (ID: {project_id})")
+                    failed_projects.append(f"- {project_name}")
             
             logger.info(f"\nResumo: {sucessos} projetos com sucesso, {falhas} falhas")
             
@@ -211,7 +213,7 @@ def main():
             if success_projects:
                 admin_message += "\n".join(success_projects) + "\n\n"
             else:
-                admin_message += "- Nenhum projeto completado com sucesso\n\n"
+                admin_message += "- Nenhum projeto com sucesso\n\n"
                 
             admin_message += "#### Projetos com Falha:\n"
             if failed_projects:

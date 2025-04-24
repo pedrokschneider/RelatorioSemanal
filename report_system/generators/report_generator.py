@@ -197,15 +197,84 @@ Qualquer dúvida, estamos à disposição!
             todo_issues = client_issues
             logger.warning("Nenhum apontamento com status 'todo' encontrado, usando lista original")
         
-        # Resultado final com novo formato de link solicitado
-        result = ""
+        # Obter todas as issues do projeto do cache (issues_cache)
+        all_issues = data.get('construflow_data', {}).get('all_issues', [])
+        issues_cache = {}
+        
+        # Criar um dicionário de issues por code para busca rápida
+        # Isso é necessário para garantir que o link correto para o apontamento seja gerado
+        # usando o ID do apontamento que está em issues_cache, não em issues-disciplines_cache
+        for issue in all_issues:
+            # O projectId pode não estar disponível após o merge, então confiamos que
+            # todas as issues em all_issues são do projeto atual
+            if issue.get('code'):
+                issues_cache[str(issue.get('code'))] = issue
+        
+        logger.info(f"Encontradas {len(issues_cache)} issues no cache para busca por code")
+        
+        # Agora vamos buscar nos dados originais de issues para garantir que o ID correto seja obtido
+        try:
+            # Tentar obter diretamente do connector
+            if hasattr(self, 'construflow') and self.construflow:
+                issues_df = self.construflow.get_issues()
+            elif system and hasattr(system, 'processor') and hasattr(system.processor, 'construflow'):
+                issues_df = system.processor.construflow.get_issues()
+            else:
+                issues_df = None
+            
+            if issues_df is not None and not issues_df.empty:
+                # Converter para dicionário para busca rápida
+                # Chave é uma tupla (project_id, code)
+                raw_issues = {}
+                for _, row in issues_df.iterrows():
+                    if pd.notna(row.get('code')) and pd.notna(row.get('projectId')):
+                        key = (str(row['projectId']), str(row['code']))
+                        raw_issues[key] = row.to_dict()
+                
+                logger.info(f"Carregadas {len(raw_issues)} issues brutas para busca precisa por (projectId, code)")
+        except Exception as e:
+            logger.warning(f"Erro ao carregar issues brutas: {e}")
+            raw_issues = {}
+        
+        # Agrupar issues por prioridade
+        issues_por_prioridade = {
+            'alta': [],
+            'media': [],
+            'baixa': [],
+            'sem_prioridade': []
+        }
+        
+        # Processar cada issue para encontrar o ID correto e criar o link
         for issue in todo_issues:
             issue_code = str(issue.get('code', 'N/A'))
             issue_title = issue.get('title', 'Apontamento sem título')
-            issue_id = issue.get('id')
             
-            # Construir o link para o apontamento
-            construflow_url = f"https://app.construflow.com.br/workspace/project/{project_id}/issues?issueId={issue_id}"
+            # Buscar o ID correto primeiro no dicionário de issues brutas usando (project_id, code)
+            correct_issue_id = None
+            
+            # 1. Primeiro tentar encontrar o ID exato nas issues brutas (melhor opção)
+            if raw_issues and (str(project_id), issue_code) in raw_issues:
+                correct_issue_id = raw_issues[(str(project_id), issue_code)]['id']
+                priority_raw = raw_issues[(str(project_id), issue_code)].get('priority')
+                logger.info(f"Encontrado ID direto por (projectId, code) para o apontamento {issue_code}: {correct_issue_id}")
+            # 2. Se não encontrar, tentar no issues_cache (pode ser menos preciso devido ao merge)
+            elif issue_code in issues_cache and issues_cache[issue_code].get('id'):
+                correct_issue_id = issues_cache[issue_code].get('id')
+                priority_raw = issues_cache[issue_code].get('priority')
+                logger.info(f"Encontrado ID via issues_cache para o apontamento {issue_code}: {correct_issue_id}")
+            # 3. Fallback para o ID atual (antigo)
+            else:
+                correct_issue_id = issue.get('id')
+                priority_raw = issue.get('priority')
+                if correct_issue_id:
+                    logger.warning(f"Não foi encontrado ID para o apontamento {issue_code}. Usando ID atual: {correct_issue_id}")
+                else:
+                    # Se nem o ID antigo estiver disponível, usar um ID genérico (não ideal, mas evita links quebrados)
+                    correct_issue_id = "0"
+                    logger.error(f"Não foi possível determinar o ID para o apontamento {issue_code}. Usando ID genérico.")
+            
+            # Construir o link para o apontamento com o ID correto
+            construflow_url = f"https://app.construflow.com.br/workspace/project/{project_id}/issues?issueId={correct_issue_id}"
         
             # Calcular tempo de abertura
             dias_aberto = ""
@@ -236,11 +305,55 @@ Qualquer dúvida, estamos à disposição!
                 except Exception:
                     pass
             
-            # Apenas o código é o link (apenas o "#1234" será clicável)
-            # O resto do texto (título e dias aberto) ficará como texto normal
-            result += f"[#{issue_code}]({construflow_url}) – {issue_title} {dias_aberto}\n"
+            # Determinar em qual grupo de prioridade colocar essa issue
+            priority = str(priority_raw).lower() if priority_raw else None
+            
+            # Mapeamento de valores possíveis de prioridade
+            if priority in ['high', 'alta', '3', 3]:
+                priority_group = 'alta'
+            elif priority in ['medium', 'media', 'média', '2', 2]:
+                priority_group = 'media'
+            elif priority in ['low', 'baixa', '1', 1]:
+                priority_group = 'baixa'
+            else:
+                priority_group = 'sem_prioridade'
+            
+            # Armazenar a linha formatada no grupo correto
+            issue_line = f"[#{issue_code}]({construflow_url}) – {issue_title} {dias_aberto}"
+            issues_por_prioridade[priority_group].append(issue_line)
         
-        return result if result else "Sem apontamentos pendentes para o cliente nesta semana."
+        # Construir o resultado final agrupado por prioridade
+        result = ""
+        
+        # Prioridade Alta - Vermelho
+        if issues_por_prioridade['alta']:
+            result += "🔴 Prioridade Alta\n"
+            for issue_line in issues_por_prioridade['alta']:
+                result += f"- {issue_line}\n"
+            result += "\n"
+        
+        # Prioridade Média - Laranja
+        if issues_por_prioridade['media']:
+            result += "🟠 Prioridade Média\n"
+            for issue_line in issues_por_prioridade['media']:
+                result += f"- {issue_line}\n"
+            result += "\n"
+        
+        # Prioridade Baixa - Verde
+        if issues_por_prioridade['baixa']:
+            result += "🟢 Prioridade Baixa\n"
+            for issue_line in issues_por_prioridade['baixa']:
+                result += f"- {issue_line}\n"
+            result += "\n"
+        
+        # Sem prioridade definida
+        if issues_por_prioridade['sem_prioridade']:
+            result += "⚪ Sem Prioridade Definida\n"
+            for issue_line in issues_por_prioridade['sem_prioridade']:
+                result += f"- {issue_line}\n"
+            result += "\n"
+        
+        return result.strip() if result else "Sem apontamentos pendentes para o cliente nesta semana."
 
     def _gerar_tarefas_realizadas(self, data: Dict[str, Any]) -> str:
         """Gera a seção de tarefas realizadas no período."""
@@ -543,7 +656,7 @@ Qualquer dúvida, estamos à disposição!
         return "\n".join(linhas)
 
     def save_report(self, report_text: str, project_name: str, 
-                   format_type: str = 'docx') -> str:
+                   format_type: str = 'md') -> str:
         """
         Salva o relatório em um arquivo local.
         
@@ -560,47 +673,119 @@ Qualquer dúvida, estamos à disposição!
         safe_project_name = ''.join(c if c.isalnum() or c in ' -_' else '_' for c in project_name)
         safe_project_name = safe_project_name.replace(" ", "_")
         
+        # Priorizar formato MD para melhor compatibilidade com Google Docs
+        if format_type.lower() == 'md' or format_type.lower() == 'markdown':
+            # Salvar como arquivo markdown
+            file_name = f"Relatorio_{safe_project_name}_{today_str}.md"
+            file_path = os.path.join(self.reports_dir, file_name)
+            
+            try:
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(report_text)
+                logger.info(f"Relatório salvo como MD em {file_path}")
+                return file_path
+            except Exception as e:
+                logger.error(f"Erro ao salvar relatório MD: {e}")
+                
+                # Tentar salvar em um local alternativo
+                alt_path = os.path.join(os.getcwd(), file_name)
+                try:
+                    with open(alt_path, 'w', encoding='utf-8') as f:
+                        f.write(report_text)
+                    logger.info(f"Relatório MD salvo em local alternativo: '{alt_path}'")
+                    return alt_path
+                except Exception as e2:
+                    logger.error(f"Erro ao salvar relatório MD em local alternativo: {e2}")
+                    # Continuar com outros formatos
+        
+        # Formato DOCX se solicitado
         if format_type.lower() == 'docx':
             # Salvar como arquivo Word (.docx)
             try:
                 from docx import Document
+                from docx.shared import RGBColor, Pt
+                from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
+                
                 doc = Document()
                 
                 # Adicionar título
-                doc.add_heading(f"Relatório Semanal - {project_name}", level=1)
+                title = doc.add_heading(f"Relatório Semanal - {project_name}", level=1)
+                title.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
                 
                 # Quebrar o relatório em parágrafos e adicioná-los ao documento
                 paragraphs = report_text.split('\n')
                 current_para = None
+                in_priority_section = None
                 
                 for line in paragraphs:
-                    # Verificar se é um cabeçalho
-                    if line.startswith('###'):
-                        # Tratar como cabeçalho de seção
-                        doc.add_heading(line.strip('#').strip(), level=2)
+                    # Verificar se é um cabeçalho de prioridade
+                    if "🔴 Prioridade Alta" in line:
+                        heading = doc.add_heading("🔴 Prioridade Alta", level=2)
+                        for run in heading.runs:
+                            run.font.color.rgb = RGBColor(255, 0, 0)  # Vermelho
                         current_para = None
-                    elif line.startswith('##'):
+                        in_priority_section = "alta"
+                        continue
+                    elif "🟠 Prioridade Média" in line:
+                        heading = doc.add_heading("🟠 Prioridade Média", level=2)
+                        for run in heading.runs:
+                            run.font.color.rgb = RGBColor(255, 140, 0)  # Laranja
+                        current_para = None
+                        in_priority_section = "media"
+                        continue
+                    elif "🟢 Prioridade Baixa" in line:
+                        heading = doc.add_heading("🟢 Prioridade Baixa", level=2)
+                        for run in heading.runs:
+                            run.font.color.rgb = RGBColor(0, 180, 0)  # Verde
+                        current_para = None
+                        in_priority_section = "baixa"
+                        continue
+                    elif "⚪ Sem Prioridade" in line:
+                        heading = doc.add_heading("⚪ Sem Prioridade Definida", level=2)
+                        current_para = None
+                        in_priority_section = "sem_prioridade"
+                        continue
+                    # Verificar se é um cabeçalho (de arquivo prompt_template.txt)
+                    elif line.startswith('## '):
                         # Tratar como cabeçalho de seção (versão V2)
                         doc.add_heading(line.strip('#').strip(), level=2)
                         current_para = None
+                        in_priority_section = None
                     elif line.startswith('#'):
                         # Tratar como cabeçalho de documento (versão V2)
                         doc.add_heading(line.strip('#').strip(), level=1)
                         current_para = None
+                        in_priority_section = None
                     elif line.strip() == '':
                         # Linha em branco, finalizar parágrafo atual
                         current_para = None
+                        in_priority_section = None
                     else:
-                        # Linha normal
-                        if current_para is None:
-                            # Iniciar novo parágrafo
-                            current_para = doc.add_paragraph()
-                        
-                        # Adicionar linha ao parágrafo atual
-                        if current_para.text:
-                            current_para.add_run('\n' + line)
+                        # Para item de lista dentro de seção de prioridade
+                        if line.strip().startswith('- ') and in_priority_section:
+                            item_text = line.strip()[2:]  # Remover o "- " do início
+                            item_para = doc.add_paragraph()
+                            item_para.style = 'List Bullet'
+                            
+                            # Colorir o texto baseado na prioridade
+                            item_run = item_para.add_run(item_text)
+                            if in_priority_section == "alta":
+                                item_run.font.color.rgb = RGBColor(180, 0, 0)  # Vermelho mais escuro para texto
+                            elif in_priority_section == "media":
+                                item_run.font.color.rgb = RGBColor(200, 100, 0)  # Laranja mais escuro para texto
+                            
+                            current_para = None  # Reset para não adicionar à seção atual
                         else:
-                            current_para.text = line
+                            # Linha normal
+                            if current_para is None:
+                                # Iniciar novo parágrafo
+                                current_para = doc.add_paragraph()
+                            
+                            # Adicionar linha ao parágrafo atual
+                            if current_para.text:
+                                current_para.add_run('\n' + line)
+                            else:
+                                current_para.text = line
                 
                 # Salvar o documento
                 file_name = f"Relatorio_{safe_project_name}_{today_str}.docx"
@@ -614,31 +799,7 @@ Qualquer dúvida, estamos à disposição!
                 logger.warning("Módulo python-docx não encontrado. Salvando como TXT.")
                 format_type = 'txt'
         
-        if format_type.lower() == 'md':
-            # Salvar como arquivo markdown
-            file_name = f"Relatorio_{safe_project_name}_{today_str}.md"
-            file_path = os.path.join(self.reports_dir, file_name)
-            
-            try:
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    f.write(report_text)
-                logger.info(f"Relatório salvo como MD em {file_path}")
-                return file_path
-            except Exception as e:
-                logger.error(f"Erro ao salvar relatório: {e}")
-                
-                # Tentar salvar em um local alternativo
-                alt_path = os.path.join(os.getcwd(), file_name)
-                try:
-                    with open(alt_path, 'w', encoding='utf-8') as f:
-                        f.write(report_text)
-                    logger.info(f"Relatório salvo em local alternativo: '{alt_path}'")
-                    return alt_path
-                except Exception as e2:
-                    logger.error(f"Erro ao salvar relatório em local alternativo: {e2}")
-                    return ""
-        
-        # Padrão - salvar como TXT
+        # Padrão - salvar como TXT se nenhum dos outros formatos funcionou
         file_name = f"Relatorio_{safe_project_name}_{today_str}.txt"
         file_path = os.path.join(self.reports_dir, file_name)
         
@@ -648,15 +809,15 @@ Qualquer dúvida, estamos à disposição!
             logger.info(f"Relatório salvo como TXT em {file_path}")
             return file_path
         except Exception as e:
-            logger.error(f"Erro ao salvar relatório: {e}")
+            logger.error(f"Erro ao salvar relatório TXT: {e}")
             
             # Tentar salvar em um local alternativo
             alt_path = os.path.join(os.getcwd(), file_name)
             try:
                 with open(alt_path, 'w', encoding='utf-8') as f:
                     f.write(report_text)
-                logger.info(f"Relatório salvo em local alternativo: '{alt_path}'")
+                logger.info(f"Relatório TXT salvo em local alternativo: '{alt_path}'")
                 return alt_path
             except Exception as e2:
-                logger.error(f"Erro ao salvar relatório em local alternativo: {e2}")
+                logger.error(f"Erro ao salvar relatório TXT em local alternativo: {e2}")
                 return ""

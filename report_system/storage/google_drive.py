@@ -569,3 +569,591 @@ class GoogleDriveManager:
         except Exception as e:
             logger.error(f"Erro ao buscar pastas contendo '{name_part}': {e}")
             return []
+
+    def create_google_doc(self, file_path: str, folder_id: str = None) -> str:
+        """
+        Cria um documento Google Docs a partir de um arquivo local.
+        
+        Args:
+            file_path: Caminho para o arquivo local
+            folder_id: ID da pasta do Google Drive (opcional)
+            
+        Returns:
+            ID do documento criado ou None se falhar
+        """
+        try:
+            # Verificar se o arquivo existe
+            if not os.path.exists(file_path):
+                logger.error(f"Arquivo não encontrado: {file_path}")
+                return None
+            
+            # Ler o conteúdo do arquivo para criar o documento diretamente
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            # Inicializar serviço do Google Docs
+            docs_service = self._get_docs_service()
+            if not docs_service:
+                logger.error("Não foi possível conectar ao Google Docs")
+                return None
+            
+            # Obter o nome do arquivo sem extensão
+            file_name = os.path.basename(file_path)
+            file_name_without_ext = os.path.splitext(file_name)[0]
+            
+            # Criar um documento vazio
+            logger.info(f"Criando documento Google Docs: {file_name_without_ext}")
+            doc = docs_service.documents().create(body={'title': file_name_without_ext}).execute()
+            doc_id = doc.get('documentId')
+            
+            if not doc_id:
+                logger.error("Falha ao criar documento vazio no Google Docs")
+                return None
+            
+            # Pré-processamento do conteúdo para melhorar a formatação
+            import re
+            
+            # Melhorias no pré-processamento para tratamento dos símbolos Markdown
+            logger.info("Pré-processando conteúdo para garantir formatação adequada...")
+            
+            # Identificar e armazenar links para restauração posterior
+            links = []
+            def store_link(match):
+                link_text = match.group(1)
+                link_url = match.group(2)
+                links.append((link_text, link_url))
+                # Retornar apenas o texto com um marcador especial
+                return f"__LINK_{len(links)-1}__"
+            
+            # Substituir links por marcadores temporários
+            content = re.sub(r'\[(.*?)\]\((.*?)\)', store_link, content)
+            
+            # Identificar cabeçalhos
+            headers_level1 = []
+            headers_level2 = []
+            
+            def store_header1(match):
+                header_text = match.group(1).strip()
+                headers_level1.append(header_text)
+                # Retornar apenas o texto com um marcador especial
+                return f"__H1_{len(headers_level1)-1}__\n"
+                
+            def store_header2(match):
+                header_text = match.group(1).strip()
+                headers_level2.append(header_text)
+                # Retornar apenas o texto com um marcador especial
+                return f"__H2_{len(headers_level2)-1}__\n"
+            
+            # Substituir cabeçalhos por marcadores temporários
+            content = re.sub(r'^#\s+(.*?)$', store_header1, content, flags=re.MULTILINE)
+            content = re.sub(r'^##\s+(.*?)$', store_header2, content, flags=re.MULTILINE)
+            
+            # Identificar itens de lista
+            list_items = []
+            def store_list_item(match):
+                indentation = match.group(1)
+                item_text = match.group(2).strip()
+                list_items.append((indentation, item_text))
+                # Retornar um marcador temporário
+                return f"{indentation}__LIST_{len(list_items)-1}__\n"
+            
+            # Substituir itens de lista por marcadores temporários
+            content = re.sub(r'^(\s*)[-*]\s+(.*?)$', store_list_item, content, flags=re.MULTILINE)
+            
+            # Identificar negrito
+            bold_texts = []
+            def store_bold(match):
+                bold_text = match.group(1)
+                bold_texts.append(bold_text)
+                # Retornar apenas o texto com um marcador especial
+                return f"__BOLD_{len(bold_texts)-1}__"
+            
+            # Substituir textos em negrito por marcadores temporários
+            content = re.sub(r'\*\*(.*?)\*\*', store_bold, content)
+            
+            # Agora restaurar os elementos com formatação adequada
+            
+            # Restaurar cabeçalhos
+            for i, header in enumerate(headers_level1):
+                content = content.replace(f"__H1_{i}__", header)
+            
+            for i, header in enumerate(headers_level2):
+                content = content.replace(f"__H2_{i}__", header)
+            
+            # Restaurar itens de lista
+            for i, (indent, item) in enumerate(list_items):
+                content = content.replace(f"{indent}__LIST_{i}__", f"{indent}{item}")
+            
+            # Restaurar textos em negrito
+            for i, bold in enumerate(bold_texts):
+                content = content.replace(f"__BOLD_{i}__", bold)
+            
+            # Restaurar links
+            for i, (text, url) in enumerate(links):
+                content = content.replace(f"__LINK_{i}__", text)
+            
+            # Garantir que cabeçalhos tenham espaço após # e ##
+            content = re.sub(r'#([^#\s])', r'# \1', content)  # Corrigir #Título para # Título
+            content = re.sub(r'##([^#\s])', r'## \1', content)  # Corrigir ##Título para ## Título
+            
+            # Garantir que listas tenham espaço após marcadores
+            content = re.sub(r'^-([^\s])', r'- \1', content, flags=re.MULTILINE)
+            content = re.sub(r'^\*([^\s])', r'* \1', content, flags=re.MULTILINE)
+            
+            # Adicionar espaços em branco após parágrafos para melhor separação
+            content = re.sub(r'([^\n])\n([^#\s-*\n])', r'\1\n\n\2', content)
+            
+            # Garantir que links estejam formatados corretamente [texto](url)
+            # Não altera links já corretos, mas pode corrigir alguns problemas comuns
+            content = re.sub(r'\[(.*?)\]\s+\((.*?)\)', r'[\1](\2)', content)
+            
+            # Inserir conteúdo no documento
+            logger.info("Inserindo conteúdo no documento...")
+            
+            # Preparar as solicitações para inserir texto e aplicar formatação
+            requests = [
+                {
+                    'insertText': {
+                        'location': {
+                            'index': 1
+                        },
+                        'text': content
+                    }
+                }
+            ]
+            
+            # Executar a inserção do texto
+            docs_service.documents().batchUpdate(
+                documentId=doc_id,
+                body={'requests': requests}
+            ).execute()
+            
+            # Aplicar formatação avançada após inserir o conteúdo
+            self._format_simple_doc(docs_service, doc_id)
+            
+            # Configurar propriedades do documento para melhor visualização
+            requests = [
+                {
+                    'updateDocumentStyle': {
+                        'documentStyle': {
+                            'marginTop': {'magnitude': 36, 'unit': 'PT'},
+                            'marginBottom': {'magnitude': 36, 'unit': 'PT'},
+                            'marginLeft': {'magnitude': 36, 'unit': 'PT'},
+                            'marginRight': {'magnitude': 36, 'unit': 'PT'},
+                            'pageSize': {
+                                'width': {'magnitude': 612, 'unit': 'PT'},
+                                'height': {'magnitude': 792, 'unit': 'PT'}
+                            }
+                        },
+                        'fields': 'marginTop,marginBottom,marginLeft,marginRight,pageSize'
+                    }
+                }
+            ]
+            
+            # Aplicar configurações de página
+            try:
+                docs_service.documents().batchUpdate(
+                    documentId=doc_id,
+                    body={'requests': requests}
+                ).execute()
+                logger.info("Propriedades do documento configuradas com sucesso")
+            except Exception as e:
+                logger.error(f"Erro ao configurar propriedades do documento: {e}")
+            
+            # Se folder_id for fornecido, mover o documento para a pasta
+            if folder_id:
+                drive_service = self._get_drive_service()
+                if drive_service:
+                    try:
+                        # Obter as pastas atuais do arquivo
+                        file = drive_service.files().get(
+                            fileId=doc_id, 
+                            fields='parents'
+                        ).execute()
+                        
+                        # Remover das pastas atuais e adicionar à nova pasta
+                        previous_parents = ",".join(file.get('parents', []))
+                        
+                        # Mover para a nova pasta
+                        drive_service.files().update(
+                            fileId=doc_id,
+                            addParents=folder_id,
+                            removeParents=previous_parents,
+                            fields='id, parents'
+                        ).execute()
+                        
+                        logger.info(f"Documento movido para a pasta: {folder_id}")
+                    except Exception as e:
+                        logger.error(f"Erro ao mover documento para a pasta: {e}")
+            
+            logger.info(f"Documento criado com sucesso: {doc_id}")
+            return doc_id
+            
+        except Exception as e:
+            logger.error(f"Erro ao criar documento no Google Drive: {e}", exc_info=True)
+            return None
+    
+    def _format_simple_doc(self, docs_service, doc_id):
+        """
+        Aplica formatação avançada ao documento Google Docs, tratando Markdown.
+        
+        Args:
+            docs_service: Serviço Google Docs
+            doc_id: ID do documento
+            
+        Returns:
+            True se sucesso, False se falhar
+        """
+        try:
+            logger.info(f"Iniciando formatação avançada do documento {doc_id}...")
+            
+            # Obter o conteúdo do documento
+            document = docs_service.documents().get(documentId=doc_id).execute()
+            
+            # Lista para armazenar as requisições de formatação
+            requests = []
+            
+            # Iterar sobre o conteúdo do documento
+            for content in document.get('body', {}).get('content', []):
+                if 'paragraph' in content:
+                    paragraph = content.get('paragraph', {})
+                    elements = paragraph.get('elements', [])
+                    
+                    if not elements:
+                        continue
+                    
+                    # Obter o texto do parágrafo
+                    text = ''
+                    for element in elements:
+                        if 'textRun' in element:
+                            text_run = element.get('textRun', {})
+                            text += text_run.get('content', '')
+                    
+                    # Verificar se é um título (começa com # ou ##)
+                    text = text.strip()
+                    start_index = content.get('startIndex', 0)
+                    end_index = content.get('endIndex', 0)
+                    
+                    # Formatação para cabeçalhos de nível 1 (# Título)
+                    if text.startswith('# '):
+                        # Remover os marcadores Markdown dos cabeçalhos
+                        clean_text = text[2:].strip()
+                        
+                        # Atualizar o texto para remover os marcadores
+                        requests.append({
+                            'deleteContentRange': {
+                                'range': {
+                                    'startIndex': start_index,
+                                    'endIndex': end_index
+                                }
+                            }
+                        })
+                        
+                        requests.append({
+                            'insertText': {
+                                'location': {
+                                    'index': start_index
+                                },
+                                'text': clean_text
+                            }
+                        })
+                        
+                        # Aplicar estilo de cabeçalho
+                        requests.append({
+                            'updateParagraphStyle': {
+                                'range': {
+                                    'startIndex': start_index,
+                                    'endIndex': start_index + len(clean_text)
+                                },
+                                'paragraphStyle': {
+                                    'namedStyleType': 'HEADING_1',
+                                    'alignment': 'CENTER'
+                                },
+                                'fields': 'namedStyleType,alignment'
+                            }
+                        })
+                        
+                        # Aplicar formatação de texto para o cabeçalho
+                        requests.append({
+                            'updateTextStyle': {
+                                'range': {
+                                    'startIndex': start_index,
+                                    'endIndex': start_index + len(clean_text)
+                                },
+                                'textStyle': {
+                                    'bold': True,
+                                    'fontSize': {
+                                        'magnitude': 16,
+                                        'unit': 'PT'
+                                    }
+                                },
+                                'fields': 'bold,fontSize'
+                            }
+                        })
+                        
+                    # Formatação para cabeçalhos de nível 2 (## Título)
+                    elif text.startswith('## '):
+                        # Remover os marcadores Markdown dos cabeçalhos
+                        clean_text = text[3:].strip()
+                        
+                        # Atualizar o texto para remover os marcadores
+                        requests.append({
+                            'deleteContentRange': {
+                                'range': {
+                                    'startIndex': start_index,
+                                    'endIndex': end_index
+                                }
+                            }
+                        })
+                        
+                        requests.append({
+                            'insertText': {
+                                'location': {
+                                    'index': start_index
+                                },
+                                'text': clean_text
+                            }
+                        })
+                        
+                        # Aplicar estilo de cabeçalho
+                        requests.append({
+                            'updateParagraphStyle': {
+                                'range': {
+                                    'startIndex': start_index,
+                                    'endIndex': start_index + len(clean_text)
+                                },
+                                'paragraphStyle': {
+                                    'namedStyleType': 'HEADING_2'
+                                },
+                                'fields': 'namedStyleType'
+                            }
+                        })
+                        
+                        # Aplicar formatação de texto para o cabeçalho
+                        requests.append({
+                            'updateTextStyle': {
+                                'range': {
+                                    'startIndex': start_index,
+                                    'endIndex': start_index + len(clean_text)
+                                },
+                                'textStyle': {
+                                    'bold': True,
+                                    'fontSize': {
+                                        'magnitude': 14,
+                                        'unit': 'PT'
+                                    }
+                                },
+                                'fields': 'bold,fontSize'
+                            }
+                        })
+                    
+                    # Formatação para listas com marcadores (linhas que começam com - ou *)
+                    elif text.lstrip().startswith(('-', '*')) and len(text.lstrip()) > 2:
+                        # Remover o marcador de lista do texto
+                        indentation = len(text) - len(text.lstrip())
+                        prefix = text[:indentation]
+                        marker = text[indentation]
+                        rest_text = text[indentation + 1:].strip()
+                        clean_text = prefix + rest_text
+                        
+                        # Atualizar o texto para remover os marcadores
+                        requests.append({
+                            'deleteContentRange': {
+                                'range': {
+                                    'startIndex': start_index,
+                                    'endIndex': end_index
+                                }
+                            }
+                        })
+                        
+                        requests.append({
+                            'insertText': {
+                                'location': {
+                                    'index': start_index
+                                },
+                                'text': clean_text
+                            }
+                        })
+                        
+                        # Aplicar estilo de lista com marcadores
+                        requests.append({
+                            'createParagraphBullets': {
+                                'range': {
+                                    'startIndex': start_index,
+                                    'endIndex': start_index + len(clean_text)
+                                },
+                                'bulletPreset': 'BULLET_DISC_CIRCLE_SQUARE'
+                            }
+                        })
+                        
+                    # Formatação para tabelas básicas (linhas que começam com |)
+                    elif text.startswith('|') and text.endswith('|') and '|' in text[1:-1]:
+                        # Deixar a formatação de tabela como está por enquanto
+                        # O processamento de tabelas é mais complexo e pode exigir
+                        # um tratamento especial de várias linhas consecutivas
+                        pass
+                        
+                    # Formatação para texto em negrito (**texto**)
+                    bold_matches = list(re.finditer(r'\*\*(.*?)\*\*', text))
+                    
+                    if bold_matches:
+                        # Se temos marcadores de negrito, precisamos remover e aplicar formatação
+                        # Começamos de trás para frente para não afetar os índices
+                        offset = 0
+                        for match in reversed(bold_matches):
+                            bold_text = match.group(1)  # O texto entre **
+                            full_match = match.group(0)  # O texto completo com **
+                            
+                            match_start = start_index + match.start()
+                            match_end = start_index + match.end()
+                            
+                            # Remover os marcadores de negrito
+                            requests.append({
+                                'deleteContentRange': {
+                                    'range': {
+                                        'startIndex': match_start,
+                                        'endIndex': match_end
+                                    }
+                                }
+                            })
+                            
+                            # Inserir apenas o texto sem os marcadores
+                            requests.append({
+                                'insertText': {
+                                    'location': {
+                                        'index': match_start
+                                    },
+                                    'text': bold_text
+                                }
+                            })
+                            
+                            # Aplicar formatação em negrito
+                            requests.append({
+                                'updateTextStyle': {
+                                    'range': {
+                                        'startIndex': match_start,
+                                        'endIndex': match_start + len(bold_text)
+                                    },
+                                    'textStyle': {
+                                        'bold': True
+                                    },
+                                    'fields': 'bold'
+                                }
+                            })
+                            
+                            # Atualizar o final do parágrafo para refletir a remoção dos marcadores
+                            end_index -= (len(full_match) - len(bold_text))
+                    
+                    # Formatação para seções especiais (emojis de prioridade)
+                    if "🔴" in text or "🟠" in text or "🟢" in text or "⚪" in text:
+                        # Destacar linhas com emojis (geralmente títulos de seção)
+                        requests.append({
+                            'updateTextStyle': {
+                                'range': {
+                                    'startIndex': start_index,
+                                    'endIndex': end_index
+                                },
+                                'textStyle': {
+                                    'bold': True
+                                },
+                                'fields': 'bold'
+                            }
+                        })
+                    
+                    # Formatação para links no formato [texto](url)
+                    # Esta é uma abordagem melhorada para remover completamente a sintaxe Markdown
+                    link_pattern = re.finditer(r'\[(.*?)\]\((.*?)\)', text)
+                    link_matches = list(link_pattern)
+                    
+                    if link_matches:
+                        # Se temos links, precisamos processá-los de trás para frente
+                        # para não afetar os índices
+                        for match in reversed(link_matches):
+                            full_match = match.group(0)
+                            link_text = match.group(1)
+                            link_url = match.group(2)
+                            
+                            link_start = start_index + match.start()
+                            link_end = start_index + match.end()
+                            
+                            # 1. Remover o texto do link na formatação Markdown
+                            requests.append({
+                                'deleteContentRange': {
+                                    'range': {
+                                        'startIndex': link_start,
+                                        'endIndex': link_end
+                                    }
+                                }
+                            })
+                            
+                            # 2. Inserir apenas o texto do link
+                            requests.append({
+                                'insertText': {
+                                    'location': {
+                                        'index': link_start
+                                    },
+                                    'text': link_text
+                                }
+                            })
+                            
+                            # 3. Adicionar o link ao texto
+                            requests.append({
+                                'updateTextStyle': {
+                                    'range': {
+                                        'startIndex': link_start,
+                                        'endIndex': link_start + len(link_text)
+                                    },
+                                    'textStyle': {
+                                        'link': {
+                                            'url': link_url
+                                        }
+                                    },
+                                    'fields': 'link'
+                                }
+                            })
+                            
+                            # Atualizar o final do parágrafo para refletir a remoção dos marcadores
+                            end_index -= (len(full_match) - len(link_text))
+            
+            # Aplicar as formatações
+            if requests:
+                # Dividir em blocos menores para evitar erro de tamanho máximo da requisição
+                max_batch_size = 100  # Número máximo de operações por lote
+                for i in range(0, len(requests), max_batch_size):
+                    batch = requests[i:i + max_batch_size]
+                    logger.info(f"Aplicando lote de {len(batch)} formatações...")
+                    try:
+                        docs_service.documents().batchUpdate(
+                            documentId=doc_id,
+                            body={'requests': batch}
+                        ).execute()
+                    except Exception as e:
+                        logger.error(f"Erro ao aplicar lote de formatações: {e}")
+                
+                logger.info("Formatação aplicada com sucesso")
+                return True
+            else:
+                logger.info("Nenhuma formatação para aplicar")
+                return True
+            
+        except Exception as e:
+            logger.error(f"Erro na formatação do documento: {e}")
+            return False
+
+    def _get_docs_service(self):
+        """
+        Inicializa e retorna o serviço Google Docs.
+        
+        Returns:
+            Serviço Google Docs ou None se falhar
+        """
+        try:
+            # Usar as credenciais já inicializadas no construtor
+            if not self.credentials:
+                logger.error("Credenciais do Google não disponíveis")
+                return None
+            
+            return build('docs', 'v1', credentials=self.credentials)
+        except Exception as e:
+            logger.error(f"Erro ao inicializar serviço Google Docs: {e}")
+            return None

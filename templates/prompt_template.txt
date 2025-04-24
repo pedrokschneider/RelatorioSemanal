@@ -1,23 +1,32 @@
+Relatório Semanal - [NOME_PROJETO]
+
 Bom dia pessoal,
 
 Espero que essa mensagem os encontre bem.
 
 Segue abaixo um breve resumo do andamento do projeto do empreendimento [NOME_PROJETO]:
 
-## Pontos que precisam de respostas [NOME_CLIENTE]
+PONTOS QUE PRECISAM DE RESPOSTAS - [NOME_CLIENTE]
+
 [APONTAMENTOS_CLIENTE]
 
-## Atividades Concluídas
+ATIVIDADES CONCLUÍDAS
+
 [TAREFAS_REALIZADAS]
 
-## Atrasos e Desvios Identificados
+ATRASOS E DESVIOS IDENTIFICADOS
+
 [ATRASOS_PERIODO]
 
-## Planejamento para a Próxima Semana
+PLANEJAMENTO PARA A PRÓXIMA SEMANA
+
 [PROGRAMACAO_SEMANA]
 
-## Resumo por Disciplina
+RESUMO POR DISCIPLINA
+
 [TABELA_APONTAMENTOS]
+
+---
 
 Abaixo disponibilizamos os links para acesso ao formulário de feedback, ao cronograma e Construflow para acompanhamento do projeto.
 

@@ -488,7 +488,7 @@ Qualquer dúvida, estamos à disposição!
         return result if result else "Não foram identificados atrasos no período."
     
     def _gerar_programacao_semana(self, data: Dict[str, Any]) -> str:
-        """Gera a seção de programação para a próxima semana."""
+        """Gera a seção de programação para as próximas duas semanas."""
         # Verificar formato dos dados do Smartsheet
         smartsheet_data = data.get('smartsheet_data', {})
         
@@ -501,10 +501,10 @@ Qualquer dúvida, estamos à disposição!
             # Filtrar tarefas futuras da lista completa
             all_tasks = smartsheet_data.get('all_tasks', [])
             
-            # Identificar tarefas para a próxima semana
+            # Identificar tarefas para as próximas duas semanas
             from datetime import datetime, timedelta
             today = datetime.today()
-            next_week_end = today + timedelta(days=7)
+            next_week_end = today + timedelta(days=14)  # Aumentado de 7 para 14 dias
             
             future_tasks = []
             for task in all_tasks:
@@ -517,7 +517,7 @@ Qualquer dúvida, estamos à disposição!
                         # Se não puder converter, considerar como futura
                         future_tasks.append(task)
                     else:
-                        # Se for data, verificar se está na próxima semana
+                        # Se for data, verificar se está nas próximas duas semanas
                         try:
                             if today < task_date <= next_week_end:
                                 future_tasks.append(task)
@@ -535,7 +535,7 @@ Qualquer dúvida, estamos à disposição!
             # Processar o formato antigo (lista direta de tarefas)
             from datetime import datetime, timedelta
             today = datetime.today()
-            next_week_end = today + timedelta(days=7)
+            next_week_end = today + timedelta(days=14)  # Aumentado de 7 para 14 dias
             
             all_tasks = smartsheet_data
             future_tasks = []
@@ -550,7 +550,7 @@ Qualquer dúvida, estamos à disposição!
                         # Se não puder converter, considerar como futura
                         future_tasks.append(task)
                     else:
-                        # Se for data, verificar se está na próxima semana
+                        # Se for data, verificar se está nas próximas duas semanas
                         try:
                             if today < task_date <= next_week_end:
                                 future_tasks.append(task)
@@ -566,13 +566,10 @@ Qualquer dúvida, estamos à disposição!
             logger.info(f"Filtradas {len(future_tasks)} tarefas programadas do formato antigo")
         else:
             logger.warning(f"Formato não reconhecido para smartsheet_data: {type(smartsheet_data)}")
-            return "Sem atividades programadas para a próxima semana."
+            return "Sem atividades programadas para as próximas duas semanas."
             
         if not future_tasks:
-            return "Sem atividades programadas para a próxima semana."
-        
-        if not future_tasks:
-            return "Sem atividades programadas para a próxima semana."
+            return "Sem atividades programadas para as próximas duas semanas."
         
         # Formato da saída para tarefas programadas
         result = ""
@@ -591,9 +588,9 @@ Qualquer dúvida, estamos à disposição!
                     except:
                         formatted_date = str(task_date)
             else:
-                # Se não tiver data, usar data aproximada uma semana à frente
+                # Se não tiver data, usar data aproximada duas semanas à frente
                 from datetime import datetime, timedelta
-                future_date = datetime.now() + timedelta(days=7)
+                future_date = datetime.now() + timedelta(days=14)  # Aumentado de 7 para 14 dias
                 formatted_date = future_date.strftime("%d/%m")
             
             task_name = task.get('Nome da Tarefa', task.get('Task Name', ''))
@@ -602,7 +599,7 @@ Qualquer dúvida, estamos à disposição!
             # Formatar linha
             result += f"{formatted_date} - {task_discipline}: {task_name}\n"
         
-        return result if result else "Sem atividades programadas para a próxima semana."
+        return result if result else "Sem atividades programadas para as próximas duas semanas."
         
     def _gerar_tabela_apontamentos(self, data: dict) -> str:
         """Gera uma tabela de apontamentos por disciplina mostrando apenas status 'todo' (A Fazer)."""

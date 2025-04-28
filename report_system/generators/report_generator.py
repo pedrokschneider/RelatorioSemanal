@@ -571,6 +571,18 @@ Qualquer dúvida, estamos à disposição!
         if not future_tasks:
             return "Sem atividades programadas para as próximas duas semanas."
         
+        # Ordenar tarefas por data (da mais recente para a mais antiga)
+        def get_task_date(task):
+            task_date = task.get('Data Término', task.get('Data de Término', task.get('Due Date', '')))
+            if isinstance(task_date, str):
+                try:
+                    return datetime.strptime(task_date, "%d/%m/%Y")
+                except:
+                    return datetime.now() + timedelta(days=14)  # Data padrão se não conseguir converter
+            return task_date if task_date else datetime.now() + timedelta(days=14)  # Data padrão se não tiver data
+        
+        future_tasks.sort(key=get_task_date, reverse=True)  # Ordenar da mais recente para a mais antiga
+        
         # Formato da saída para tarefas programadas
         result = ""
         for task in future_tasks:

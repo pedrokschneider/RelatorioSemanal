@@ -395,6 +395,22 @@ Qualquer dúvida, estamos à disposição!
         if not completed_tasks:
             return "Sem tarefas concluídas no período."
         
+        # Ordenar tarefas por data do mais recente para o menos recente
+        from datetime import datetime
+        def get_task_date(task):
+            task_date = task.get('Data Término', task.get('Data de Término', ''))
+            if isinstance(task_date, str):
+                for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d/%m"):
+                    try:
+                        return datetime.strptime(task_date, fmt)
+                    except Exception:
+                        continue
+                return datetime.min  # Se não conseguir converter, joga para o final
+            elif hasattr(task_date, 'strftime'):
+                return task_date
+            return datetime.min
+        completed_tasks.sort(key=get_task_date, reverse=True)
+        
         # Formato da saída para tarefas realizadas
         result = ""
         for task in completed_tasks:
@@ -571,7 +587,7 @@ Qualquer dúvida, estamos à disposição!
         if not future_tasks:
             return "Sem atividades programadas para as próximas duas semanas."
         
-        # Ordenar tarefas por data (da mais recente para a mais antiga)
+        # Ordenar tarefas por data (do mais próximo para o mais distante)
         def get_task_date(task):
             task_date = task.get('Data Término', task.get('Data de Término', task.get('Due Date', '')))
             if isinstance(task_date, str):
@@ -581,7 +597,7 @@ Qualquer dúvida, estamos à disposição!
                     return datetime.now() + timedelta(days=14)  # Data padrão se não conseguir converter
             return task_date if task_date else datetime.now() + timedelta(days=14)  # Data padrão se não tiver data
         
-        future_tasks.sort(key=get_task_date, reverse=True)  # Ordenar da mais recente para a mais antiga
+        future_tasks.sort(key=get_task_date, reverse=False)  # Ordenar do mais próximo para o mais distante
         
         # Formato da saída para tarefas programadas
         result = ""

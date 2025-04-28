@@ -278,7 +278,7 @@ Qualquer dúvida, estamos à disposição!
         
             # Calcular tempo de abertura
             dias_aberto = ""
-            created_at = issue.get('createdAt') or issue.get('created_at')
+            created_at = issue.get('updatedAt') or issue.get('updatedAt')
             if created_at:
                 try:
                     from datetime import datetime

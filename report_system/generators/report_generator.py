@@ -276,32 +276,29 @@ Qualquer dúvida, estamos à disposição!
             # Construir o link para o apontamento com o ID correto
             construflow_url = f"https://app.construflow.com.br/workspace/project/{project_id}/issues?issueId={correct_issue_id}"
         
-            # Calcular tempo de abertura
-            dias_aberto = ""
-            created_at = issue.get('updatedAt') or issue.get('updatedAt')
-            if created_at:
+            # Calcular tempo desde a última atualização
+            dias_sem_atualizacao = ""
+            updated_at = issue.get('updatedAt')
+            if updated_at:
                 try:
                     from datetime import datetime
-                    if isinstance(created_at, str):
-                        if 'Z' in created_at:
-                            created_at = created_at.replace('Z', '+00:00')
-                        created_date = datetime.fromisoformat(created_at)
+                    if isinstance(updated_at, str):
+                        if 'Z' in updated_at:
+                            updated_at = updated_at.replace('Z', '+00:00')
+                        updated_date = datetime.fromisoformat(updated_at)
                     else:
-                        created_date = created_at
-                    
+                        updated_date = updated_at
                     agora = datetime.now()
-                    if created_date.tzinfo:
-                        agora = agora.replace(tzinfo=created_date.tzinfo)
-                    
-                    diferenca = agora - created_date
+                    if updated_date.tzinfo:
+                        agora = agora.replace(tzinfo=updated_date.tzinfo)
+                    diferenca = agora - updated_date
                     dias = diferenca.days
-                    
                     if dias == 0:
-                        dias_aberto = "(aberto hoje)"
+                        dias_sem_atualizacao = "(sem atualização hoje)"
                     elif dias == 1:
-                        dias_aberto = "(aberto há 1 dia)"
+                        dias_sem_atualizacao = "(sem atualização há 1 dia)"
                     else:
-                        dias_aberto = f"(aberto há {dias} dias)"
+                        dias_sem_atualizacao = f"(sem atualização há {dias} dias)"
                 except Exception:
                     pass
             
@@ -319,7 +316,7 @@ Qualquer dúvida, estamos à disposição!
                 priority_group = 'sem_prioridade'
             
             # Armazenar a linha formatada no grupo correto
-            issue_line = f"[#{issue_code}]({construflow_url}) – {issue_title} {dias_aberto}"
+            issue_line = f"[#{issue_code}]({construflow_url}) – {issue_title} {dias_sem_atualizacao}"
             issues_por_prioridade[priority_group].append(issue_line)
         
         # Construir o resultado final agrupado por prioridade

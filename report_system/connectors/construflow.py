@@ -27,7 +27,7 @@ class ConstruflowConnector(APIConnector):
         self.cache_dir = os.path.join(config.cache_dir, "construflow")
         os.makedirs(self.cache_dir, exist_ok=True)
     
-    def get_data(self, endpoint: str, template_version: str = '8.0.0', 
+    def get_data(self, endpoint: str, template_version: str = '9.0.0', 
                  use_cache: bool = True, force_refresh: bool = False) -> List[Dict]:
         """
         Obtém dados da API do Construflow com suporte a cache.

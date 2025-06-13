@@ -582,6 +582,39 @@ class WeeklyReportSystem:
         
         return "\n".join(message)
 
+    def log_execution_to_sheet(self, project_id, project_name, status, message, doc_url=None):
+        """
+        Registra um log de execução na planilha do Google Sheets via API.
+        """
+        try:
+            from googleapiclient.discovery import build
+            from datetime import datetime
+            # ID da planilha de log (pode ser o mesmo da config ou fixo)
+            LOG_SHEET_ID = '1fGrGtPXvP-J1q1N6n5Btp6s0Mfi9_5ig8xWJfRLrJWI'
+            # Nome da aba (ajuste se necessário)
+            LOG_SHEET_NAME = 'Log'  # ou 'Sheet1', conforme sua planilha
+            creds = self.config.get_google_creds()
+            if not creds:
+                logger.error("Credenciais do Google não disponíveis para log de execução.")
+                return False
+            sheets_service = build('sheets', 'v4', credentials=creds)
+            now = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+            row = [now, str(project_id), str(project_name), status, message, doc_url or ""]
+            range_ = f"{LOG_SHEET_NAME}!A1"
+            body = {"values": [row]}
+            sheets_service.spreadsheets().values().append(
+                spreadsheetId=LOG_SHEET_ID,
+                range=range_,
+                valueInputOption="USER_ENTERED",
+                insertDataOption="INSERT_ROWS",
+                body=body
+            ).execute()
+            logger.info(f"Log registrado na planilha para projeto {project_id} ({status})")
+            return True
+        except Exception as e:
+            logger.error(f"Erro ao registrar log de execução na planilha: {e}")
+            return False
+
     def run_for_project(self, project_id, quiet_mode=False, skip_cache_update=False, skip_notifications=False) -> Tuple[bool, str, Optional[str]]:
         """
         Executa o processo completo para um projeto, atualizando o cache primeiro.
@@ -676,7 +709,14 @@ class WeeklyReportSystem:
                         success=False, 
                         final_message=f"❌ **Erro:** Não foi possível encontrar dados para o projeto {project_name}."
                     )
-                    
+                # Log de falha
+                self.log_execution_to_sheet(
+                    project_id=project_id,
+                    project_name=project_name,
+                    status="Falha",
+                    message="Não foi possível encontrar dados para o projeto.",
+                    doc_url=None
+                )
                 return False, "", None
             
             # Atualizar o nome do projeto se necessário
@@ -703,7 +743,14 @@ class WeeklyReportSystem:
                         success=False, 
                         final_message=f"❌ **Erro:** Falha ao salvar o relatório para {project_name}."
                     )
-                    
+                # Log de falha
+                self.log_execution_to_sheet(
+                    project_id=project_id,
+                    project_name=project_name,
+                    status="Falha",
+                    message="Falha ao salvar o relatório.",
+                    doc_url=None
+                )
                 return False, "", None
             
             # Obter a pasta específica do projeto a partir da planilha de configuração
@@ -728,7 +775,14 @@ class WeeklyReportSystem:
                             f"O arquivo está disponível apenas localmente."
                         )
                     )
-                    
+                # Log de sucesso parcial
+                self.log_execution_to_sheet(
+                    project_id=project_id,
+                    project_name=project_name,
+                    status="Sucesso parcial",
+                    message="Relatório gerado, mas não foi possível encontrar a pasta do Google Drive.",
+                    doc_url=None
+                )
                 return True, file_path, None
             
             # Formatar data atual
@@ -778,7 +832,14 @@ class WeeklyReportSystem:
                                     f"O arquivo está disponível apenas localmente."
                                 )
                             )
-                    
+                    # Log de sucesso parcial
+                    self.log_execution_to_sheet(
+                        project_id=project_id,
+                        project_name=project_name,
+                        status="Sucesso parcial",
+                        message="Relatório enviado como arquivo markdown, não foi possível criar Google Doc.",
+                        doc_url=drive_url if file_id else None
+                    )
                     return True, file_path, file_id
                 
                 # Criar serviços do Google
@@ -816,12 +877,27 @@ class WeeklyReportSystem:
                     )
                     
                     progress_reporter.complete(success=True, final_message=final_message)
+                    # Log de sucesso
+                    self.log_execution_to_sheet(
+                        project_id=project_id,
+                        project_name=project_name,
+                        status="Sucesso",
+                        message="Relatório gerado e Google Doc criado com sucesso.",
+                        doc_url=doc_url
+                    )
                 elif progress_reporter:
                     progress_reporter.complete(
                         success=False, 
                         final_message=f"❌ **Erro:** Falha ao criar documento no Google Docs para {project_name}."
                     )
-                
+                    # Log de falha
+                    self.log_execution_to_sheet(
+                        project_id=project_id,
+                        project_name=project_name,
+                        status="Falha",
+                        message="Falha ao criar documento no Google Docs.",
+                        doc_url=None
+                    )
                 return True, file_path, doc_id
                 
             except Exception as e:
@@ -861,8 +937,14 @@ class WeeklyReportSystem:
                                 f"O arquivo está disponível apenas localmente."
                             )
                         )
-                
-                # Adicionar return aqui para caso de exceção, usando file_id consistentemente
+                # Log de sucesso parcial ou falha
+                self.log_execution_to_sheet(
+                    project_id=project_id,
+                    project_name=project_name,
+                    status="Sucesso parcial" if file_id else "Falha",
+                    message="Relatório enviado como arquivo markdown após erro no Google Docs." if file_id else "Falha ao criar documento no Google Docs e enviar markdown.",
+                    doc_url=drive_url if file_id else None
+                )
                 return True, file_path, file_id
                     
         except Exception as e:
@@ -877,6 +959,15 @@ class WeeklyReportSystem:
                         f"Por favor, contate o suporte técnico."
                     )
                 )
+            
+            # Log de falha
+            self.log_execution_to_sheet(
+                project_id=project_id,
+                project_name=project_name,
+                status="Falha",
+                message=f"Erro fatal ao gerar relatório: {str(e)}",
+                doc_url=None
+            )
             
             return False, "", None
 

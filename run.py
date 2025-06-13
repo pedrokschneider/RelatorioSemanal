@@ -122,68 +122,61 @@ def main():
         
         # Executar o sistema
         if project_id:
-            # Executar apenas para um projeto específico
             logger.info(f"Executando apenas para o projeto {project_id}")
-            # Sempre executar com skip_notifications=False quando executando um projeto específico
-            # Isso garante que a notificação final seja enviada
             result = system.run_for_project(project_id, quiet_mode=True, skip_notifications=args.no_notifications) 
-            
-            status = "✅ Sucesso" if result[0] else "❌ Falha"
+            status = "Sucesso" if result[0] else "Falha"
+            mensagem = "Relatório gerado com sucesso" if result[0] else "Falha ao gerar relatório"
+            doc_url = f"https://docs.google.com/document/d/{result[2]}/edit" if result[2] else None
+            # Buscar nome do projeto e Código Projeto
+            project_name = "Projeto desconhecido"
+            codigo_projeto = project_id
+            try:
+                project_df = system._load_project_config()
+                if 'construflow_id' in project_df.columns and 'Projeto - PR' in project_df.columns and 'Código Projeto' in project_df.columns:
+                    project_row = project_df[project_df['construflow_id'].astype(str) == str(project_id)]
+                    if not project_row.empty:
+                        project_name = project_row['Projeto - PR'].iloc[0]
+                        codigo_projeto = project_row['Código Projeto'].iloc[0]
+            except Exception:
+                pass
+            # Chamada explícita do log na planilha
+            system.log_execution_to_sheet(
+                project_id=codigo_projeto,
+                project_name=project_name,
+                status=status,
+                message=mensagem,
+                doc_url=doc_url
+            )
+            status_str = "✅ Sucesso" if result[0] else "❌ Falha"
             doc_id = result[2]
-            logger.info(f"Projeto {project_id}: {status}")
-            
+            logger.info(f"Projeto {project_id}: {status_str}")
             if result[0]:
                 logger.info(f"  - Arquivo local: {result[1]}")
                 if doc_id:
                     doc_url = f"https://docs.google.com/document/d/{doc_id}/edit"
                     logger.info(f"  - Link do relatório: {doc_url}")
-                    print(doc_url)  # Imprime o URL para que o bot possa capturar
-                    
+                    print(doc_url)
             # Enviar resumo para o administrador se solicitado
             if not args.no_admin_notification and hasattr(system, 'discord') and system.discord:
-                # Obter nome do projeto
-                project_name = "Projeto desconhecido"
-                try:
-                    project_df = system._load_project_config()
-                    if 'construflow_id' in project_df.columns and 'Projeto - PR' in project_df.columns:
-                        project_row = project_df[project_df['construflow_id'].astype(str) == str(project_id)]
-                        if not project_row.empty:
-                            project_name = project_row['Projeto - PR'].iloc[0]
-                except Exception:
-                    pass
-                
-                # Criar mensagem de resumo
                 message = f"### Resumo da Execução do Relatório\n"
                 message += f"**Projeto com Sucesso:**\n- {project_name}\n\n"
                 message += f"**Projeto com Falha:**\n- Nenhum\n\n"
-                
                 if not result[0]:
                     message = f"### Resumo da Execução do Relatório\n"
                     message += f"**Projeto com Sucesso:**\n- Nenhum\n\n"
                     message += f"**Projeto com Falha:**\n- {project_name}\n\n"
-                
-                # Enviar notificação
                 system.discord.send_admin_notification(message)
         else:
-            # Executar para todos os projetos ativos
-            # Modificar para passar o modo silencioso para o método run_scheduled
             results = system.run_scheduled(force=args.force, quiet_mode=True, skip_notifications=args.no_notifications, notification_delay=2)
-            
-            # Exibir resultados
             sucessos = 0
             falhas = 0
-            
-            # Criar mensagem de resumo para o administrador
             admin_message = "### Resumo da Execução em Lote dos Relatórios\n\n"
             admin_message += "#### Projetos com Sucesso:\n"
             success_projects = []
             failed_projects = []
-            
             for project_id, (success, file_path, drive_id) in results.items():
                 status = "✅ Sucesso" if success else "❌ Falha"
                 logger.info(f"Projeto {project_id}: {status}")
-                
-                # Obter nome do projeto
                 project_name = "Projeto desconhecido"
                 try:
                     project_df = system._load_project_config()
@@ -193,7 +186,6 @@ def main():
                             project_name = project_row['Projeto - PR'].iloc[0]
                 except Exception:
                     pass
-                
                 if success:
                     sucessos += 1
                     logger.info(f"  - Arquivo local: {file_path}")
@@ -206,33 +198,22 @@ def main():
                 else:
                     falhas += 1
                     failed_projects.append(f"- {project_name}")
-            
             logger.info(f"\nResumo: {sucessos} projetos com sucesso, {falhas} falhas")
-            
-            # Completar a mensagem de resumo
             if success_projects:
                 admin_message += "\n".join(success_projects) + "\n\n"
             else:
                 admin_message += "- Nenhum projeto com sucesso\n\n"
-                
             admin_message += "#### Projetos com Falha:\n"
             if failed_projects:
                 admin_message += "\n".join(failed_projects) + "\n\n"
             else:
                 admin_message += "- Nenhum projeto falhou\n\n"
-                
             admin_message += f"**Total:** {sucessos + falhas} projetos processados ({sucessos} sucessos, {falhas} falhas)"
-            
-            # Enviar notificação para o administrador
             if not args.no_admin_notification and hasattr(system, 'discord') and system.discord:
                 system.discord.send_admin_notification(admin_message)
-        
         logger.info("=== Fim do processamento ===")
-        
     except Exception as e:
         logger.error(f"Erro não tratado: {e}", exc_info=True)
-        
-        # Tentar enviar notificação de erro para o administrador
         try:
             if not args.no_admin_notification and 'system' in locals() and hasattr(system, 'discord') and system.discord:
                 error_message = f"### ❌ ERRO NA EXECUÇÃO DO SISTEMA\n\n"
@@ -241,9 +222,7 @@ def main():
                 system.discord.send_admin_notification(error_message)
         except Exception as notify_error:
             logger.error(f"Falha ao enviar notificação de erro: {notify_error}")
-            
         return 1
-    
     return 0
 
 if __name__ == "__main__":

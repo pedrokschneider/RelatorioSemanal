@@ -43,6 +43,8 @@ class WeeklyReportSystem:
             env_path: Caminho para o arquivo .env
             verbose_init: Se deve mostrar logs detalhados durante inicialização
         """
+        print(">>> WeeklyReportSystem __init__ chamado")
+        
         # O parâmetro verbose_init é mantido para compatibilidade
         logger.info("Inicializando sistema de relatorios")
         

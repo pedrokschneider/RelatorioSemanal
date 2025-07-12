@@ -53,13 +53,13 @@ Segue abaixo um breve resumo do andamento do projeto do empreendimento [NOME_PRO
 ### Realizados:
 [TAREFAS_REALIZADAS]
 
-### Atividades que irão iniciar na próxima semana:
+### PLANEJAMENTO DA PRÓXIMA SEMANA: ATIVIDADES A SEREM INICIADAS
 [ATIVIDADES_INICIADAS_PROXIMA_SEMANA]
 
 ### Atrasos e desvios do período:
 [ATRASOS_PERIODO]
 
-### Programado para esta semana:
+### ENTREGAS PARA AS PRÓXIMAS SEMANAS:
 [PROGRAMACAO_SEMANA]
 
 ### Status de Apontamentos por Disciplina:

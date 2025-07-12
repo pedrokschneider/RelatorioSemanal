@@ -125,7 +125,7 @@ def main():
             logger.info(f"Executando apenas para o projeto {project_id}")
             result = system.run_for_project(project_id, quiet_mode=True, skip_notifications=args.no_notifications) 
             status = "Sucesso" if result[0] else "Falha"
-            mensagem = "Relatório gerado com sucesso" if result[0] else "Falha ao gerar relatório"
+            mensagem = "Relatório gerado com sucesso" if result[0] else (result[3] if len(result) > 3 and result[3] else "Falha ao gerar relatório")
             doc_url = f"https://docs.google.com/document/d/{result[2]}/edit" if result[2] else None
             # Buscar nome do projeto e Código Projeto
             project_name = "Projeto desconhecido"
@@ -156,28 +156,20 @@ def main():
                     doc_url = f"https://docs.google.com/document/d/{doc_id}/edit"
                     logger.info(f"  - Link do relatório: {doc_url}")
                     print(doc_url)
-            # Enviar resumo para o administrador se solicitado
+            # Enviar mensagem individual para o administrador se solicitado
             if not args.no_admin_notification and hasattr(system, 'discord') and system.discord:
-                message = f"### Resumo da Execução do Relatório\n"
-                message += f"**Projeto com Sucesso:**\n- {project_name}\n\n"
-                message += f"**Projeto com Falha:**\n- Nenhum\n\n"
-                if not result[0]:
-                    message = f"### Resumo da Execução do Relatório\n"
-                    message += f"**Projeto com Sucesso:**\n- Nenhum\n\n"
-                    message += f"**Projeto com Falha:**\n- {project_name}\n\n"
+                if result[0]:
+                    message = f"✅ Projeto {project_name} gerado com sucesso!"
+                else:
+                    message = f"❌ Projeto {project_name} falhou: {mensagem}"
                 system.discord.send_admin_notification(message)
         else:
             results = system.run_scheduled(force=args.force, quiet_mode=True, skip_notifications=args.no_notifications, notification_delay=2)
-            sucessos = 0
-            falhas = 0
-            admin_message = "### Resumo da Execução em Lote dos Relatórios\n\n"
-            admin_message += "#### Projetos com Sucesso:\n"
-            success_projects = []
-            failed_projects = []
-            for project_id, (success, file_path, drive_id) in results.items():
+            for project_id, (success, file_path, drive_id, *rest) in results.items():
                 status = "✅ Sucesso" if success else "❌ Falha"
                 logger.info(f"Projeto {project_id}: {status}")
                 project_name = "Projeto desconhecido"
+                motivo_falha = rest[0] if not success and len(rest) > 0 and rest[0] else "Falha ao gerar relatório"
                 try:
                     project_df = system._load_project_config()
                     if 'construflow_id' in project_df.columns and 'Projeto - PR' in project_df.columns:
@@ -186,31 +178,12 @@ def main():
                             project_name = project_row['Projeto - PR'].iloc[0]
                 except Exception:
                     pass
-                if success:
-                    sucessos += 1
-                    logger.info(f"  - Arquivo local: {file_path}")
-                    if drive_id:
-                        doc_url = f"https://docs.google.com/document/d/{drive_id}/edit"
-                        logger.info(f"  - Link do relatório: {doc_url}")
-                        success_projects.append(f"- {project_name}")
+                if not args.no_admin_notification and hasattr(system, 'discord') and system.discord:
+                    if success:
+                        msg = f"✅ Projeto {project_name} gerado com sucesso!"
                     else:
-                        success_projects.append(f"- {project_name}")
-                else:
-                    falhas += 1
-                    failed_projects.append(f"- {project_name}")
-            logger.info(f"\nResumo: {sucessos} projetos com sucesso, {falhas} falhas")
-            if success_projects:
-                admin_message += "\n".join(success_projects) + "\n\n"
-            else:
-                admin_message += "- Nenhum projeto com sucesso\n\n"
-            admin_message += "#### Projetos com Falha:\n"
-            if failed_projects:
-                admin_message += "\n".join(failed_projects) + "\n\n"
-            else:
-                admin_message += "- Nenhum projeto falhou\n\n"
-            admin_message += f"**Total:** {sucessos + falhas} projetos processados ({sucessos} sucessos, {falhas} falhas)"
-            if not args.no_admin_notification and hasattr(system, 'discord') and system.discord:
-                system.discord.send_admin_notification(admin_message)
+                        msg = f"❌ Projeto {project_name} falhou: {motivo_falha}"
+                    system.discord.send_admin_notification(msg)
         logger.info("=== Fim do processamento ===")
     except Exception as e:
         logger.error(f"Erro não tratado: {e}", exc_info=True)

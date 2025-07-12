@@ -53,6 +53,9 @@ Segue abaixo um breve resumo do andamento do projeto do empreendimento [NOME_PRO
 ### Realizados:
 [TAREFAS_REALIZADAS]
 
+### Atividades que irão iniciar na próxima semana:
+[ATIVIDADES_INICIADAS_PROXIMA_SEMANA]
+
 ### Atrasos e desvios do período:
 [ATRASOS_PERIODO]
 
@@ -115,6 +118,10 @@ Qualquer dúvida, estamos à disposição!
         atrasos_periodo = self._gerar_atrasos_periodo(data)
         replacements["[ATRASOS_PERIODO]"] = atrasos_periodo
         replacements["[TAREFAS_ATRASADAS]"] = atrasos_periodo
+        
+        # Gerar atividades que irão iniciar na próxima semana
+        atividades_iniciadas_proxima_semana = self._gerar_atividades_iniciadas_proxima_semana(data)
+        replacements["[ATIVIDADES_INICIADAS_PROXIMA_SEMANA]"] = atividades_iniciadas_proxima_semana
         
         # Gerar programação da semana - garantir funcionamento com os dois placeholders
         programacao_semana = self._gerar_programacao_semana(data)
@@ -441,18 +448,63 @@ Qualquer dúvida, estamos à disposição!
         
         return result if result else "Sem tarefas concluídas no período."
 
-    def _gerar_atrasos_periodo(self, data: Dict[str, Any]) -> str:
-        """Gera a seção de atrasos e desvios do período."""
-        # Verificar formato dos dados do Smartsheet
+    def _gerar_atividades_iniciadas_proxima_semana(self, data: Dict[str, Any]) -> str:
+        """
+        Gera a seção de atividades que irão iniciar na próxima semana.
+        """
         smartsheet_data = data.get('smartsheet_data', {})
+        if isinstance(smartsheet_data, dict) and 'all_tasks' in smartsheet_data:
+            all_tasks = smartsheet_data.get('all_tasks', [])
+        elif isinstance(smartsheet_data, list):
+            all_tasks = smartsheet_data
+        else:
+            return "Sem atividades previstas para iniciar na próxima semana."
         
-        # Verificar se temos uma entrada específica para tarefas atrasadas
+        from datetime import datetime, timedelta
+        hoje = datetime.now()
+        inicio_semana = (hoje + timedelta(days=(7-hoje.weekday()))).replace(hour=0, minute=0, second=0, microsecond=0)
+        fim_semana = inicio_semana + timedelta(days=6)
+        atividades = []
+        for task in all_tasks:
+            if not isinstance(task, dict):
+                continue
+            data_inicio = task.get('Data Inicio')
+            data_termino = task.get('Data Término')
+            try:
+                if isinstance(data_inicio, str):
+                    data_inicio_dt = datetime.strptime(data_inicio, "%d/%m/%Y")
+                else:
+                    data_inicio_dt = data_inicio
+            except Exception:
+                continue
+            if data_inicio_dt and inicio_semana <= data_inicio_dt <= fim_semana:
+                # Formatar datas
+                data_inicio_fmt = data_inicio_dt.strftime("%d/%m")
+                if data_termino:
+                    try:
+                        if isinstance(data_termino, str):
+                            data_termino_dt = datetime.strptime(data_termino, "%d/%m/%Y")
+                        else:
+                            data_termino_dt = data_termino
+                        data_termino_fmt = data_termino_dt.strftime("%d/%m")
+                    except Exception:
+                        data_termino_fmt = str(data_termino)
+                else:
+                    data_termino_fmt = "?"
+                nome = task.get('Nome da Tarefa', task.get('Task Name', ''))
+                disciplina = task.get('Disciplina', task.get('Discipline', ''))
+                atividades.append(f"- {data_inicio_fmt} a {data_termino_fmt} - {disciplina}: {nome}")
+        if not atividades:
+            return "Sem atividades previstas para iniciar na próxima semana."
+        return "\n".join(atividades)
+
+    def _gerar_atrasos_periodo(self, data: Dict[str, Any]) -> str:
+        """Gera a seção de atrasos e desvios do período, incluindo baseline e motivo de atraso."""
+        smartsheet_data = data.get('smartsheet_data', {})
         if isinstance(smartsheet_data, dict) and 'delayed_tasks' in smartsheet_data:
-            # Usar diretamente a lista de tarefas atrasadas
             delayed_tasks = smartsheet_data.get('delayed_tasks', [])
             logger.info(f"Usando {len(delayed_tasks)} tarefas atrasadas do dicionário")
         elif isinstance(smartsheet_data, dict) and 'all_tasks' in smartsheet_data:
-            # Filtrar tarefas atrasadas da lista completa
             all_tasks = smartsheet_data.get('all_tasks', [])
             delayed_tasks = []
             for task in all_tasks:
@@ -460,7 +512,6 @@ Qualquer dúvida, estamos à disposição!
                     delayed_tasks.append(task)
             logger.info(f"Filtradas {len(delayed_tasks)} tarefas atrasadas de {len(all_tasks)} tarefas")
         elif isinstance(smartsheet_data, list):
-            # Processar o formato antigo (lista direta de tarefas)
             all_tasks = smartsheet_data
             delayed_tasks = []
             for task in all_tasks:
@@ -470,20 +521,14 @@ Qualquer dúvida, estamos à disposição!
         else:
             logger.warning(f"Formato não reconhecido para smartsheet_data: {type(smartsheet_data)}")
             return "Não foram identificados atrasos no período."
-            
         if not delayed_tasks:
             return "Não foram identificados atrasos no período."
-        
-        # Formato da saída para tarefas atrasadas
         result = ""
         for task in delayed_tasks:
             if not isinstance(task, dict):
                 continue
-                
             task_discipline = task.get('Disciplina', task.get('Discipline', ''))
             task_name = task.get('Nome da Tarefa', task.get('Task Name', ''))
-            
-            # Tentar obter nova data
             new_date = task.get('Data Término', task.get('Data de Término', task.get('Due Date', '')))
             if new_date:
                 if isinstance(new_date, str):
@@ -495,9 +540,14 @@ Qualquer dúvida, estamos à disposição!
                         date_str = ""
             else:
                 date_str = ""
-            
-            result += f"* {task_discipline} – {task_name}{date_str}\n"
-        
+            baseline = task.get('Data de Fim - Baseline Otus')
+            motivo = task.get('Motivo de atraso')
+            extras = ""
+            if baseline:
+                extras += f"\n  - Data prevista inicial: {baseline}"
+            if motivo:
+                extras += f"\n  - Motivo do atraso: {motivo}"
+            result += f"* {task_discipline} – {task_name}{date_str}{extras}\n"
         return result if result else "Não foram identificados atrasos no período."
     
     def _gerar_programacao_semana(self, data: Dict[str, Any]) -> str:

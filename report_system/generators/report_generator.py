@@ -31,17 +31,8 @@ class SimpleReportGenerator:
         os.makedirs(self.reports_dir, exist_ok=True)
     
     def _load_prompt_template(self) -> str:
-        """Carrega o template de prompt do arquivo."""
-        try:
-            with open(self.config.prompt_template_path, 'r', encoding='utf-8') as f:
-                template = f.read()
-                logger.info(f"Template carregado de '{self.config.prompt_template_path}'")
-                return template
-        except FileNotFoundError:
-            logger.error(f"Arquivo de template não encontrado: {self.config.prompt_template_path}")
-            
-            # Template padrão caso o arquivo não exista
-            return """Bom dia pessoal,
+        """Carrega o template de prompt embutido no código, ignorando arquivo externo."""
+        return """Bom dia pessoal,
 
 Espero que essa mensagem os encontre bem.
 

@@ -441,17 +441,49 @@ Qualquer dúvida, estamos à disposição!
                 return task_date
             return datetime.min
         completed_tasks.sort(key=get_task_date, reverse=True)
-        result = ""
+        # Agrupar tarefas realizadas por disciplina
+        tarefas_por_disciplina = {}
         for task in completed_tasks:
             if not isinstance(task, dict):
                 continue
             task_date = task.get('Data Término', task.get('Data de Término', ''))
             task_name = task.get('Nome da Tarefa', task.get('Task Name', ''))
-            task_discipline = task.get('Disciplina', task.get('Discipline', ''))
-            responsible = task.get('Responsável', task.get('Responsible', ''))
-            task_line = format_task_line(task_date, task_discipline, task_name, responsible)
-            result += f"- {task_line}\n"
-        return result if result else "Sem tarefas concluídas no período."
+            task_discipline = task.get('Disciplina', task.get('Discipline', '')) or 'Sem Disciplina'
+            # Formatar data SEM negrito, sempre dd/mm
+            dt = parse_data_flex(task_date)
+            if not dt and isinstance(task_date, str) and len(task_date) >= 10:
+                try:
+                    so_data = task_date[:10]
+                    dt = datetime.strptime(so_data, "%Y-%m-%d")
+                except Exception:
+                    pass
+            if dt:
+                formatted_date = dt.strftime("%d/%m")
+            else:
+                import re
+                match = re.search(r'(\d{4})[-/](\d{2})[-/](\d{2})', str(task_date))
+                if match:
+                    formatted_date = f"{match.group(3)}/{match.group(2)}"
+                else:
+                    match2 = re.search(r'(\d{2})/(\d{2})', str(task_date))
+                    if match2:
+                        formatted_date = f"{match2.group(1)}/{match2.group(2)}"
+                    else:
+                        formatted_date = str(task_date).strip()[:5]
+            linha = f"{formatted_date} │ {task_name}"
+            if task_discipline not in tarefas_por_disciplina:
+                tarefas_por_disciplina[task_discipline] = []
+            tarefas_por_disciplina[task_discipline].append(linha)
+        # Montar resultado agrupado
+        if not tarefas_por_disciplina:
+            return "Sem tarefas concluídas no período."
+        result = ""
+        for disciplina, tarefas in tarefas_por_disciplina.items():
+            result += f"{disciplina}\n"
+            for tarefa in tarefas:
+                result += f"{tarefa}\n"
+            result += "\n"
+        return result.strip()
 
     def _gerar_atividades_iniciadas_proxima_semana(self, data: Dict[str, Any]) -> str:
         """
@@ -470,7 +502,8 @@ Qualquer dúvida, estamos à disposição!
         dias_ate_segunda = (7 - hoje.weekday()) % 7 or 7
         proxima_segunda = (hoje + timedelta(days=dias_ate_segunda)).replace(hour=0, minute=0, second=0, microsecond=0)
         proximo_domingo = proxima_segunda + timedelta(days=6)
-        atividades = []
+        # Agrupar atividades por disciplina
+        atividades_por_disciplina = {}
         for task in all_tasks:
             if not isinstance(task, dict):
                 continue
@@ -478,34 +511,45 @@ Qualquer dúvida, estamos à disposição!
             data_termino = task.get('Data Término')
             try:
                 if isinstance(data_inicio, str):
-                    data_inicio_dt = datetime.strptime(data_inicio, "%d/%m/%Y")
+                    data_inicio_dt = parse_data_flex(data_inicio)
                 else:
                     data_inicio_dt = data_inicio
             except Exception:
                 continue
             if data_inicio_dt and proxima_segunda <= data_inicio_dt <= proximo_domingo:
-                # Formatar datas
+                # Formatar datas SEM ANO
                 data_inicio_fmt = data_inicio_dt.strftime("%d/%m")
                 if data_termino:
                     try:
                         if isinstance(data_termino, str):
-                            data_termino_dt = datetime.strptime(data_termino, "%d/%m/%Y")
+                            data_termino_dt = parse_data_flex(data_termino)
                         else:
                             data_termino_dt = data_termino
                         data_termino_fmt = data_termino_dt.strftime("%d/%m")
                     except Exception:
-                        data_termino_fmt = str(data_termino)
+                        data_termino_fmt = str(data_termino)[:5]
                 else:
                     data_termino_fmt = "?"
                 nome = task.get('Nome da Tarefa', task.get('Task Name', ''))
-                disciplina = task.get('Disciplina', task.get('Discipline', ''))
-                # Usar o mesmo padrão de quebra de linha
-                first_line = f"{data_inicio_fmt} a {data_termino_fmt} – {disciplina}"
-                second_line = nome
-                atividades.append(f"- {first_line}\n  {second_line}")
-        if not atividades:
+                disciplina = task.get('Disciplina', task.get('Discipline', '')) or 'Sem Disciplina'
+                # Linha agrupada
+                if data_inicio_fmt == data_termino_fmt or not data_termino:
+                    linha = f"{data_inicio_fmt} │ {nome}"
+                else:
+                    linha = f"{data_inicio_fmt} a {data_termino_fmt} │ {nome}"
+                if disciplina not in atividades_por_disciplina:
+                    atividades_por_disciplina[disciplina] = []
+                atividades_por_disciplina[disciplina].append(linha)
+        # Montar resultado agrupado
+        if not atividades_por_disciplina:
             return "Sem atividades previstas para iniciar na próxima semana."
-        return "\n".join(atividades)
+        result = ""
+        for disciplina, atividades in atividades_por_disciplina.items():
+            result += f"{disciplina}\n"
+            for atividade in atividades:
+                result += f"{atividade}\n"
+            result += "\n"
+        return result.strip()
 
     def _gerar_atrasos_periodo(self, data: Dict[str, Any]) -> str:
         """Gera a seção de atrasos e desvios do período, incluindo baseline e motivo de atraso."""
@@ -550,6 +594,7 @@ Qualquer dúvida, estamos à disposição!
                 baseline = task.get(baseline_keys[0]) or baseline
             baseline_fmt = baseline if baseline else "-"
             motivo = task.get('Motivo de atraso')
+            motivo_fmt = motivo if motivo else "-"
             # Formatar datas
             nova_data_fmt = ""
             if nova_data:
@@ -558,20 +603,27 @@ Qualquer dúvida, estamos à disposição!
                     # Caso seja datetime já convertido
                     nova_data_dt = nova_data
                 if nova_data_dt:
-                    nova_data_fmt = nova_data_dt.strftime("%d/%m/%Y")
+                    nova_data_fmt = nova_data_dt.strftime("%d/%m")
                 else:
                     # Se for string, tentar extrair só a parte da data
                     if isinstance(nova_data, str) and len(nova_data) >= 10:
                         try:
                             so_data = nova_data[:10]
                             dt_tmp = datetime.strptime(so_data, "%Y-%m-%d")
-                            nova_data_fmt = dt_tmp.strftime("%d/%m/%Y")
+                            nova_data_fmt = dt_tmp.strftime("%d/%m")
                         except Exception:
-                            nova_data_fmt = str(nova_data)[:10]
+                            nova_data_fmt = str(nova_data)[:5]
                     else:
-                        nova_data_fmt = str(nova_data)
-            # Corrigir baseline para sempre dd/mm/yyyy
-            baseline_fmt = baseline if baseline else "-"
+                        nova_data_fmt = str(nova_data)[:5]
+            # Corrigir baseline para sempre dd/mm
+            if baseline:
+                baseline_dt = parse_data_flex(baseline)
+                if baseline_dt:
+                    baseline_fmt = baseline_dt.strftime("%d/%m")
+                else:
+                    baseline_fmt = str(baseline)[:5]
+            else:
+                baseline_fmt = "-"
             result += (f"* {task_discipline} – {task_name}\n"
                        f"    - Nova data programada: {nova_data_fmt}\n"
                        f"    - Data prevista inicial: {baseline_fmt}\n"
@@ -643,14 +695,15 @@ Qualquer dúvida, estamos à disposição!
                     return datetime.now() + timedelta(days=14)
             return task_date if task_date else datetime.now() + timedelta(days=14)
         future_tasks.sort(key=get_task_date, reverse=False)
-        result = ""
+        # Agrupar entregas por disciplina
+        entregas_por_disciplina = {}
         for task in future_tasks:
             if not isinstance(task, dict):
                 continue
             task_date = task.get('Data Término', task.get('Data de Término', task.get('Due Date', '')))
             task_name = task.get('Nome da Tarefa', task.get('Task Name', ''))
-            task_discipline = task.get('Disciplina', task.get('Discipline', ''))
-            # Formatar data e disciplina em negrito, descrição indentada
+            task_discipline = task.get('Disciplina', task.get('Discipline', '')) or 'Sem Disciplina'
+            # Formatar data SEM negrito, sempre dd/mm
             dt = parse_data_flex(task_date)
             if not dt and isinstance(task_date, str) and len(task_date) >= 10:
                 try:
@@ -661,12 +714,30 @@ Qualquer dúvida, estamos à disposição!
             if dt:
                 formatted_date = dt.strftime("%d/%m")
             else:
-                formatted_date = str(task_date)[:5]
-            disciplina_fmt = f"**{task_discipline}**" if task_discipline else ""
-            primeira_linha = f"**{formatted_date}** {disciplina_fmt}"
-            descricao = task_name
-            result += f"- {primeira_linha}\n    {descricao}\n"
-        return result if result else "Sem atividades programadas para as próximas duas semanas."
+                import re
+                match = re.search(r'(\d{4})[-/](\d{2})[-/](\d{2})', str(task_date))
+                if match:
+                    formatted_date = f"{match.group(3)}/{match.group(2)}"
+                else:
+                    match2 = re.search(r'(\d{2})/(\d{2})', str(task_date))
+                    if match2:
+                        formatted_date = f"{match2.group(1)}/{match2.group(2)}"
+                    else:
+                        formatted_date = str(task_date).strip()[:5]
+            linha = f"{formatted_date} │ {task_name}"
+            if task_discipline not in entregas_por_disciplina:
+                entregas_por_disciplina[task_discipline] = []
+            entregas_por_disciplina[task_discipline].append(linha)
+        # Montar resultado agrupado
+        if not entregas_por_disciplina:
+            return "Sem atividades programadas para as próximas duas semanas."
+        result = ""
+        for disciplina, entregas in entregas_por_disciplina.items():
+            result += f"{disciplina}\n"
+            for entrega in entregas:
+                result += f"{entrega}\n"
+            result += "\n"
+        return result.strip()
         
     def _gerar_tabela_apontamentos(self, data: dict) -> str:
         """Gera uma tabela de apontamentos por disciplina mostrando apenas status 'todo' (A Fazer)."""

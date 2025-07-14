@@ -488,6 +488,7 @@ Qualquer dúvida, estamos à disposição!
     def _gerar_atividades_iniciadas_proxima_semana(self, data: Dict[str, Any]) -> str:
         """
         Gera a seção de atividades que irão iniciar na próxima semana (segunda a domingo).
+        Se o relatório for solicitado antes de sexta-feira, considera atividades da semana atual e da próxima.
         """
         smartsheet_data = data.get('smartsheet_data', {})
         if isinstance(smartsheet_data, dict) and 'all_tasks' in smartsheet_data:
@@ -498,10 +499,22 @@ Qualquer dúvida, estamos à disposição!
             return "Sem atividades previstas para iniciar na próxima semana."
         from datetime import datetime, timedelta
         hoje = datetime.now()
-        # Encontrar próxima segunda-feira
-        dias_ate_segunda = (7 - hoje.weekday()) % 7 or 7
-        proxima_segunda = (hoje + timedelta(days=dias_ate_segunda)).replace(hour=0, minute=0, second=0, microsecond=0)
-        proximo_domingo = proxima_segunda + timedelta(days=6)
+        weekday = hoje.weekday()  # 0=segunda, 4=sexta
+        # Calcular intervalo de datas
+        if weekday < 4:  # Antes de sexta-feira
+            # Segunda-feira desta semana
+            segunda_atual = (hoje - timedelta(days=hoje.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+            # Domingo da próxima semana
+            domingo_proxima = segunda_atual + timedelta(days=13)
+            intervalo_inicio = segunda_atual
+            intervalo_fim = domingo_proxima
+        else:
+            # Próxima segunda-feira
+            dias_ate_segunda = (7 - hoje.weekday()) % 7 or 7
+            proxima_segunda = (hoje + timedelta(days=dias_ate_segunda)).replace(hour=0, minute=0, second=0, microsecond=0)
+            proximo_domingo = proxima_segunda + timedelta(days=6)
+            intervalo_inicio = proxima_segunda
+            intervalo_fim = proximo_domingo
         # Agrupar atividades por disciplina
         atividades_por_disciplina = {}
         for task in all_tasks:
@@ -516,7 +529,7 @@ Qualquer dúvida, estamos à disposição!
                     data_inicio_dt = data_inicio
             except Exception:
                 continue
-            if data_inicio_dt and proxima_segunda <= data_inicio_dt <= proximo_domingo:
+            if data_inicio_dt and intervalo_inicio <= data_inicio_dt <= intervalo_fim:
                 # Formatar datas SEM ANO
                 data_inicio_fmt = data_inicio_dt.strftime("%d/%m")
                 if data_termino:

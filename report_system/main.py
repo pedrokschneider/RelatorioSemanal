@@ -250,11 +250,15 @@ class WeeklyReportSystem:
             Lista de nomes do cliente
         """
         projects = self.get_active_projects()
-        
         for project in projects:
             if project['id'] == project_id:
-                return project.get('nome_cliente', [])
-        
+                nome_cliente = project.get('nome_cliente', [])
+                if isinstance(nome_cliente, list):
+                    return nome_cliente
+                elif isinstance(nome_cliente, str):
+                    return [nome_cliente]
+                else:
+                    return []
         return []
     
     def get_client_disciplines(self, project_id: str) -> List[str]:

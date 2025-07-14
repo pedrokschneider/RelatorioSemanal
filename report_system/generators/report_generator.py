@@ -45,7 +45,7 @@ def format_task_line(date_value, discipline, name, responsible=None):
         formatted_date = dt.strftime("%d/%m")
     else:
         formatted_date = str(date_value)[:5]  # fallback
-    line = f"{formatted_date} | {discipline}: {name}"
+    line = f"{formatted_date} | {discipline}:\n{name}"
     if responsible:
         line += f" (Responsável: {responsible})"
     return line
@@ -499,7 +499,10 @@ Qualquer dúvida, estamos à disposição!
                     data_termino_fmt = "?"
                 nome = task.get('Nome da Tarefa', task.get('Task Name', ''))
                 disciplina = task.get('Disciplina', task.get('Discipline', ''))
-                atividades.append(f"- {data_inicio_fmt} a {data_termino_fmt} - {disciplina}: {nome}")
+                # Usar o mesmo padrão de quebra de linha
+                first_line = f"{data_inicio_fmt} a {data_termino_fmt} – {disciplina}"
+                second_line = nome
+                atividades.append(f"- {first_line}\n  {second_line}")
         if not atividades:
             return "Sem atividades previstas para iniciar na próxima semana."
         return "\n".join(atividades)
@@ -551,10 +554,22 @@ Qualquer dúvida, estamos à disposição!
             nova_data_fmt = ""
             if nova_data:
                 nova_data_dt = parse_data_flex(nova_data)
+                if not nova_data_dt and hasattr(nova_data, 'strftime'):
+                    # Caso seja datetime já convertido
+                    nova_data_dt = nova_data
                 if nova_data_dt:
                     nova_data_fmt = nova_data_dt.strftime("%d/%m/%Y")
                 else:
-                    nova_data_fmt = str(nova_data)
+                    # Se for string, tentar extrair só a parte da data
+                    if isinstance(nova_data, str) and len(nova_data) >= 10:
+                        try:
+                            so_data = nova_data[:10]
+                            dt_tmp = datetime.strptime(so_data, "%Y-%m-%d")
+                            nova_data_fmt = dt_tmp.strftime("%d/%m/%Y")
+                        except Exception:
+                            nova_data_fmt = str(nova_data)[:10]
+                    else:
+                        nova_data_fmt = str(nova_data)
             baseline_fmt = baseline if baseline else "-"
             motivo_fmt = motivo if motivo else "-"
             result += (f"* {task_discipline} – {task_name}\n"
@@ -635,6 +650,7 @@ Qualquer dúvida, estamos à disposição!
             task_date = task.get('Data Término', task.get('Data de Término', task.get('Due Date', '')))
             task_name = task.get('Nome da Tarefa', task.get('Task Name', ''))
             task_discipline = task.get('Disciplina', task.get('Discipline', ''))
+            # Usar o mesmo padrão de quebra de linha
             task_line = format_task_line(task_date, task_discipline, task_name)
             result += f"- {task_line}\n"
         return result if result else "Sem atividades programadas para as próximas duas semanas."

@@ -70,7 +70,7 @@ class SimpleReportGenerator:
         """Carrega o template de prompt embutido no código, ignorando arquivo externo."""
         return """Bom dia a todos,
 
-Segue o resumo semanal do projeto **[NOME_PROJETO]**.
+Segue o resumo semanal do projeto [NOME_PROJETO].
 
 ---
 

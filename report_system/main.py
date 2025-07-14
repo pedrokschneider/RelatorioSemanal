@@ -229,6 +229,10 @@ class WeeklyReportSystem:
                         disciplines = [d.strip() for d in disciplines_str.split(',')]
                         project_dict['disciplinas_cliente'] = disciplines
                 
+                # Adicionar nome_cliente se disponível
+                if 'nome_cliente' in row and pd.notna(row['nome_cliente']):
+                    project_dict['nome_cliente'] = row['nome_cliente']
+                
                 projects_list.append(project_dict)
             except Exception as e:
                 logger.error(f"Erro ao processar projeto na linha {_}: {e}")

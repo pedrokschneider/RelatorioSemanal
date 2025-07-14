@@ -115,38 +115,25 @@ class SmartsheetConnector:
         """
         sheet_data = self.get_sheet(sheet_id, use_cache=use_cache, force_refresh=force_refresh)
         df = pd.DataFrame(sheet_data)
-        
         if df.empty:
             return df
-        
-        # Converter coluna de data
+        # Converter colunas de data
         if 'Data Término' in df.columns:
             df['Data Término'] = pd.to_datetime(df['Data Término'], errors='coerce')
-            
+        if 'Data Inicio' in df.columns:
+            df['Data Inicio'] = pd.to_datetime(df['Data Inicio'], errors='coerce')
             # Definir intervalo de tempo
             today = datetime.today()
             last_week = today - timedelta(weeks=weeks_range)
             next_week = today + timedelta(weeks=weeks_range)
-            
             # Filtrar por data e level
             filtered_df = df[
                 (df['Data Término'] >= last_week) & 
                 (df['Data Término'] <= next_week)
             ]
-            
             # Filtrar por Level se existir
             if 'Level' in filtered_df.columns:
                 filtered_df = filtered_df[filtered_df['Level'] == 5]
-            
-            # Selecionar colunas relevantes
-            columns = [
-                "Nome da Tarefa", "Data Inicio", "Data Término",
-                "Disciplina", "Level", "Status", "KPI", "Categoria de atraso"
-            ]
-            
-            # Filtrar apenas colunas que existem no DataFrame
-            available_columns = [col for col in columns if col in filtered_df.columns]
-            
-            return filtered_df[available_columns]
-        
+            # Retornar todas as colunas disponíveis
+            return filtered_df
         return df

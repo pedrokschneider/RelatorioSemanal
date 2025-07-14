@@ -14,6 +14,42 @@ from ..config import ConfigManager
 
 logger = logging.getLogger("ReportSystem")
 
+# Função utilitária para parse de datas flexível
+from datetime import datetime
+
+def parse_data_flex(date_str):
+    if not date_str:
+        return None
+    formatos = ["%d/%m/%Y", "%d/%m/%y", "%Y-%m-%d", "%d/%m"]
+    for fmt in formatos:
+        try:
+            return datetime.strptime(date_str, fmt)
+        except Exception:
+            continue
+    return None
+
+# 1. Ajustar formatação das listas (sem asteriscos, data sempre dd/mm)
+def format_task_line(date_value, discipline, name, responsible=None):
+    # Tenta converter para datetime
+    dt = None
+    if isinstance(date_value, str):
+        dt = parse_data_flex(date_value)
+        if not dt and len(date_value) >= 10:
+            try:
+                dt = datetime.strptime(date_value[:10], "%Y-%m-%d")
+            except Exception:
+                pass
+    elif hasattr(date_value, 'strftime'):
+        dt = date_value
+    if dt:
+        formatted_date = dt.strftime("%d/%m")
+    else:
+        formatted_date = str(date_value)[:5]  # fallback
+    line = f"{formatted_date} | {discipline}: {name}"
+    if responsible:
+        line += f" (Responsável: {responsible})"
+    return line
+
 class SimpleReportGenerator:
     """Gera relatórios com formato personalizado e links para o Construflow."""
     
@@ -32,35 +68,39 @@ class SimpleReportGenerator:
     
     def _load_prompt_template(self) -> str:
         """Carrega o template de prompt embutido no código, ignorando arquivo externo."""
-        return """Bom dia pessoal,
+        return """Bom dia a todos,
 
-Espero que essa mensagem os encontre bem.
+Segue o resumo semanal do projeto **[NOME_PROJETO]**.
 
-Segue abaixo um breve resumo do andamento do projeto do empreendimento [NOME_PROJETO]:
+---
 
-### Pontos que precisam de respostas [NOME_CLIENTE]:
+🛎️ Pontos que precisam de resposta ([NOME_CLIENTE]):
 [APONTAMENTOS_CLIENTE]
 
-### Realizados:
+---
+
+✅ Realizados na semana:
 [TAREFAS_REALIZADAS]
 
-### PLANEJAMENTO DA PRÓXIMA SEMANA: ATIVIDADES A SEREM INICIADAS
+---
+
+📅 Planejamento para a próxima semana (atividades a iniciar):
 [ATIVIDADES_INICIADAS_PROXIMA_SEMANA]
 
-### Atrasos e desvios do período:
+---
+
+⚠️ Atrasos e desvios do período:
 [ATRASOS_PERIODO]
 
-### ENTREGAS PARA AS PRÓXIMAS SEMANAS:
+---
+
+📦 Entregas previstas para as próximas semanas:
 [PROGRAMACAO_SEMANA]
 
-### Status de Apontamentos por Disciplina:
+---
+
+ 📊 Apontamentos pendentes por disciplina:
 [TABELA_APONTAMENTOS]
-
-Abaixo disponibilizamos os links para acesso ao formulário de feedback, ao cronograma e Construflow para acompanhamento do projeto.
-
-[LINK_FEEDBACK]
-[LINK_CRONOGRAMA]
-[LINK_CONSTRUFLOW]
 
 Qualquer dúvida, estamos à disposição!
 """
@@ -79,21 +119,22 @@ Qualquer dúvida, estamos à disposição!
             logger.error("Template de prompt não disponível")
             return "Erro: Template de relatório não disponível."
         
-        # Obter nome do cliente - primeiro nome ou nome do projeto se não houver cliente
+        # Obter nome do cliente corretamente
         project_name = data.get('project_name', 'Projeto')
         project_id = data.get('project_id', '')
         system = self._get_system_instance()  # Obtém instância do sistema
         client_names = system.get_client_names(project_id) if system else []
-        client_name = client_names[0] if client_names else project_name
+        if client_names and client_names[0]:
+            client_name = client_names[0]
+        else:
+            client_name = "Cliente"
         
         # Preparar substituições básicas
         replacements = {
             "[NOME_PROJETO]": project_name,
             "[NOME_CLIENTE]": client_name,
-            "[DATA_ATUAL]": datetime.now().strftime("%d/%m/%Y"),
-            "[LINK_FEEDBACK]": "https://forms.construflow.com.br/feedback",
-            "[LINK_CRONOGRAMA]": "https://drive.google.com/drive/folders/...",
-            "[LINK_CONSTRUFLOW]": f"https://app.construflow.com.br/project/{project_id}"
+            "[DATA_ATUAL]": datetime.now().strftime("%d/%m/%Y")
+
         }
         
         # Gerar apontamentos do cliente com links
@@ -314,7 +355,12 @@ Qualquer dúvida, estamos à disposição!
                 priority_group = 'sem_prioridade'
             
             # Armazenar a linha formatada no grupo correto
-            issue_line = f"[#{issue_code}]({construflow_url}) – {issue_title} {dias_sem_atualizacao}"
+            # issue_line = f"[#{issue_code}]({construflow_url}) – {issue_title} {dias_sem_atualizacao}"
+            # issues_por_prioridade[priority_group].append(issue_line)
+            if dias_sem_atualizacao and 'sem atualização' in dias_sem_atualizacao:
+                issue_line = f"[#{issue_code}]({construflow_url}) – {issue_title}\n   ⏳ {dias_sem_atualizacao.strip('()')}"
+            else:
+                issue_line = f"[#{issue_code}]({construflow_url}) – {issue_title}"
             issues_por_prioridade[priority_group].append(issue_line)
         
         # Construir o resultado final agrupado por prioridade
@@ -352,16 +398,11 @@ Qualquer dúvida, estamos à disposição!
 
     def _gerar_tarefas_realizadas(self, data: Dict[str, Any]) -> str:
         """Gera a seção de tarefas realizadas no período."""
-        # Verificar formato dos dados do Smartsheet
         smartsheet_data = data.get('smartsheet_data', {})
-        
-        # Verificar se smartsheet_data é um dicionário com chaves específicas
         if isinstance(smartsheet_data, dict) and 'completed_tasks' in smartsheet_data:
-            # Usar diretamente a lista de tarefas concluídas
             completed_tasks = smartsheet_data.get('completed_tasks', [])
             logger.info(f"Usando {len(completed_tasks)} tarefas concluídas do dicionário")
         elif isinstance(smartsheet_data, dict) and 'all_tasks' in smartsheet_data:
-            # Usar todas as tarefas e filtrar as concluídas
             all_tasks = smartsheet_data.get('all_tasks', [])
             completed_tasks = []
             for task in all_tasks:
@@ -371,7 +412,6 @@ Qualquer dúvida, estamos à disposição!
                         completed_tasks.append(task)
             logger.info(f"Filtradas {len(completed_tasks)} tarefas concluídas de {len(all_tasks)} tarefas")
         elif isinstance(smartsheet_data, list):
-            # Processar o formato antigo (lista direta de tarefas)
             all_tasks = smartsheet_data
             completed_tasks = []
             for task in all_tasks:
@@ -380,17 +420,13 @@ Qualquer dúvida, estamos à disposição!
                     if 'conclu' in status or 'realiz' in status or 'feito' in status or 'done' in status or 'complete' in status:
                         completed_tasks.append(task)
                 elif isinstance(task, str):
-                    # Se for uma string, adicionar diretamente
                     completed_tasks.append({'Nome da Tarefa': task})
             logger.info(f"Processadas {len(completed_tasks)} tarefas do formato antigo")
         else:
             logger.warning(f"Formato não reconhecido para smartsheet_data: {type(smartsheet_data)}")
             return "Sem tarefas concluídas no período."
-            
         if not completed_tasks:
             return "Sem tarefas concluídas no período."
-        
-        # Ordenar tarefas por data do mais recente para o menos recente
         from datetime import datetime
         def get_task_date(task):
             task_date = task.get('Data Término', task.get('Data de Término', ''))
@@ -400,48 +436,26 @@ Qualquer dúvida, estamos à disposição!
                         return datetime.strptime(task_date, fmt)
                     except Exception:
                         continue
-                return datetime.min  # Se não conseguir converter, joga para o final
+                return datetime.min
             elif hasattr(task_date, 'strftime'):
                 return task_date
             return datetime.min
         completed_tasks.sort(key=get_task_date, reverse=True)
-        
-        # Formato da saída para tarefas realizadas
         result = ""
         for task in completed_tasks:
             if not isinstance(task, dict):
                 continue
-                
-            # Formatar data
             task_date = task.get('Data Término', task.get('Data de Término', ''))
-            if task_date:
-                if isinstance(task_date, str):
-                    formatted_date = task_date
-                else:
-                    try:
-                        formatted_date = task_date.strftime("%d/%m")
-                    except:
-                        formatted_date = str(task_date)
-            else:
-                from datetime import datetime
-                formatted_date = datetime.now().strftime("%d/%m")
-            
-            # Obter informações da tarefa
             task_name = task.get('Nome da Tarefa', task.get('Task Name', ''))
             task_discipline = task.get('Disciplina', task.get('Discipline', ''))
             responsible = task.get('Responsável', task.get('Responsible', ''))
-            
-            # Formatar linha
-            task_line = f"{formatted_date} - {task_discipline}: {task_name}"
-            if responsible:
-                task_line += f" (Responsável: {responsible})"
-            result += f"{task_line}\n"
-        
+            task_line = format_task_line(task_date, task_discipline, task_name, responsible)
+            result += f"- {task_line}\n"
         return result if result else "Sem tarefas concluídas no período."
 
     def _gerar_atividades_iniciadas_proxima_semana(self, data: Dict[str, Any]) -> str:
         """
-        Gera a seção de atividades que irão iniciar na próxima semana.
+        Gera a seção de atividades que irão iniciar na próxima semana (segunda a domingo).
         """
         smartsheet_data = data.get('smartsheet_data', {})
         if isinstance(smartsheet_data, dict) and 'all_tasks' in smartsheet_data:
@@ -450,16 +464,17 @@ Qualquer dúvida, estamos à disposição!
             all_tasks = smartsheet_data
         else:
             return "Sem atividades previstas para iniciar na próxima semana."
-        
         from datetime import datetime, timedelta
         hoje = datetime.now()
-        inicio_semana = (hoje + timedelta(days=(7-hoje.weekday()))).replace(hour=0, minute=0, second=0, microsecond=0)
-        fim_semana = inicio_semana + timedelta(days=6)
+        # Encontrar próxima segunda-feira
+        dias_ate_segunda = (7 - hoje.weekday()) % 7 or 7
+        proxima_segunda = (hoje + timedelta(days=dias_ate_segunda)).replace(hour=0, minute=0, second=0, microsecond=0)
+        proximo_domingo = proxima_segunda + timedelta(days=6)
         atividades = []
         for task in all_tasks:
             if not isinstance(task, dict):
                 continue
-            data_inicio = task.get('Data Inicio')
+            data_inicio = task.get('Data Inicio', task.get('Data de Início', ''))
             data_termino = task.get('Data Término')
             try:
                 if isinstance(data_inicio, str):
@@ -468,7 +483,7 @@ Qualquer dúvida, estamos à disposição!
                     data_inicio_dt = data_inicio
             except Exception:
                 continue
-            if data_inicio_dt and inicio_semana <= data_inicio_dt <= fim_semana:
+            if data_inicio_dt and proxima_segunda <= data_inicio_dt <= proximo_domingo:
                 # Formatar datas
                 data_inicio_fmt = data_inicio_dt.strftime("%d/%m")
                 if data_termino:
@@ -520,151 +535,108 @@ Qualquer dúvida, estamos à disposição!
                 continue
             task_discipline = task.get('Disciplina', task.get('Discipline', ''))
             task_name = task.get('Nome da Tarefa', task.get('Task Name', ''))
-            new_date = task.get('Data Término', task.get('Data de Término', task.get('Due Date', '')))
-            if new_date:
-                if isinstance(new_date, str):
-                    date_str = f" - Nova data para entrega: {new_date}"
-                else:
-                    try:
-                        date_str = f" - Nova data para entrega: {new_date.strftime('%d/%m/%Y')}"
-                    except:
-                        date_str = ""
-            else:
-                date_str = ""
+            nova_data = task.get('Data Término', task.get('Data de Término', task.get('Due Date', '')))
+            # Buscar baseline mais recente
+            import re
             baseline = task.get('Data de Fim - Baseline Otus')
+            # Procurar todas as chaves que batem com o padrão
+            baseline_keys = [k for k in task.keys() if re.match(r'^Data de Fim - Baseline Otus R\\d+$', k)]
+            if baseline_keys:
+                # Ordenar pelo número do R (maior para menor)
+                baseline_keys.sort(key=lambda x: int(re.findall(r'R(\\d+)$', x)[0]), reverse=True)
+                baseline = task.get(baseline_keys[0]) or baseline
+            baseline_fmt = baseline if baseline else "-"
             motivo = task.get('Motivo de atraso')
-            extras = ""
-            if baseline:
-                extras += f"\n  - Data prevista inicial: {baseline}"
-            if motivo:
-                extras += f"\n  - Motivo do atraso: {motivo}"
-            result += f"* {task_discipline} – {task_name}{date_str}{extras}\n"
+            # Formatar datas
+            nova_data_fmt = ""
+            if nova_data:
+                nova_data_dt = parse_data_flex(nova_data)
+                if nova_data_dt:
+                    nova_data_fmt = nova_data_dt.strftime("%d/%m/%Y")
+                else:
+                    nova_data_fmt = str(nova_data)
+            baseline_fmt = baseline if baseline else "-"
+            motivo_fmt = motivo if motivo else "-"
+            result += (f"* {task_discipline} – {task_name}\n"
+                       f"    - Nova data programada: {nova_data_fmt}\n"
+                       f"    - Data prevista inicial: {baseline_fmt}\n"
+                       f"    - Motivo do atraso: {motivo_fmt}\n")
         return result if result else "Não foram identificados atrasos no período."
     
     def _gerar_programacao_semana(self, data: Dict[str, Any]) -> str:
         """Gera a seção de programação para as próximas duas semanas."""
-        # Verificar formato dos dados do Smartsheet
         smartsheet_data = data.get('smartsheet_data', {})
-        
-        # Verificar se temos uma entrada específica para tarefas programadas
         if isinstance(smartsheet_data, dict) and 'scheduled_tasks' in smartsheet_data:
-            # Usar diretamente a lista de tarefas programadas
             future_tasks = smartsheet_data.get('scheduled_tasks', [])
             logger.info(f"Usando {len(future_tasks)} tarefas programadas do dicionário")
         elif isinstance(smartsheet_data, dict) and 'all_tasks' in smartsheet_data:
-            # Filtrar tarefas futuras da lista completa
             all_tasks = smartsheet_data.get('all_tasks', [])
-            
-            # Identificar tarefas para as próximas duas semanas
             from datetime import datetime, timedelta
             today = datetime.today()
-            next_week_end = today + timedelta(days=14)  # Aumentado de 7 para 14 dias
-            
+            next_week_end = today + timedelta(days=14)
             future_tasks = []
             for task in all_tasks:
                 if not isinstance(task, dict):
                     continue
-                    
                 task_date = task.get('Data Término', task.get('Data de Término', task.get('Due Date', '')))
                 if task_date:
                     if isinstance(task_date, str):
-                        # Se não puder converter, considerar como futura
                         future_tasks.append(task)
                     else:
-                        # Se for data, verificar se está nas próximas duas semanas
                         try:
                             if today < task_date <= next_week_end:
                                 future_tasks.append(task)
                         except:
-                            # Se der erro na comparação, considerar como futura
                             future_tasks.append(task)
-            
-            # Se não encontrou tarefas futuras, pegar as 3 primeiras
             if not future_tasks and all_tasks:
                 future_tasks = all_tasks[:min(3, len(all_tasks))]
-                
             logger.info(f"Filtradas {len(future_tasks)} tarefas programadas de {len(all_tasks)} tarefas")
-            
         elif isinstance(smartsheet_data, list):
-            # Processar o formato antigo (lista direta de tarefas)
             from datetime import datetime, timedelta
             today = datetime.today()
-            next_week_end = today + timedelta(days=14)  # Aumentado de 7 para 14 dias
-            
+            next_week_end = today + timedelta(days=14)
             all_tasks = smartsheet_data
             future_tasks = []
-            
             for task in all_tasks:
                 if not isinstance(task, dict):
                     continue
-                    
                 task_date = task.get('Data Término', task.get('Data de Término', task.get('Due Date', '')))
                 if task_date:
                     if isinstance(task_date, str):
-                        # Se não puder converter, considerar como futura
                         future_tasks.append(task)
                     else:
-                        # Se for data, verificar se está nas próximas duas semanas
                         try:
                             if today < task_date <= next_week_end:
                                 future_tasks.append(task)
                         except:
-                            # Se der erro na comparação, considerar como futura
                             future_tasks.append(task)
-            
-            # Se não encontrou tarefas futuras, pegar as 3 primeiras
             if not future_tasks and all_tasks:
                 valid_tasks = [t for t in all_tasks if isinstance(t, dict)]
                 future_tasks = valid_tasks[:min(3, len(valid_tasks))]
-                
             logger.info(f"Filtradas {len(future_tasks)} tarefas programadas do formato antigo")
         else:
             logger.warning(f"Formato não reconhecido para smartsheet_data: {type(smartsheet_data)}")
             return "Sem atividades programadas para as próximas duas semanas."
-            
         if not future_tasks:
             return "Sem atividades programadas para as próximas duas semanas."
-        
-        # Ordenar tarefas por data (do mais próximo para o mais distante)
         def get_task_date(task):
             task_date = task.get('Data Término', task.get('Data de Término', task.get('Due Date', '')))
             if isinstance(task_date, str):
                 try:
                     return datetime.strptime(task_date, "%d/%m/%Y")
                 except:
-                    return datetime.now() + timedelta(days=14)  # Data padrão se não conseguir converter
-            return task_date if task_date else datetime.now() + timedelta(days=14)  # Data padrão se não tiver data
-        
-        future_tasks.sort(key=get_task_date, reverse=False)  # Ordenar do mais próximo para o mais distante
-        
-        # Formato da saída para tarefas programadas
+                    return datetime.now() + timedelta(days=14)
+            return task_date if task_date else datetime.now() + timedelta(days=14)
+        future_tasks.sort(key=get_task_date, reverse=False)
         result = ""
         for task in future_tasks:
             if not isinstance(task, dict):
                 continue
-                
-            # Formatar data
             task_date = task.get('Data Término', task.get('Data de Término', task.get('Due Date', '')))
-            if task_date:
-                if isinstance(task_date, str):
-                    formatted_date = task_date
-                else:
-                    try:
-                        formatted_date = task_date.strftime("%d/%m")
-                    except:
-                        formatted_date = str(task_date)
-            else:
-                # Se não tiver data, usar data aproximada duas semanas à frente
-                from datetime import datetime, timedelta
-                future_date = datetime.now() + timedelta(days=14)  # Aumentado de 7 para 14 dias
-                formatted_date = future_date.strftime("%d/%m")
-            
             task_name = task.get('Nome da Tarefa', task.get('Task Name', ''))
             task_discipline = task.get('Disciplina', task.get('Discipline', ''))
-            
-            # Formatar linha
-            result += f"{formatted_date} - {task_discipline}: {task_name}\n"
-        
+            task_line = format_task_line(task_date, task_discipline, task_name)
+            result += f"- {task_line}\n"
         return result if result else "Sem atividades programadas para as próximas duas semanas."
         
     def _gerar_tabela_apontamentos(self, data: dict) -> str:
@@ -768,38 +740,45 @@ Qualquer dúvida, estamos à disposição!
                 from docx import Document
                 from docx.shared import RGBColor, Pt
                 from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
-                
+                import re
                 doc = Document()
-                
                 # Adicionar título
                 title = doc.add_heading(f"Relatório Semanal - {project_name}", level=1)
                 title.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
-                
                 # Quebrar o relatório em parágrafos e adicioná-los ao documento
                 paragraphs = report_text.split('\n')
                 current_para = None
                 in_priority_section = None
-                
                 for line in paragraphs:
+                    # Detectar linhas de tarefas realizadas ou programadas
+                    match = re.match(r"^-?\s?(\d{2}/\d{2}) \| ([^:]+): (.+)", line)
+                    if match:
+                        para = doc.add_paragraph()
+                        run1 = para.add_run(match.group(1) + " | ")
+                        run1.bold = True
+                        run2 = para.add_run(match.group(2) + ": ")
+                        run2.bold = True
+                        run3 = para.add_run(match.group(3))
+                        continue
                     # Verificar se é um cabeçalho de prioridade
                     if "🔴 Prioridade Alta" in line:
                         heading = doc.add_heading("🔴 Prioridade Alta", level=2)
                         for run in heading.runs:
-                            run.font.color.rgb = RGBColor(255, 0, 0)  # Vermelho
+                            run.font.color.rgb = RGBColor(255, 0, 0)
                         current_para = None
                         in_priority_section = "alta"
                         continue
                     elif "🟠 Prioridade Média" in line:
                         heading = doc.add_heading("🟠 Prioridade Média", level=2)
                         for run in heading.runs:
-                            run.font.color.rgb = RGBColor(255, 140, 0)  # Laranja
+                            run.font.color.rgb = RGBColor(255, 140, 0)
                         current_para = None
                         in_priority_section = "media"
                         continue
                     elif "🟢 Prioridade Baixa" in line:
                         heading = doc.add_heading("🟢 Prioridade Baixa", level=2)
                         for run in heading.runs:
-                            run.font.color.rgb = RGBColor(0, 180, 0)  # Verde
+                            run.font.color.rgb = RGBColor(0, 180, 0)
                         current_para = None
                         in_priority_section = "baixa"
                         continue
@@ -808,56 +787,40 @@ Qualquer dúvida, estamos à disposição!
                         current_para = None
                         in_priority_section = "sem_prioridade"
                         continue
-                    # Verificar se é um cabeçalho (de arquivo prompt_template.txt)
                     elif line.startswith('## '):
-                        # Tratar como cabeçalho de seção (versão V2)
                         doc.add_heading(line.strip('#').strip(), level=2)
                         current_para = None
                         in_priority_section = None
                     elif line.startswith('#'):
-                        # Tratar como cabeçalho de documento (versão V2)
                         doc.add_heading(line.strip('#').strip(), level=1)
                         current_para = None
                         in_priority_section = None
                     elif line.strip() == '':
-                        # Linha em branco, finalizar parágrafo atual
                         current_para = None
                         in_priority_section = None
                     else:
-                        # Para item de lista dentro de seção de prioridade
                         if line.strip().startswith('- ') and in_priority_section:
-                            item_text = line.strip()[2:]  # Remover o "- " do início
+                            item_text = line.strip()[2:]
                             item_para = doc.add_paragraph()
                             item_para.style = 'List Bullet'
-                            
-                            # Colorir o texto baseado na prioridade
                             item_run = item_para.add_run(item_text)
                             if in_priority_section == "alta":
-                                item_run.font.color.rgb = RGBColor(180, 0, 0)  # Vermelho mais escuro para texto
+                                item_run.font.color.rgb = RGBColor(180, 0, 0)
                             elif in_priority_section == "media":
-                                item_run.font.color.rgb = RGBColor(200, 100, 0)  # Laranja mais escuro para texto
-                            
-                            current_para = None  # Reset para não adicionar à seção atual
+                                item_run.font.color.rgb = RGBColor(200, 100, 0)
+                            current_para = None
                         else:
-                            # Linha normal
                             if current_para is None:
-                                # Iniciar novo parágrafo
                                 current_para = doc.add_paragraph()
-                            
-                            # Adicionar linha ao parágrafo atual
                             if current_para.text:
                                 current_para.add_run('\n' + line)
                             else:
                                 current_para.text = line
-                
-                # Salvar o documento
                 file_name = f"Relatorio_{safe_project_name}_{today_str}.docx"
                 file_path = os.path.join(self.reports_dir, file_name)
                 doc.save(file_path)
                 logger.info(f"Relatório salvo como DOCX em {file_path}")
-                
                 return file_path
-                
             except ImportError:
                 logger.warning("Módulo python-docx não encontrado. Salvando como TXT.")
                 format_type = 'txt'

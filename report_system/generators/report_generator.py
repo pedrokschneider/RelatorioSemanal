@@ -570,8 +570,8 @@ Qualquer dúvida, estamos à disposição!
                             nova_data_fmt = str(nova_data)[:10]
                     else:
                         nova_data_fmt = str(nova_data)
+            # Corrigir baseline para sempre dd/mm/yyyy
             baseline_fmt = baseline if baseline else "-"
-            motivo_fmt = motivo if motivo else "-"
             result += (f"* {task_discipline} – {task_name}\n"
                        f"    - Nova data programada: {nova_data_fmt}\n"
                        f"    - Data prevista inicial: {baseline_fmt}\n"
@@ -650,9 +650,22 @@ Qualquer dúvida, estamos à disposição!
             task_date = task.get('Data Término', task.get('Data de Término', task.get('Due Date', '')))
             task_name = task.get('Nome da Tarefa', task.get('Task Name', ''))
             task_discipline = task.get('Disciplina', task.get('Discipline', ''))
-            # Usar o mesmo padrão de quebra de linha
-            task_line = format_task_line(task_date, task_discipline, task_name)
-            result += f"- {task_line}\n"
+            # Formatar data e disciplina em negrito, descrição indentada
+            dt = parse_data_flex(task_date)
+            if not dt and isinstance(task_date, str) and len(task_date) >= 10:
+                try:
+                    so_data = task_date[:10]
+                    dt = datetime.strptime(so_data, "%Y-%m-%d")
+                except Exception:
+                    pass
+            if dt:
+                formatted_date = dt.strftime("%d/%m")
+            else:
+                formatted_date = str(task_date)[:5]
+            disciplina_fmt = f"**{task_discipline}**" if task_discipline else ""
+            primeira_linha = f"**{formatted_date}** {disciplina_fmt}"
+            descricao = task_name
+            result += f"- {primeira_linha}\n    {descricao}\n"
         return result if result else "Sem atividades programadas para as próximas duas semanas."
         
     def _gerar_tabela_apontamentos(self, data: dict) -> str:
@@ -751,87 +764,68 @@ Qualquer dúvida, estamos à disposição!
         
         # Formato DOCX se solicitado
         if format_type.lower() == 'docx':
-            # Salvar como arquivo Word (.docx)
             try:
                 from docx import Document
                 from docx.shared import RGBColor, Pt
                 from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
                 import re
                 doc = Document()
-                # Adicionar título
+                # Adicionar título principal
                 title = doc.add_heading(f"Relatório Semanal - {project_name}", level=1)
                 title.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
-                # Quebrar o relatório em parágrafos e adicioná-los ao documento
+                # Quebrar o relatório em linhas
                 paragraphs = report_text.split('\n')
                 current_para = None
-                in_priority_section = None
+                # Mapear seções para Heading 2
+                secoes_h2 = [
+                    "Pontos que precisam de resposta",
+                    "Realizados na semana:",
+                    "Planejamento para a próxima semana (atividades a iniciar):",
+                    "Atrasos e desvios do período:",
+                    "Entregas previstas para as próximas semanas:",
+                    "Apontamentos pendentes por disciplina:",
+                    "🔴 Prioridade Alta",
+                    "🟠 Prioridade Média",
+                    "🟢 Prioridade Baixa",
+                    "⚪ Sem Prioridade Definida"
+                ]
+                cor_prioridade = {
+                    "🔴 Prioridade Alta": RGBColor(255, 0, 0),
+                    "🟠 Prioridade Média": RGBColor(255, 140, 0),
+                    "🟢 Prioridade Baixa": RGBColor(0, 180, 0),
+                    "⚪ Sem Prioridade Definida": RGBColor(120, 120, 120)
+                }
                 for line in paragraphs:
-                    # Detectar linhas de tarefas realizadas ou programadas
-                    match = re.match(r"^-?\s?(\d{2}/\d{2}) \| ([^:]+): (.+)", line)
-                    if match:
-                        para = doc.add_paragraph()
-                        run1 = para.add_run(match.group(1) + " | ")
-                        run1.bold = True
-                        run2 = para.add_run(match.group(2) + ": ")
-                        run2.bold = True
-                        run3 = para.add_run(match.group(3))
+                    l_strip = line.strip()
+                    # Título de saudação
+                    if l_strip == "Bom dia a todos,":
+                        doc.add_paragraph(l_strip)
                         continue
-                    # Verificar se é um cabeçalho de prioridade
-                    if "🔴 Prioridade Alta" in line:
-                        heading = doc.add_heading("🔴 Prioridade Alta", level=2)
-                        for run in heading.runs:
-                            run.font.color.rgb = RGBColor(255, 0, 0)
-                        current_para = None
-                        in_priority_section = "alta"
+                    # Título de fechamento
+                    if l_strip == "Qualquer dúvida, estamos à disposição!":
+                        doc.add_paragraph(l_strip)
                         continue
-                    elif "🟠 Prioridade Média" in line:
-                        heading = doc.add_heading("🟠 Prioridade Média", level=2)
-                        for run in heading.runs:
-                            run.font.color.rgb = RGBColor(255, 140, 0)
+                    # Seção principal (Heading 2) ou prioridade
+                    if l_strip in secoes_h2:
+                        heading = doc.add_heading(l_strip, level=2)
+                        if l_strip in cor_prioridade:
+                            for run in heading.runs:
+                                run.font.color.rgb = cor_prioridade[l_strip]
                         current_para = None
-                        in_priority_section = "media"
                         continue
-                    elif "🟢 Prioridade Baixa" in line:
-                        heading = doc.add_heading("🟢 Prioridade Baixa", level=2)
-                        for run in heading.runs:
-                            run.font.color.rgb = RGBColor(0, 180, 0)
-                        current_para = None
-                        in_priority_section = "baixa"
+                    # Linhas normais, listas, etc
+                    if l_strip.startswith('- '):
+                        item_para = doc.add_paragraph()
+                        item_para.style = 'List Bullet'
+                        item_para.add_run(l_strip[2:])
+                    elif l_strip.startswith('* '):
+                        item_para = doc.add_paragraph()
+                        item_para.style = 'List Bullet'
+                        item_para.add_run(l_strip[2:])
+                    elif l_strip == '---' or l_strip == '':
                         continue
-                    elif "⚪ Sem Prioridade" in line:
-                        heading = doc.add_heading("⚪ Sem Prioridade Definida", level=2)
-                        current_para = None
-                        in_priority_section = "sem_prioridade"
-                        continue
-                    elif line.startswith('## '):
-                        doc.add_heading(line.strip('#').strip(), level=2)
-                        current_para = None
-                        in_priority_section = None
-                    elif line.startswith('#'):
-                        doc.add_heading(line.strip('#').strip(), level=1)
-                        current_para = None
-                        in_priority_section = None
-                    elif line.strip() == '':
-                        current_para = None
-                        in_priority_section = None
                     else:
-                        if line.strip().startswith('- ') and in_priority_section:
-                            item_text = line.strip()[2:]
-                            item_para = doc.add_paragraph()
-                            item_para.style = 'List Bullet'
-                            item_run = item_para.add_run(item_text)
-                            if in_priority_section == "alta":
-                                item_run.font.color.rgb = RGBColor(180, 0, 0)
-                            elif in_priority_section == "media":
-                                item_run.font.color.rgb = RGBColor(200, 100, 0)
-                            current_para = None
-                        else:
-                            if current_para is None:
-                                current_para = doc.add_paragraph()
-                            if current_para.text:
-                                current_para.add_run('\n' + line)
-                            else:
-                                current_para.text = line
+                        doc.add_paragraph(l_strip)
                 file_name = f"Relatorio_{safe_project_name}_{today_str}.docx"
                 file_path = os.path.join(self.reports_dir, file_name)
                 doc.save(file_path)

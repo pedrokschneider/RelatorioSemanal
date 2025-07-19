@@ -112,28 +112,35 @@ class SmartsheetConnector:
                         use_cache: bool = True, force_refresh: bool = False) -> pd.DataFrame:
         """
         Obtém tarefas recentes de uma planilha Smartsheet.
+        Inclui tarefas que iniciam OU terminam no período especificado.
         """
         sheet_data = self.get_sheet(sheet_id, use_cache=use_cache, force_refresh=force_refresh)
         df = pd.DataFrame(sheet_data)
         if df.empty:
             return df
+        
         # Converter colunas de data
         if 'Data Término' in df.columns:
             df['Data Término'] = pd.to_datetime(df['Data Término'], errors='coerce')
         if 'Data Inicio' in df.columns:
             df['Data Inicio'] = pd.to_datetime(df['Data Inicio'], errors='coerce')
-            # Definir intervalo de tempo
-            today = datetime.today()
-            last_week = today - timedelta(weeks=weeks_range)
-            next_week = today + timedelta(weeks=weeks_range)
-            # Filtrar por data e level
-            filtered_df = df[
-                (df['Data Término'] >= last_week) & 
-                (df['Data Término'] <= next_week)
-            ]
-            # Filtrar por Level se existir
-            if 'Level' in filtered_df.columns:
-                filtered_df = filtered_df[filtered_df['Level'] == 5]
-            # Retornar todas as colunas disponíveis
-            return filtered_df
-        return df
+        
+        # Definir intervalo de tempo
+        today = datetime.today()
+        last_week = today - timedelta(weeks=weeks_range)
+        next_week = today + timedelta(weeks=weeks_range)
+        
+        # Filtrar por data de início OU data de término no período
+        # Criar máscaras para cada condição
+        mask_inicio = df['Data Inicio'].between(last_week, next_week) if 'Data Inicio' in df.columns else False
+        mask_termino = df['Data Término'].between(last_week, next_week) if 'Data Término' in df.columns else False
+        
+        # Combinar as máscaras (OU lógico)
+        filtered_df = df[mask_inicio | mask_termino]
+        
+        # Filtrar por Level se existir
+        if 'Level' in filtered_df.columns:
+            filtered_df = filtered_df[filtered_df['Level'] == 5]
+        
+        # Retornar todas as colunas disponíveis
+        return filtered_df

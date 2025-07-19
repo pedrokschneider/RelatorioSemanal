@@ -20,12 +20,64 @@ from datetime import datetime
 def parse_data_flex(date_str):
     if not date_str:
         return None
-    formatos = ["%d/%m/%Y", "%d/%m/%y", "%Y-%m-%d", "%d/%m"]
+    
+    # Se já for um objeto datetime, retornar diretamente
+    if hasattr(date_str, 'strftime'):
+        return date_str
+    
+    # Se for string vazia ou None, retornar None
+    if not isinstance(date_str, str) or not date_str.strip():
+        return None
+    
+    # Lista de formatos para tentar
+    formatos = [
+        "%d/%m/%Y",      # 25/12/2024
+        "%d/%m/%y",      # 25/12/24
+        "%Y-%m-%d",      # 2024-12-25
+        "%d/%m",         # 25/12
+        "%Y-%m-%d %H:%M:%S",  # 2024-12-25 10:30:00
+        "%d/%m/%Y %H:%M:%S",  # 25/12/2024 10:30:00
+        "%Y-%m-%dT%H:%M:%S",  # 2024-12-25T10:30:00
+        "%Y-%m-%dT%H:%M:%S.%f",  # 2024-12-25T10:30:00.123456
+        "%Y-%m-%dT%H:%M:%S.%fZ", # 2024-12-25T10:30:00.123456Z
+        "%Y-%m-%dT%H:%M:%SZ",   # 2024-12-25T10:30:00Z
+    ]
+    
     for fmt in formatos:
         try:
             return datetime.strptime(date_str, fmt)
         except Exception:
             continue
+    
+    # Se nenhum formato funcionou, tentar extrair apenas a parte da data
+    import re
+    # Padrão para extrair data no formato YYYY-MM-DD
+    match = re.search(r'(\d{4})-(\d{2})-(\d{2})', date_str)
+    if match:
+        try:
+            return datetime(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+        except Exception:
+            pass
+    
+    # Padrão para extrair data no formato DD/MM/YYYY
+    match = re.search(r'(\d{1,2})/(\d{1,2})/(\d{4})', date_str)
+    if match:
+        try:
+            return datetime(int(match.group(3)), int(match.group(2)), int(match.group(1)))
+        except Exception:
+            pass
+    
+    # Padrão para extrair data no formato DD/MM
+    match = re.search(r'(\d{1,2})/(\d{1,2})', date_str)
+    if match:
+        try:
+            # Assumir ano atual
+            current_year = datetime.now().year
+            return datetime(current_year, int(match.group(2)), int(match.group(1)))
+        except Exception:
+            pass
+    
+    logger.warning(f"Não foi possível converter a data: '{date_str}'")
     return None
 
 # 1. Ajustar formatação das listas (sem asteriscos, data sempre dd/mm)
@@ -496,10 +548,15 @@ Qualquer dúvida, estamos à disposição!
         elif isinstance(smartsheet_data, list):
             all_tasks = smartsheet_data
         else:
+            logger.warning(f"Formato não reconhecido para smartsheet_data: {type(smartsheet_data)}")
             return "Sem atividades previstas para iniciar na próxima semana."
+        
+        logger.info(f"Processando {len(all_tasks)} tarefas para atividades que iniciam na próxima semana")
+        
         from datetime import datetime, timedelta
         hoje = datetime.now()
         weekday = hoje.weekday()  # 0=segunda, 4=sexta
+        
         # Calcular intervalo de datas
         if weekday < 4:  # Antes de sexta-feira
             # Segunda-feira desta semana
@@ -508,6 +565,7 @@ Qualquer dúvida, estamos à disposição!
             domingo_proxima = segunda_atual + timedelta(days=13)
             intervalo_inicio = segunda_atual
             intervalo_fim = domingo_proxima
+            logger.info(f"Relatório antes de sexta-feira. Intervalo: {intervalo_inicio.strftime('%d/%m/%Y')} a {intervalo_fim.strftime('%d/%m/%Y')}")
         else:
             # Próxima segunda-feira
             dias_ate_segunda = (7 - hoje.weekday()) % 7 or 7
@@ -515,53 +573,92 @@ Qualquer dúvida, estamos à disposição!
             proximo_domingo = proxima_segunda + timedelta(days=6)
             intervalo_inicio = proxima_segunda
             intervalo_fim = proximo_domingo
+            logger.info(f"Relatório após sexta-feira. Intervalo: {intervalo_inicio.strftime('%d/%m/%Y')} a {intervalo_fim.strftime('%d/%m/%Y')}")
+        
         # Agrupar atividades por disciplina
         atividades_por_disciplina = {}
+        tarefas_processadas = 0
+        tarefas_com_data_inicio = 0
+        tarefas_no_intervalo = 0
+        
         for task in all_tasks:
             if not isinstance(task, dict):
                 continue
+            
+            tarefas_processadas += 1
             data_inicio = task.get('Data Inicio', task.get('Data de Início', ''))
             data_termino = task.get('Data Término')
+            
+            # Log detalhado para debug
+            task_name = task.get('Nome da Tarefa', task.get('Task Name', ''))
+            
+            if not data_inicio:
+                logger.debug(f"Tarefa '{task_name}' sem data de início")
+                continue
+            
+            tarefas_com_data_inicio += 1
+            
             try:
                 if isinstance(data_inicio, str):
                     data_inicio_dt = parse_data_flex(data_inicio)
                 else:
                     data_inicio_dt = data_inicio
-            except Exception:
+            except Exception as e:
+                logger.warning(f"Erro ao processar data de início '{data_inicio}' para tarefa '{task_name}': {e}")
                 continue
-            if data_inicio_dt and intervalo_inicio <= data_inicio_dt <= intervalo_fim:
+            
+            if not data_inicio_dt:
+                logger.debug(f"Tarefa '{task_name}' com data de início inválida: '{data_inicio}'")
+                continue
+            
+            # Verificar se está no intervalo
+            if intervalo_inicio <= data_inicio_dt <= intervalo_fim:
+                tarefas_no_intervalo += 1
+                logger.debug(f"Tarefa '{task_name}' com início em {data_inicio_dt.strftime('%d/%m/%Y')} está no intervalo")
+                
                 # Formatar datas SEM ANO
                 data_inicio_fmt = data_inicio_dt.strftime("%d/%m")
+                
                 if data_termino:
                     try:
                         if isinstance(data_termino, str):
                             data_termino_dt = parse_data_flex(data_termino)
                         else:
                             data_termino_dt = data_termino
-                        data_termino_fmt = data_termino_dt.strftime("%d/%m")
+                        data_termino_fmt = data_termino_dt.strftime("%d/%m") if data_termino_dt else "?"
                     except Exception:
                         data_termino_fmt = str(data_termino)[:5]
                 else:
                     data_termino_fmt = "?"
+                
                 nome = task.get('Nome da Tarefa', task.get('Task Name', ''))
                 disciplina = task.get('Disciplina', task.get('Discipline', '')) or 'Sem Disciplina'
+                
                 # Linha agrupada
                 if data_inicio_fmt == data_termino_fmt or not data_termino:
                     linha = f"{data_inicio_fmt} │ {nome}"
                 else:
                     linha = f"{data_inicio_fmt} a {data_termino_fmt} │ {nome}"
+                
                 if disciplina not in atividades_por_disciplina:
                     atividades_por_disciplina[disciplina] = []
                 atividades_por_disciplina[disciplina].append(linha)
+            else:
+                logger.debug(f"Tarefa '{task_name}' com início em {data_inicio_dt.strftime('%d/%m/%Y')} fora do intervalo")
+        
+        logger.info(f"Estatísticas: {tarefas_processadas} tarefas processadas, {tarefas_com_data_inicio} com data de início, {tarefas_no_intervalo} no intervalo")
+        
         # Montar resultado agrupado
         if not atividades_por_disciplina:
             return "Sem atividades previstas para iniciar na próxima semana."
+        
         result = ""
         for disciplina, atividades in atividades_por_disciplina.items():
             result += f"{disciplina}\n"
             for atividade in atividades:
                 result += f"{atividade}\n"
             result += "\n"
+        
         return result.strip()
 
     def _gerar_atrasos_periodo(self, data: Dict[str, Any]) -> str:

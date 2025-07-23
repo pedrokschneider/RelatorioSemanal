@@ -64,6 +64,9 @@ class WeeklyReportSystem:
         # Inicializar Discord
         self.discord_manager = self._initialize_discord_manager()
         
+        # Criar alias para compatibilidade com o bot
+        self.discord = self.discord_manager
+        
         if verbose_init:
             logger.info("✅ Sistema inicializado com sucesso!")
 

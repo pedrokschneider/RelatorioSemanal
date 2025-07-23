@@ -39,10 +39,17 @@ class ConfigManager:
         self.smartsheet_token = self.get_env_var("SMARTSHEET_TOKEN")
         self.smartsheet_base_url = self.get_env_var("SMARTSHEET_BASE_URL", "https://api.smartsheet.com/2.0/sheets/")
         
+        # Construflow - REST API (fallback)
         self.construflow_api_base = self.get_env_var("CONSTRUFLOW_API_BASE_URL")
         self.construflow_api_key = self.get_env_var("CONSTRUFLOW_API_KEY")
         self.construflow_api_secret = self.get_env_var("CONSTRUFLOW_API_SECRET")
         
+        # Construflow - GraphQL API (principal)
+        self.construflow_username = self.get_env_var("CONSTRUFLOW_USERNAME")
+        self.construflow_password = self.get_env_var("CONSTRUFLOW_PASSWORD")
+        self.construflow_graphql_api_key = self.get_env_var("CONSTRUFLOW_GRAPHQL_API_KEY")
+        self.construflow_graphql_api_secret = self.get_env_var("CONSTRUFLOW_GRAPHQL_API_SECRET")
+
         # Configurações Google
         self.google_credentials_path = self.get_env_var("GOOGLE_CREDENTIALS_PATH")
         self.template_folder_id = self.get_env_var("TEMPLATE_FOLDER_ID")
@@ -208,31 +215,42 @@ class ConfigManager:
     
     def validate_required_config(self) -> Dict[str, bool]:
         """
-        Valida se as configurações obrigatórias estão presentes.
+        Valida se as configurações necessárias estão presentes.
         
         Returns:
-            Dicionário com status de cada configuração obrigatória
+            Dicionário com status de cada componente
         """
-        required_configs = {
-            'CONSTRUFLOW_API_KEY': bool(self.construflow_api_key),
-            'CONSTRUFLOW_API_SECRET': bool(self.construflow_api_secret),
-            'CONSTRUFLOW_API_BASE_URL': bool(self.construflow_api_base),
-            'GOOGLE_CREDENTIALS_PATH': os.path.exists(self.google_credentials_path) if self.google_credentials_path else False,
-            'PROJECTS_SHEET_ID': bool(self.projects_sheet_id),
-            'PROMPT_TEMPLATE_PATH': os.path.exists(self.prompt_template_path) if self.prompt_template_path else False
-        }
+        validation = {}
         
-        # Verificar valores obrigatórios
-        validity_status = {
-            'all_valid': all(required_configs.values()),
-            'configs': required_configs
-        }
+        # Construflow - GraphQL (principal)
+        validation['CONSTRUFLOW_GRAPHQL'] = bool(
+            self.construflow_username and 
+            self.construflow_password and 
+            self.construflow_graphql_api_key
+        )
         
-        if not validity_status['all_valid']:
-            missing_configs = [key for key, valid in required_configs.items() if not valid]
-            logger.warning(f"Configurações obrigatórias ausentes: {', '.join(missing_configs)}")
+        # Construflow - REST (fallback)
+        validation['CONSTRUFLOW_REST'] = bool(
+            self.construflow_api_base and 
+            self.construflow_api_key and 
+            self.construflow_api_secret
+        )
         
-        return validity_status
+        # Smartsheet
+        validation['SMARTSHEET'] = bool(self.smartsheet_token)
+        
+        # Google
+        validation['GOOGLE_CREDENTIALS'] = bool(self.google_credentials_path)
+        validation['GOOGLE_TEMPLATE_FOLDER'] = bool(self.template_folder_id)
+        validation['GOOGLE_REPORT_FOLDER'] = bool(self.report_base_folder_id)
+        
+        # Google Sheets para configuração
+        validation['PROJECTS_SHEET'] = bool(self.projects_sheet_id)
+        
+        # Discord
+        validation['DISCORD_TOKEN'] = bool(self.discord_token)
+        
+        return validation
     
     def get_template_content(self, template_name: Optional[str] = None) -> str:
         """

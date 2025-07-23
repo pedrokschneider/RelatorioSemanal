@@ -1,0 +1,38 @@
+# Configurações do Sistema de Relatórios Semanais
+# ================================================
+
+# Diretórios
+CACHE_DIR=cache
+LOGS_DIR=logs
+
+# Smartsheet API
+SMARTSHEET_TOKEN=your_smartsheet_token_here
+SMARTSHEET_BASE_URL=https://api.smartsheet.com/2.0/sheets/
+
+# Construflow - REST API (fallback)
+CONSTRUFLOW_API_BASE_URL=your_construflow_api_base_url_here
+CONSTRUFLOW_API_KEY=your_construflow_api_key_here
+CONSTRUFLOW_API_SECRET=your_construflow_api_secret_here
+
+# Construflow - GraphQL API (principal)
+CONSTRUFLOW_USERNAME=gerentes@otusengenharia.com
+CONSTRUFLOW_PASSWORD=Otus.2019
+CONSTRUFLOW_GRAPHQL_API_KEY=d02126c4c1d7ec0e903449eb38bf2a4b
+CONSTRUFLOW_GRAPHQL_API_SECRET=3f6f1f9d080dfe21d04b15e5a2d4ac58d46a2af8f00f74e586685a7a83a7d45c
+
+# Google APIs
+GOOGLE_CREDENTIALS_PATH=config/google_credentials.json
+TEMPLATE_FOLDER_ID=your_template_folder_id_here
+REPORT_BASE_FOLDER_ID=your_report_base_folder_id_here
+
+# Google Sheets para configuração de projetos
+PROJECTS_SHEET_ID=your_projects_sheet_id_here
+PROJECTS_SHEET_NAME=Projetos
+
+# Templates
+PROMPT_TEMPLATE_PATH=templates/prompt_template.txt
+
+# Discord
+DISCORD_TOKEN=your_discord_token_here
+DISCORD_WEBHOOK_URL=your_discord_webhook_url_here
+DISCORD_ADMIN_CHANNEL_ID=your_discord_admin_channel_id_here 

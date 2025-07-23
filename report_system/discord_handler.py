@@ -165,14 +165,14 @@ class DiscordCommandHandler:
             else:
                 self.discord.send_notification(
                     channel_id,
-                    f"❌ Erro ao gerar relatório para o projeto {project_id}. Por favor, tente novamente mais tarde."
+                    f"❌ Ocorreu um erro ao gerar o relatório para o projeto {project_id}. Antes de entrar em contato com o suporte, verifique se as colunas **STATUS** e **DISCIPLINA** do cronograma do SmartSheet não possuem dados vazios."
                 )
                 return False
         except Exception as e:
             logger.error(f"Erro ao gerar relatório: {e}")
             self.discord.send_notification(
                 channel_id,
-                f"❌ Erro ao gerar relatório: {str(e)}"
+                f"❌ Ocorreu um erro ao gerar o relatório. Antes de entrar em contato com o suporte, verifique se as colunas **STATUS** e **DISCIPLINA** do cronograma do SmartSheet não possuem dados vazios."
             )
             return False
     

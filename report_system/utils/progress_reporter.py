@@ -148,6 +148,6 @@ class ProgressReporter:
                     final_message += f"\n\n📄 [Abrir Relatório]({doc_url})"
             else:
                 emoji = "❌"
-                final_message = f"{emoji} **{self.project_name}: Erro ao gerar relatório**\n\nTempo de processamento: {time_str}\n\nPor favor, verifique os logs ou tente novamente mais tarde."
+                final_message = f"{emoji} **{self.project_name}: Erro ao gerar relatório**\n\nTempo de processamento: {time_str}\n\nAntes de entrar em contato com o suporte, verifique se as colunas **STATUS** e **DISCIPLINA** do cronograma do SmartSheet não possuem dados vazios."
     
         self.send_message(self.channel_id, final_message)

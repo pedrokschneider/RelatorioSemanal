@@ -211,7 +211,7 @@ class ReportQueue:
                 
                 if not success:
                     # Enviar mensagem de erro se o processo falhou
-                    error_message = f"❌ Ocorreu um erro ao gerar o relatório para {project_name}. Tente novamente mais tarde."
+                    error_message = f"❌ Ocorreu um erro ao gerar o relatório para {project_name}. Antes de entrar em contato com o suporte, verifique se as colunas **STATUS** e **DISCIPLINA** do cronograma do SmartSheet não possuem dados vazios."
                     self.send_message_with_rate_limit(channel_id, error_message)
                 
                 # Marcar como concluído
@@ -317,13 +317,13 @@ class ReportQueue:
                 return True
             else:
                 # Mensagem de erro
-                message = f"❌ **Erro ao gerar relatório para {project_name}**"
+                message = f"❌ **Erro ao gerar relatório para {project_name}**\n\nAntes de entrar em contato com o suporte, verifique se as colunas **STATUS** e **DISCIPLINA** do cronograma do SmartSheet não possuem dados vazios."
                 self.send_message_with_rate_limit(channel_id, message)
                 return False
                 
         except Exception as e:
             logger.error(f"Erro ao executar script: {e}")
-            self.send_message_with_rate_limit(channel_id, f"❌ **Erro: {str(e)}**")
+            self.send_message_with_rate_limit(channel_id, f"❌ **Erro ao gerar relatório**\n\nAntes de entrar em contato com o suporte, verifique se as colunas **STATUS** e **DISCIPLINA** do cronograma do SmartSheet não possuem dados vazios.")
             return False
     
     def _read_pipe_windows_compatible(self, pipe):

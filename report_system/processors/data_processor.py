@@ -18,16 +18,28 @@ logger = logging.getLogger("ReportSystem")
 class DataProcessor:
     """Processa dados de várias fontes para gerar relatórios."""
     
-    def __init__(self, config: ConfigManager):
+    def __init__(self, config: ConfigManager, construflow_connector=None):
         """
         Inicializa o processador de dados.
         
         Args:
             config: Instância do ConfigManager
+            construflow_connector: Conector do Construflow (opcional, se não fornecido cria um novo)
         """
         self.config = config
         self.smartsheet = SmartsheetConnector(config)
-        self.construflow = ConstruflowConnector(config)
+        
+        # Usar o conector fornecido ou criar um novo
+        if construflow_connector:
+            self.construflow = construflow_connector
+        else:
+            # Tentar usar GraphQL primeiro, fallback para REST
+            try:
+                from ..connectors.construflow_graphql import ConstruflowGraphQLConnector
+                self.construflow = ConstruflowGraphQLConnector(config)
+            except ImportError:
+                self.construflow = ConstruflowConnector(config)
+        
         self.gdrive = GoogleDriveManager(config)
     
     def process_project_data(self, project_id: str, smartsheet_id: Optional[str] = None) -> Dict[str, Any]:
@@ -100,11 +112,26 @@ class DataProcessor:
         issues_df = self.construflow.get_project_issues(project_id)
         
         if not issues_df.empty:
-            # Filtrar issues ativas
-            active_issues = issues_df[
-                (issues_df['status_x'] == 'active') &
-                (issues_df['status_y'] == 'todo')
-            ] if 'status_x' in issues_df.columns and 'status_y' in issues_df.columns else pd.DataFrame()
+            # Filtrar issues ativas - adaptado para GraphQL
+            # GraphQL: status = status da issue, status_y = status da disciplina
+            if 'status' in issues_df.columns and 'status_y' in issues_df.columns:
+                # Para GraphQL: issues com status 'active' E disciplina com status 'todo'
+                active_issues = issues_df[
+                    (issues_df['status'] == 'active') &
+                    (issues_df['status_y'] == 'todo')
+                ]
+                logger.info(f"Filtradas {len(active_issues)} issues ativas com disciplina 'todo' de {len(issues_df)} total")
+            elif 'status' in issues_df.columns:
+                # Fallback: apenas verificar status da issue
+                active_issues = issues_df[issues_df['status'] == 'active']
+                logger.info(f"Filtradas {len(active_issues)} issues ativas (sem filtro de disciplina) de {len(issues_df)} total")
+            else:
+                # Fallback para formato REST (status_x e status_y)
+                active_issues = issues_df[
+                    (issues_df['status_x'] == 'active') &
+                    (issues_df['status_y'] == 'todo')
+                ] if 'status_x' in issues_df.columns and 'status_y' in issues_df.columns else pd.DataFrame()
+                logger.info(f"Usando filtro REST: {len(active_issues)} issues ativas")
             
             if not active_issues.empty:
                 result['construflow_data'] = {
@@ -113,10 +140,11 @@ class DataProcessor:
                     'disciplines': {}
                 }
                 
-                # Contagem por disciplina
+                # Contagem por disciplina (se disponível)
                 if 'name' in active_issues.columns:
                     discipline_counts = active_issues['name'].value_counts().to_dict()
                     result['construflow_data']['disciplines'] = discipline_counts
+                    logger.info(f"Disciplinas encontradas: {list(discipline_counts.keys())}")
             else:
                 # Inicializar estrutura vazia para evitar erros
                 result['construflow_data'] = {
@@ -124,9 +152,11 @@ class DataProcessor:
                     'issue_counts': 0,
                     'disciplines': {}
                 }
+                logger.warning("Nenhuma issue ativa encontrada")
             
             # Adicionar todas as issues para processamento
             result['construflow_data']['all_issues'] = issues_df.to_dict('records')
+            logger.info(f"Total de issues processadas: {len(issues_df)}")
         
         return result
     

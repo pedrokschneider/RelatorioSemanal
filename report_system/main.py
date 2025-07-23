@@ -36,61 +36,108 @@ class WeeklyReportSystem:
     """Sistema principal para geração de relatórios semanais."""
     
     def __init__(self, env_path: str = ".env", verbose_init: bool = True):
-        """
-        Inicializa o sistema de relatórios.
+        """Inicializa o sistema de relatórios semanais."""
+        if verbose_init:
+            logger.info("🚀 Inicializando Sistema de Relatórios Semanais")
         
-        Args:
-            env_path: Caminho para o arquivo .env
-            verbose_init: Se deve mostrar logs detalhados durante inicialização
-        """
-        print(">>> WeeklyReportSystem __init__ chamado")
-        
-        # O parâmetro verbose_init é mantido para compatibilidade
-        logger.info("Inicializando sistema de relatorios")
-        
+        # Configuração
         self.config = ConfigManager(env_path)
         
-        # Inicializar flags de controle
-        self.quiet_mode = False
-        self.disable_notifications = False
+        # Validar configuração
+        validation = self.config.validate_required_config()
+        if verbose_init:
+            logger.info(f"✅ Configuração validada: {sum(validation.values())}/{len(validation)} componentes")
         
-        # Inicializar o gerenciador de cache simplificado
+        # Inicializar atributos
+        self.project_config_df = None
+        self.discord_manager = None
+        
+        # Inicializar conectores
+        self._initialize_connectors(verbose_init)
+        
+        # Inicializar gerenciadores
+        self._initialize_managers(verbose_init)
+        
+        # Inicializar processador e gerador
+        self._initialize_processor_and_generator(verbose_init)
+        
+        # Inicializar Discord
+        self.discord_manager = self._initialize_discord_manager()
+        
+        if verbose_init:
+            logger.info("✅ Sistema inicializado com sucesso!")
+
+    def _initialize_connectors(self, verbose_init: bool = True):
+        """Inicializa os conectores de dados."""
         try:
-            from report_system.utils.simple_cache import SimpleCacheManager
-            self.cache_manager = SimpleCacheManager(self.config.cache_dir)
-            logger.info("Inicializado SimpleCacheManager para cache")
-        except Exception as e:
-            logger.error(f"Erro ao inicializar SimpleCacheManager: {e}")
-            # Se falhar, criar diretório básico de cache
-            cache_dir = os.path.join(os.getcwd(), "cache")
-            os.makedirs(cache_dir, exist_ok=True)
-            
-            # Atribuir None e registrar erro
-            self.cache_manager = None
-            logger.error("Sistema de cache não disponível")
-        
-        # Inicializar processador de dados e conectores
-        self.processor = DataProcessor(self.config)
-        self.generator = SimpleReportGenerator(self.config)
-        
-        # Inicializar o GoogleDriveManager
-        self.gdrive = GoogleDriveManager(self.config)
-        
-        self.project_config_df = None  # Será carregado sob demanda
-        
-        # Inicializar o gerenciador de notificações do Discord
-        self.discord = self._initialize_discord_manager()
-        
-        # Inicializar o manipulador de comandos do Discord
-        self.discord_handler = DiscordCommandHandler(self.config, self)
-        
-        # Verificar se o cache está funcionando
-        if self.cache_manager:
+            # Tentar usar GraphQL como principal
             try:
-                status = self.cache_manager.get_cache_status()
-                logger.info(f"Status do cache: {len(status)} arquivos encontrados")
+                from .connectors.construflow_graphql import ConstruflowGraphQLConnector
+                self.construflow = ConstruflowGraphQLConnector(self.config)
+                if verbose_init:
+                    logger.info("✅ Conector GraphQL do Construflow inicializado")
+            except ImportError as e:
+                logger.warning(f"Conector GraphQL não disponível: {e}")
+                # Fallback para REST
+                from .connectors.construflow import ConstruflowConnector
+                self.construflow = ConstruflowConnector(self.config)
+                if verbose_init:
+                    logger.info("✅ Conector REST do Construflow inicializado (fallback)")
+            
+            # Smartsheet
+            from .connectors.smartsheet import SmartsheetConnector
+            self.smartsheet = SmartsheetConnector(self.config)
+            if verbose_init:
+                logger.info("✅ Conector do Smartsheet inicializado")
+                
+        except Exception as e:
+            logger.error(f"❌ Erro ao inicializar conectores: {e}")
+            raise
+
+    def _initialize_managers(self, verbose_init: bool = True):
+        """Inicializa os gerenciadores de cache e notificação."""
+        try:
+            # Inicializar o gerenciador de cache simplificado
+            try:
+                from report_system.utils.simple_cache import SimpleCacheManager
+                self.cache_manager = SimpleCacheManager(self.config.cache_dir)
+                if verbose_init:
+                    logger.info("✅ Gerenciador de Cache inicializado")
             except Exception as e:
-                logger.warning(f"Erro ao verificar status do cache: {e}")
+                logger.error(f"❌ Erro ao inicializar Gerenciador de Cache: {e}")
+                # Se falhar, criar diretório básico de cache
+                cache_dir = os.path.join(os.getcwd(), "cache")
+                os.makedirs(cache_dir, exist_ok=True)
+                
+                # Atribuir None e registrar erro
+                self.cache_manager = None
+                logger.error("Sistema de cache não disponível")
+            
+            # Inicializar o GoogleDriveManager
+            self.gdrive = GoogleDriveManager(self.config)
+            if verbose_init:
+                logger.info("✅ GoogleDriveManager inicializado")
+            
+        except Exception as e:
+            logger.error(f"❌ Erro ao inicializar gerenciadores: {e}")
+            raise
+
+    def _initialize_processor_and_generator(self, verbose_init: bool = True):
+        """Inicializa o processador de dados e o gerador de relatórios."""
+        try:
+            # Inicializar processador de dados com o conector GraphQL
+            self.processor = DataProcessor(self.config, self.construflow)
+            if verbose_init:
+                logger.info("✅ DataProcessor inicializado com conector GraphQL")
+            
+            # Inicializar gerador de relatórios
+            self.generator = SimpleReportGenerator(self.config)
+            if verbose_init:
+                logger.info("✅ SimpleReportGenerator inicializado")
+                
+        except Exception as e:
+            logger.error(f"❌ Erro ao inicializar processador e gerador: {e}")
+            raise
 
     def _initialize_discord_manager(self):
         """Inicializa o gerenciador de Discord com melhor tratamento de erros."""
@@ -416,8 +463,8 @@ class WeeklyReportSystem:
     
     def _update_project_cache(self, project_id: str) -> bool:
         """
-        Atualiza o cache para um projeto específico usando o sistema simplificado.
-        Versão otimizada que salva corretamente os dados do Smartsheet com associação ao projeto.
+        Atualiza o cache para um projeto específico usando queries GraphQL otimizadas.
+        Versão ultra-otimizada que substitui 4+ chamadas REST por 1 query GraphQL consolidada.
         
         Args:
             project_id: ID do projeto
@@ -426,9 +473,7 @@ class WeeklyReportSystem:
             True se a atualização foi bem-sucedida, False caso contrário
         """
         try:
-            from concurrent.futures import ThreadPoolExecutor
-            
-            logger.info(f"Atualizando cache para o projeto {project_id} antes de gerar relatório")
+            logger.info(f"🚀 Atualizando cache otimizado para o projeto {project_id} via GraphQL consolidado")
             
             # Verificar se o cache manager está disponível
             if not self.cache_manager:
@@ -437,6 +482,52 @@ class WeeklyReportSystem:
                 
             # Usar o cache manager atual
             cache = self.cache_manager
+            
+            # Verificar se estamos usando o conector GraphQL
+            if hasattr(self.processor.construflow, 'get_project_data_optimized'):
+                logger.info("🎯 Usando query consolidada GraphQL para otimização máxima")
+                
+                # Obter todos os dados em uma única query GraphQL
+                consolidated_data = self.processor.construflow.get_project_data_optimized(project_id)
+                
+                if consolidated_data:
+                    # Salvar cada tipo de dados no cache
+                    if 'projects' in consolidated_data and hasattr(cache, 'save_construflow_data'):
+                        projects_data = consolidated_data['projects'].to_dict('records')
+                        cache.save_construflow_data("projects", projects_data)
+                        logger.info(f"✅ {len(projects_data)} projetos salvos via GraphQL consolidado")
+                    
+                    if 'disciplines' in consolidated_data and hasattr(cache, 'save_construflow_data'):
+                        disciplines_data = consolidated_data['disciplines'].to_dict('records')
+                        cache.save_construflow_data("disciplines", disciplines_data)
+                        logger.info(f"✅ {len(disciplines_data)} disciplinas salvas via GraphQL consolidado")
+                    
+                    if 'issues' in consolidated_data and hasattr(cache, 'save_construflow_data'):
+                        issues_data = consolidated_data['issues'].to_dict('records')
+                        cache.save_construflow_data("issues", issues_data)
+                        logger.info(f"✅ {len(issues_data)} issues salvas via GraphQL consolidado")
+                        
+                        # Log informativo sobre issues deste projeto
+                        try:
+                            project_issues = consolidated_data['issues'][consolidated_data['issues']['projectId'] == str(project_id)]
+                            logger.info(f"🎯 {len(project_issues)} issues específicas do projeto {project_id} obtidas via GraphQL")
+                        except Exception as e:
+                            logger.warning(f"Erro ao analisar issues para o projeto {project_id}: {e}")
+                    
+                    if 'issue_disciplines' in consolidated_data and hasattr(cache, 'save_construflow_data'):
+                        issue_disciplines_data = consolidated_data['issue_disciplines'].to_dict('records')
+                        cache.save_construflow_data("issues-disciplines", issue_disciplines_data)
+                        logger.info(f"✅ {len(issue_disciplines_data)} relacionamentos issue-discipline salvos via GraphQL consolidado")
+                    
+                    logger.info(f"🚀 Cache otimizado concluído para projeto {project_id} - 1 query GraphQL vs 4+ REST")
+                    return True
+                else:
+                    logger.warning("Query consolidada GraphQL retornou dados vazios, tentando método tradicional")
+            else:
+                logger.info("Conector GraphQL otimizado não disponível, usando método tradicional")
+            
+            # Fallback para método tradicional (threads paralelas)
+            from concurrent.futures import ThreadPoolExecutor
             
             # Verificar e atualizar arquivos de cache
             construflow = self.processor.construflow
@@ -1222,7 +1313,8 @@ class WeeklyReportSystem:
 
     def update_all_cache(self, projects):
         """
-        Atualiza o cache para todos os projetos de uma vez de forma eficiente.
+        Atualiza o cache para todos os projetos de uma vez usando queries GraphQL otimizadas.
+        Versão ultra-otimizada que usa queries paralelas por projeto em vez de carregar todas as issues.
         
         Args:
             projects: Lista de dicionários com dados dos projetos
@@ -1230,10 +1322,10 @@ class WeeklyReportSystem:
         Returns:
             True se a atualização foi bem-sucedida, False caso contrário
         """
-        logger.info(f"Iniciando atualização centralizada de cache para {len(projects)} projetos")
+        logger.info(f"🚀 Iniciando atualização centralizada ULTRA-OTIMIZADA para {len(projects)} projetos via GraphQL")
         
         try:
-           # Registrar a hora da última atualização
+            # Registrar a hora da última atualização
             self.last_cache_update = datetime.now()
             
             # Salvar em um arquivo para persistir entre execuções
@@ -1241,7 +1333,85 @@ class WeeklyReportSystem:
             with open(cache_timestamp_file, 'w') as f:
                 f.write(self.last_cache_update.isoformat())
 
-            # 1. Primeiro, atualizar dados globais do Construflow (uma única vez)
+            # Verificar se estamos usando o conector GraphQL otimizado
+            if hasattr(self.processor.construflow, 'get_multiple_projects_data_optimized'):
+                logger.info("🎯 Usando queries paralelas GraphQL para otimização máxima")
+                
+                # Extrair IDs dos projetos
+                project_ids = [str(project['id']) for project in projects if 'id' in project]
+                
+                if project_ids:
+                    logger.info(f"🎯 Processando {len(project_ids)} projetos com queries paralelas")
+                    
+                    # Obter dados usando queries paralelas otimizadas
+                    consolidated_data = self.processor.construflow.get_multiple_projects_data_optimized(project_ids)
+                    
+                    if consolidated_data:
+                        # Salvar cada tipo de dados no cache
+                        if 'projects' in consolidated_data and hasattr(self.cache_manager, 'save_construflow_data'):
+                            projects_data = consolidated_data['projects'].to_dict('records')
+                            self.cache_manager.save_construflow_data("projects", projects_data)
+                            logger.info(f"✅ {len(projects_data)} projetos salvos via queries paralelas")
+                        
+                        if 'disciplines' in consolidated_data and hasattr(self.cache_manager, 'save_construflow_data'):
+                            disciplines_data = consolidated_data['disciplines'].to_dict('records')
+                            self.cache_manager.save_construflow_data("disciplines", disciplines_data)
+                            logger.info(f"✅ {len(disciplines_data)} disciplinas salvas via GraphQL")
+                        
+                        if 'issues' in consolidated_data and hasattr(self.cache_manager, 'save_construflow_data'):
+                            issues_data = consolidated_data['issues'].to_dict('records')
+                            self.cache_manager.save_construflow_data("issues", issues_data)
+                            logger.info(f"🎯 {len(issues_data)} issues de {len(project_ids)} projetos salvas via queries paralelas")
+                        
+                        if 'issue_disciplines' in consolidated_data and hasattr(self.cache_manager, 'save_construflow_data'):
+                            issue_disciplines_data = consolidated_data['issue_disciplines'].to_dict('records')
+                            self.cache_manager.save_construflow_data("issues-disciplines", issue_disciplines_data)
+                            logger.info(f"✅ {len(issue_disciplines_data)} relacionamentos issue-discipline salvos")
+                        
+                        logger.info(f"🚀 Cache ULTRA-OTIMIZADO concluído: queries paralelas vs carregar todas as issues")
+                        return True
+                    else:
+                        logger.warning("Queries paralelas retornaram dados vazios, tentando método consolidado")
+                else:
+                    logger.warning("Nenhum ID de projeto encontrado, tentando método consolidado")
+            
+            # Fallback para método consolidado
+            if hasattr(self.processor.construflow, 'get_all_data_optimized'):
+                logger.info("🎯 Usando query consolidada GraphQL como fallback")
+                
+                # Obter todos os dados em uma única query GraphQL
+                consolidated_data = self.processor.construflow.get_all_data_optimized()
+                
+                if consolidated_data:
+                    # Salvar cada tipo de dados no cache
+                    if 'projects' in consolidated_data and hasattr(self.cache_manager, 'save_construflow_data'):
+                        projects_data = consolidated_data['projects'].to_dict('records')
+                        self.cache_manager.save_construflow_data("projects", projects_data)
+                        logger.info(f"✅ {len(projects_data)} projetos salvos via GraphQL consolidado")
+                    
+                    if 'disciplines' in consolidated_data and hasattr(self.cache_manager, 'save_construflow_data'):
+                        disciplines_data = consolidated_data['disciplines'].to_dict('records')
+                        self.cache_manager.save_construflow_data("disciplines", disciplines_data)
+                        logger.info(f"✅ {len(disciplines_data)} disciplinas salvas via GraphQL consolidado")
+                    
+                    if 'issues' in consolidated_data and hasattr(self.cache_manager, 'save_construflow_data'):
+                        issues_data = consolidated_data['issues'].to_dict('records')
+                        self.cache_manager.save_construflow_data("issues", issues_data)
+                        logger.info(f"✅ {len(issues_data)} issues salvas via GraphQL consolidado")
+                    
+                    if 'issue_disciplines' in consolidated_data and hasattr(self.cache_manager, 'save_construflow_data'):
+                        issue_disciplines_data = consolidated_data['issue_disciplines'].to_dict('records')
+                        self.cache_manager.save_construflow_data("issues-disciplines", issue_disciplines_data)
+                        logger.info(f"✅ {len(issue_disciplines_data)} relacionamentos issue-discipline salvos via GraphQL consolidado")
+                    
+                    logger.info(f"🚀 Cache centralizado otimizado concluído - 1 query GraphQL vs 4+ REST")
+                    return True
+                else:
+                    logger.warning("Query consolidada GraphQL retornou dados vazios, tentando método tradicional")
+            else:
+                logger.info("Conector GraphQL otimizado não disponível, usando método tradicional")
+            
+            # Fallback para método tradicional
             logger.info(f"Iniciando atualização centralizada de cache para {len(projects)} projetos")
             
             # Atualizar projetos

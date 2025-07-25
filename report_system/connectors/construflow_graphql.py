@@ -286,13 +286,15 @@ class ConstruflowGraphQLConnector(APIConnector):
     def get_project_issues(self, project_id: str, limit: int = None) -> pd.DataFrame:
         """
         Obtém issues/pendências de um projeto específico.
+        CORRIGIDO: Agora cria uma linha separada para cada disciplina de cada issue.
+        CORREÇÃO: Limpa o cache antes de buscar novos dados.
         
         Args:
             project_id: ID do projeto
-            limit: Número máximo de issues (None para buscar todas)
+            limit: Número máximo of issues (None para buscar todas)
             
         Returns:
-            DataFrame com issues
+            DataFrame com issues (uma linha por disciplina de cada issue)
         """
         cache_file = os.path.join(self.cache_dir, f"issues_{project_id}_graphql.pkl")
         
@@ -306,6 +308,14 @@ class ConstruflowGraphQLConnector(APIConnector):
                         return pd.DataFrame(pickle.load(f))
                 except Exception as e:
                     logger.warning(f"Erro ao carregar cache: {e}")
+        
+        # CORREÇÃO: Limpar cache antigo antes de buscar novos dados
+        try:
+            if os.path.exists(cache_file):
+                os.remove(cache_file)
+                logger.info(f"Cache antigo removido para projeto {project_id}")
+        except Exception as e:
+            logger.warning(f"Erro ao remover cache antigo: {e}")
         
         # Buscar issues usando GraphQL com paginação
         logger.info(f"Buscando issues do projeto {project_id} via GraphQL")
@@ -365,26 +375,37 @@ class ConstruflowGraphQLConnector(APIConnector):
                     logger.info(f"Página {page_count}: {len(page_issues)} issues encontradas")
                     
                     for issue in page_issues:
-                        # Extrair informações das disciplinas
-                        discipline_name = ''
-                        discipline_status = ''
+                        # CORREÇÃO: Criar uma linha para cada disciplina da issue
                         if issue.get('disciplines') and len(issue['disciplines']) > 0:
-                            # Pegar a primeira disciplina (assumindo que é a principal)
-                            issue_discipline = issue['disciplines'][0]
-                            discipline_name = issue_discipline['discipline'].get('name', '')
-                            discipline_status = issue_discipline.get('status', '')
-                        
-                        issues.append({
-                            'id': str(issue['id']),
-                            'code': issue['code'],
-                            'title': issue['title'],
-                            'status_x': issue['status'],  # Status da issue (active, closed, etc.)
-                            'projectId': project_id,
-                            'createdAt': issue.get('createdAt'),
-                            'updatedAt': issue.get('updatedAt'),
-                            'name': discipline_name,  # Nome da disciplina
-                            'status_y': discipline_status  # Status da disciplina (todo, done, etc.)
-                        })
+                            # Para cada disciplina da issue, criar uma linha separada
+                            for discipline_data in issue['disciplines']:
+                                discipline_name = discipline_data['discipline'].get('name', '')
+                                discipline_status = discipline_data.get('status', '')
+                                
+                                issues.append({
+                                    'id': str(issue['id']),
+                                    'code': issue['code'],
+                                    'title': issue['title'],
+                                    'status_x': issue['status'],  # Status da issue (active, closed, etc.)
+                                    'projectId': project_id,
+                                    'createdAt': issue.get('createdAt'),
+                                    'updatedAt': issue.get('updatedAt'),
+                                    'name': discipline_name,  # Nome da disciplina
+                                    'status_y': discipline_status  # Status da disciplina (todo, done, etc.)
+                                })
+                        else:
+                            # Se a issue não tem disciplinas, criar uma linha com valores vazios
+                            issues.append({
+                                'id': str(issue['id']),
+                                'code': issue['code'],
+                                'title': issue['title'],
+                                'status_x': issue['status'],  # Status da issue (active, closed, etc.)
+                                'projectId': project_id,
+                                'createdAt': issue.get('createdAt'),
+                                'updatedAt': issue.get('updatedAt'),
+                                'name': '',  # Nome da disciplina vazio
+                                'status_y': ''  # Status da disciplina vazio
+                            })
                     
                     # Verificar se há mais páginas
                     page_info = result['data']['project']['issues']['pageInfo']
@@ -399,14 +420,14 @@ class ConstruflowGraphQLConnector(APIConnector):
                     logger.warning(f"Página {page_count}: Nenhuma issue encontrada")
                     break
             
-            logger.info(f"Total de {len(issues)} issues carregadas do projeto {project_id}")
+            logger.info(f"Total de {len(issues)} linhas de issues+disciplinas carregadas do projeto {project_id}")
             
             # Salvar em cache
             if issues:
                 try:
                     with open(cache_file, 'wb') as f:
                         pickle.dump(issues, f)
-                    logger.info(f"Cache atualizado para {len(issues)} issues do projeto {project_id}")
+                    logger.info(f"Cache atualizado para {len(issues)} linhas de issues+disciplinas do projeto {project_id}")
                 except Exception as e:
                     logger.warning(f"Erro ao salvar cache: {e}")
             
@@ -534,7 +555,8 @@ class ConstruflowGraphQLConnector(APIConnector):
     def get_consolidated_project_data(self, project_id: str = None, limit: int = None) -> Dict[str, pd.DataFrame]:
         """
         Obtém todos os dados de um projeto em uma única query GraphQL otimizada.
-        Substitui múltiplas chamadas REST por uma única query consolidada.
+        CORRIGIDO: Agora inclui disciplinas e cria uma linha separada para cada disciplina de cada issue.
+        CORREÇÃO: Limpa o cache antes de buscar novos dados.
         
         Args:
             project_id: ID do projeto específico (obrigatório para otimização)
@@ -550,8 +572,16 @@ class ConstruflowGraphQLConnector(APIConnector):
             
             logger.info(f"🎯 Executando query consolidada GraphQL OTIMIZADA para projeto {project_id}")
             
-            # Query consolidada OTIMIZADA que filtra issues por projeto específico
-            # Baseada nos campos que realmente existem no schema
+            # CORREÇÃO: Limpar cache antigo antes de buscar novos dados
+            cache_file = os.path.join(self.cache_dir, f"issues_{project_id}_graphql.pkl")
+            try:
+                if os.path.exists(cache_file):
+                    os.remove(cache_file)
+                    logger.info(f"Cache antigo removido para projeto {project_id}")
+            except Exception as e:
+                logger.warning(f"Erro ao remover cache antigo: {e}")
+            
+            # Query consolidada OTIMIZADA que inclui disciplinas
             query = """
             query GetProjectDataOptimized($projectId: Int!, $limit: Int) {
                 project(projectId: $projectId) {
@@ -564,6 +594,15 @@ class ConstruflowGraphQLConnector(APIConnector):
                             code
                             title
                             status
+                            createdAt
+                            updatedAt
+                            disciplines {
+                                discipline {
+                                    id
+                                    name
+                                }
+                                status
+                            }
                         }
                         pageInfo {
                             hasNextPage
@@ -604,25 +643,44 @@ class ConstruflowGraphQLConnector(APIConnector):
                 })
                 logger.info(f"✅ Projeto {project['name']} obtido via GraphQL otimizado")
             
-            # Processar issues do projeto específico
+            # Processar issues do projeto específico (CORRIGIDO: uma linha por disciplina)
             issues_data = []
             
             if data.get('project', {}).get('issues', {}).get('issues'):
                 for issue in data['project']['issues']['issues']:
-                    # Dados da issue (apenas campos disponíveis)
-                    issue_data = {
-                        'id': issue['id'],
-                        'code': issue.get('code', ''),
-                        'title': issue['title'],
-                        'status': issue.get('status', ''),
-                        'projectId': str(project_id),  # Usar o project_id fornecido
-                        'description': '',  # Campo não disponível no schema
-                        'createdAt': '',    # Campo não disponível no schema
-                        'updatedAt': '',    # Campo não disponível no schema
-                        'disciplineId': '', # Campo não disponível no schema
-                        'commentCount': 0   # Campo não disponível no schema
-                    }
-                    issues_data.append(issue_data)
+                    # CORREÇÃO: Criar uma linha para cada disciplina da issue
+                    if issue.get('disciplines') and len(issue['disciplines']) > 0:
+                        # Para cada disciplina da issue, criar uma linha separada
+                        for discipline_data in issue['disciplines']:
+                            discipline_name = discipline_data['discipline'].get('name', '')
+                            discipline_status = discipline_data.get('status', '')
+                            
+                            issue_data = {
+                                'id': issue['id'],
+                                'code': issue.get('code', ''),
+                                'title': issue['title'],
+                                'status_x': issue.get('status', ''),  # Status da issue
+                                'projectId': str(project_id),
+                                'createdAt': issue.get('createdAt', ''),
+                                'updatedAt': issue.get('updatedAt', ''),
+                                'name': discipline_name,  # Nome da disciplina
+                                'status_y': discipline_status  # Status da disciplina
+                            }
+                            issues_data.append(issue_data)
+                    else:
+                        # Se a issue não tem disciplinas, criar uma linha com valores vazios
+                        issue_data = {
+                            'id': issue['id'],
+                            'code': issue.get('code', ''),
+                            'title': issue['title'],
+                            'status_x': issue.get('status', ''),
+                            'projectId': str(project_id),
+                            'createdAt': issue.get('createdAt', ''),
+                            'updatedAt': issue.get('updatedAt', ''),
+                            'name': '',  # Nome da disciplina vazio
+                            'status_y': ''  # Status da disciplina vazio
+                        }
+                        issues_data.append(issue_data)
             
             # Converter para DataFrames
             results = {}
@@ -633,9 +691,9 @@ class ConstruflowGraphQLConnector(APIConnector):
             
             if issues_data:
                 results['issues'] = pd.DataFrame(issues_data)
-                logger.info(f"🎯 {len(issues_data)} issues do projeto {project_id} obtidas via GraphQL otimizado")
+                logger.info(f"🎯 {len(issues_data)} linhas de issues+disciplinas do projeto {project_id} obtidas via GraphQL otimizado")
             
-            logger.info(f"🚀 Query otimizada concluída: 1 projeto + {len(issues_data)} issues específicas vs carregar todas as issues")
+            logger.info(f"🚀 Query otimizada concluída: 1 projeto + {len(issues_data)} linhas de issues+disciplinas específicas")
             return results
             
         except Exception as e:
@@ -659,7 +717,7 @@ class ConstruflowGraphQLConnector(APIConnector):
     def get_all_data_optimized(self) -> Dict[str, pd.DataFrame]:
         """
         Versão otimizada que obtém todos os dados em uma única query GraphQL.
-        Substitui 4+ chamadas REST por 1 query GraphQL.
+        CORRIGIDO: Agora inclui disciplinas e cria uma linha separada para cada disciplina de cada issue.
         
         Returns:
             Dicionário com todos os DataFrames
@@ -667,7 +725,7 @@ class ConstruflowGraphQLConnector(APIConnector):
         try:
             logger.info("🎯 Executando query consolidada GraphQL para TODOS os projetos")
             
-            # Query para buscar todos os projetos e suas issues
+            # Query para buscar todos os projetos e suas issues com disciplinas
             query = """
             query GetAllProjectsData($limit: Int) {
                 projects(first: $limit) {
@@ -681,6 +739,15 @@ class ConstruflowGraphQLConnector(APIConnector):
                                 code
                                 title
                                 status
+                                createdAt
+                                updatedAt
+                                disciplines {
+                                    discipline {
+                                        id
+                                        name
+                                    }
+                                    status
+                                }
                             }
                         }
                     }
@@ -722,22 +789,42 @@ class ConstruflowGraphQLConnector(APIConnector):
                     }
                     projects_data.append(project_data)
                     
-                    # Issues do projeto
+                    # Issues do projeto (CORRIGIDO: uma linha por disciplina)
                     if project.get('issues', {}).get('issues'):
                         for issue in project['issues']['issues']:
-                            issue_data = {
-                                'id': issue['id'],
-                                'code': issue.get('code', ''),
-                                'title': issue['title'],
-                                'status': issue.get('status', ''),
-                                'projectId': str(project['id']),
-                                'description': '',
-                                'createdAt': '',
-                                'updatedAt': '',
-                                'disciplineId': '',
-                                'commentCount': 0
-                            }
-                            issues_data.append(issue_data)
+                            # CORREÇÃO: Criar uma linha para cada disciplina da issue
+                            if issue.get('disciplines') and len(issue['disciplines']) > 0:
+                                # Para cada disciplina da issue, criar uma linha separada
+                                for discipline_data in issue['disciplines']:
+                                    discipline_name = discipline_data['discipline'].get('name', '')
+                                    discipline_status = discipline_data.get('status', '')
+                                    
+                                    issue_data = {
+                                        'id': issue['id'],
+                                        'code': issue.get('code', ''),
+                                        'title': issue['title'],
+                                        'status_x': issue.get('status', ''),  # Status da issue
+                                        'projectId': str(project['id']),
+                                        'createdAt': issue.get('createdAt', ''),
+                                        'updatedAt': issue.get('updatedAt', ''),
+                                        'name': discipline_name,  # Nome da disciplina
+                                        'status_y': discipline_status  # Status da disciplina
+                                    }
+                                    issues_data.append(issue_data)
+                            else:
+                                # Se a issue não tem disciplinas, criar uma linha com valores vazios
+                                issue_data = {
+                                    'id': issue['id'],
+                                    'code': issue.get('code', ''),
+                                    'title': issue['title'],
+                                    'status_x': issue.get('status', ''),
+                                    'projectId': str(project['id']),
+                                    'createdAt': issue.get('createdAt', ''),
+                                    'updatedAt': issue.get('updatedAt', ''),
+                                    'name': '',  # Nome da disciplina vazio
+                                    'status_y': ''  # Status da disciplina vazio
+                                }
+                                issues_data.append(issue_data)
             
             # Converter para DataFrames
             results = {}
@@ -748,7 +835,7 @@ class ConstruflowGraphQLConnector(APIConnector):
             
             if issues_data:
                 results['issues'] = pd.DataFrame(issues_data)
-                logger.info(f"✅ {len(issues_data)} issues obtidas via GraphQL consolidado")
+                logger.info(f"✅ {len(issues_data)} linhas de issues+disciplinas obtidas via GraphQL consolidado")
             
             logger.info(f"🚀 Query consolidada para todos os projetos concluída")
             return results

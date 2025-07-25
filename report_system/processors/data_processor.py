@@ -115,12 +115,12 @@ class DataProcessor:
             # Filtrar issues ativas - adaptado para GraphQL
             # GraphQL: status = status da issue, status_y = status da disciplina
             if 'status' in issues_df.columns and 'status_y' in issues_df.columns:
-                # Para GraphQL: issues com status 'active' E disciplina com status 'todo'
+                # Para GraphQL: issues com status 'active' E disciplina com status 'todo' OU 'follow'
                 active_issues = issues_df[
                     (issues_df['status'] == 'active') &
-                    (issues_df['status_y'] == 'todo')
+                    (issues_df['status_y'].isin(['todo', 'follow']))
                 ]
-                logger.info(f"Filtradas {len(active_issues)} issues ativas com disciplina 'todo' de {len(issues_df)} total")
+                logger.info(f"Filtradas {len(active_issues)} issues ativas com disciplina 'todo' ou 'follow' de {len(issues_df)} total")
             elif 'status' in issues_df.columns:
                 # Fallback: apenas verificar status da issue
                 active_issues = issues_df[issues_df['status'] == 'active']
@@ -129,7 +129,7 @@ class DataProcessor:
                 # Fallback para formato REST (status_x e status_y)
                 active_issues = issues_df[
                     (issues_df['status_x'] == 'active') &
-                    (issues_df['status_y'] == 'todo')
+                    (issues_df['status_y'].isin(['todo', 'follow']))
                 ] if 'status_x' in issues_df.columns and 'status_y' in issues_df.columns else pd.DataFrame()
                 logger.info(f"Usando filtro REST: {len(active_issues)} issues ativas")
             

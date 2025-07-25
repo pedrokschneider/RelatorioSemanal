@@ -275,21 +275,21 @@ Qualquer dúvida, estamos à disposição!
         if not client_issues:
             return "Sem apontamentos pendentes para o cliente nesta semana."
         
-        # Filtrar apontamentos - adaptado para GraphQL
-        # No GraphQL: status == 'active' significa que está pendente
-        # No REST: status_y == 'todo' significa que está pendente
+        # Filtrar apontamentos - CORRIGIDO: apenas issues com status 'todo' na disciplina
+        # CORREÇÃO: Incluir apenas issues com status da disciplina = 'todo'
         todo_issues = []
         for issue in client_issues:
-            # Verificar se é formato GraphQL (status == 'active') ou REST (status_y == 'todo')
-            if issue.get('status') == 'active' or issue.get('status_y') == 'todo':
+            # CORREÇÃO: Incluir apenas issues com status da disciplina = 'todo'
+            # Não incluir issues com status 'done' ou 'follow'
+            if issue.get('status_y') == 'todo':
                 todo_issues.append(issue)
         
-        logger.info(f"Filtrados {len(todo_issues)} apontamentos pendentes de {len(client_issues)} apontamentos do cliente")
+        logger.info(f"Filtrados {len(todo_issues)} apontamentos com status 'todo' de {len(client_issues)} apontamentos do cliente")
         
-        # Se não houver apontamentos pendentes, usar client_issues original
+        # Se não houver apontamentos com status 'todo', retornar mensagem informativa
         if not todo_issues:
-            todo_issues = client_issues
-            logger.warning("Nenhum apontamento pendente encontrado, usando lista original")
+            logger.info("Nenhum apontamento com status 'todo' encontrado")
+            return "Sem apontamentos pendentes (A Fazer) para o cliente nesta semana."
         
         # Obter todas as issues do projeto do cache (issues_cache)
         all_issues = data.get('construflow_data', {}).get('all_issues', [])

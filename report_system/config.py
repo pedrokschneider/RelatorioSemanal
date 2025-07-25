@@ -254,29 +254,69 @@ class ConfigManager:
     
     def get_template_content(self, template_name: Optional[str] = None) -> str:
         """
-        Obtém o conteúdo do template de relatório.
+        Obtém o conteúdo do template de prompt.
         
         Args:
-            template_name: Nome do template (se None, usa o padrão)
+            template_name: Nome do template (opcional)
             
         Returns:
-            Conteúdo do template ou string vazia se não encontrado
+            Conteúdo do template
         """
-        template_path = template_name or self.prompt_template_path
+        template_path = self.get_env_var('PROMPT_TEMPLATE_PATH', 'templates/prompt_template.txt')
         
-        if not template_path:
-            logger.warning("Caminho para template não configurado")
-            return ""
-            
         try:
-            if not os.path.exists(template_path):
-                logger.error(f"Arquivo de template não encontrado: {template_path}")
-                return ""
-                
             with open(template_path, 'r', encoding='utf-8') as f:
                 content = f.read()
-                
+            logger.debug(f"Template carregado de {template_path}")
             return content
-        except Exception as e:
-            logger.error(f"Erro ao ler template {template_path}: {e}")
+        except FileNotFoundError:
+            logger.warning(f"Template não encontrado: {template_path}")
             return ""
+        except Exception as e:
+            logger.error(f"Erro ao carregar template: {e}")
+            return ""
+    
+    def get_discord_token(self) -> str:
+        """
+        Obtém o token do Discord.
+        
+        Returns:
+            Token do Discord
+        """
+        return self.get_env_var('DISCORD_TOKEN', required=True)
+    
+    def get_discord_webhook_url(self) -> str:
+        """
+        Obtém a URL do webhook do Discord.
+        
+        Returns:
+            URL do webhook
+        """
+        return self.get_env_var('DISCORD_WEBHOOK_URL', '')
+    
+    def get_discord_admin_channel_id(self) -> str:
+        """
+        Obtém o ID do canal admin do Discord.
+        
+        Returns:
+            ID do canal admin
+        """
+        return self.get_env_var('DISCORD_ADMIN_CHANNEL_ID', '')
+    
+    def get_discord_hourly_notification_channel_id(self) -> str:
+        """
+        Obtém o ID do canal para notificações por hora.
+        
+        Returns:
+            ID do canal de notificação por hora
+        """
+        return self.get_env_var('DISCORD_HOURLY_NOTIFICATION_CHANNEL_ID', '1383090628379934851')
+    
+    def get_discord_notification_channel_id(self) -> str:
+        """
+        Obtém o ID do canal para notificações semanais.
+        
+        Returns:
+            ID do canal de notificação semanal
+        """
+        return self.get_env_var('DISCORD_NOTIFICATION_CHANNEL_ID', '')

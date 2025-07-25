@@ -42,8 +42,11 @@ class DiscordNotificationManager:
         # Tentar obter do ConfigManager se disponível
         if self.config:
             try:
-                # Tentar diferentes métodos de acesso à configuração
-                if hasattr(self.config, 'get_env_var') and callable(getattr(self.config, 'get_env_var')):
+                # Usar o novo método específico se disponível
+                if hasattr(self.config, 'get_discord_token') and callable(getattr(self.config, 'get_discord_token')):
+                    token = self.config.get_discord_token()
+                # Fallback para métodos antigos
+                elif hasattr(self.config, 'get_env_var') and callable(getattr(self.config, 'get_env_var')):
                     token = self.config.get_env_var("DISCORD_TOKEN", "")
                 elif hasattr(self.config, 'get') and callable(getattr(self.config, 'get')):
                     token = self.config.get("DISCORD_TOKEN", "")
@@ -66,8 +69,13 @@ class DiscordNotificationManager:
             token = os.getenv("DISCORD_BOT_TOKEN", "")
             
         # Verificar se é webhook URL e extrair o token se for
-        if not token and self.config and hasattr(self.config, 'discord_webhook_url'):
-            webhook_url = self.config.discord_webhook_url
+        if not token and self.config:
+            webhook_url = ""
+            if hasattr(self.config, 'get_discord_webhook_url') and callable(getattr(self.config, 'get_discord_webhook_url')):
+                webhook_url = self.config.get_discord_webhook_url()
+            elif hasattr(self.config, 'discord_webhook_url'):
+                webhook_url = self.config.discord_webhook_url
+                
             if webhook_url and '/api/webhooks/' in webhook_url:
                 try:
                     # Formato webhook: https://discord.com/api/webhooks/ID/TOKEN
@@ -655,58 +663,74 @@ class DiscordNotificationManager:
     
     def send_admin_notification(self, message: str, embeds: Optional[List[Dict[str, Any]]] = None) -> bool:
         """
-        Envia uma notificação para o administrador usando o canal de administração configurado.
+        Envia uma notificação para o canal admin configurado.
         
         Args:
             message: Mensagem a ser enviada
-            embeds: Lista de embeds para incluir na mensagem (opcional)
+            embeds: Lista de embeds opcionais
             
         Returns:
             True se enviado com sucesso, False caso contrário
         """
-        # Primeiro tenta usar o canal de administração
-        admin_channel_id = ""
-        
-        if self.config:
-            try:
-                if hasattr(self.config, 'get_env_var') and callable(getattr(self.config, 'get_env_var')):
+        try:
+            # Obter ID do canal admin
+            admin_channel_id = ""
+            if self.config:
+                if hasattr(self.config, 'get_discord_admin_channel_id') and callable(getattr(self.config, 'get_discord_admin_channel_id')):
+                    admin_channel_id = self.config.get_discord_admin_channel_id()
+                elif hasattr(self.config, 'get_env_var') and callable(getattr(self.config, 'get_env_var')):
                     admin_channel_id = self.config.get_env_var("DISCORD_ADMIN_CHANNEL_ID", "")
-            except Exception:
-                pass
-        
-        if not admin_channel_id or admin_channel_id == "COLOQUE_AQUI_O_ID_DO_CANAL":
-            admin_channel_id = os.getenv("DISCORD_ADMIN_CHANNEL_ID", "")
-        
-        # Usar o canal se estiver configurado
-        if admin_channel_id and admin_channel_id != "COLOQUE_AQUI_O_ID_DO_CANAL":
-            logger.info(f"Enviando notificação para o canal de administração {admin_channel_id}")
-            return self.send_notification(
-                channel_id=admin_channel_id,
-                message=message,
-                embeds=embeds
-            )
+                elif hasattr(self.config, 'DISCORD_ADMIN_CHANNEL_ID'):
+                    admin_channel_id = self.config.DISCORD_ADMIN_CHANNEL_ID
             
-        # Caso contrário, tenta usar DM como fallback (menos provável de funcionar)
-        # Obter o ID do administrador do Discord
-        admin_id = ""
-        
-        if self.config:
-            try:
-                if hasattr(self.config, 'get_env_var') and callable(getattr(self.config, 'get_env_var')):
-                    admin_id = self.config.get_env_var("DISCORD_ADMIN_USER_ID", "")
-            except Exception:
-                pass
-        
-        if not admin_id:
-            admin_id = os.getenv("DISCORD_ADMIN_USER_ID", "")
-        
-        if not admin_id or admin_id == "SEU_ID_AQUI":
-            logger.warning("Nem o canal nem o ID do administrador foram configurados corretamente. Impossível enviar notificação.")
+            # Fallback para variável de ambiente
+            if not admin_channel_id:
+                admin_channel_id = os.getenv("DISCORD_ADMIN_CHANNEL_ID", "")
+            
+            if not admin_channel_id:
+                logger.warning("Canal admin do Discord não configurado")
+                return False
+            
+            # Enviar notificação
+            return self.send_notification(admin_channel_id, message, embeds)
+            
+        except Exception as e:
+            logger.error(f"Erro ao enviar notificação admin: {e}")
             return False
+    
+    def send_hourly_notification(self, message: str, embeds: Optional[List[Dict[str, Any]]] = None) -> bool:
+        """
+        Envia uma notificação para o canal de notificações por hora configurado.
         
-        logger.info(f"Tentando enviar DM para o usuário {admin_id} (pode falhar se o token não tiver permissões adequadas)")
-        return self.send_direct_message(
-            user_id=admin_id,
-            message=message,
-            embeds=embeds
-        )
+        Args:
+            message: Mensagem a ser enviada
+            embeds: Lista de embeds opcionais
+            
+        Returns:
+            True se enviado com sucesso, False caso contrário
+        """
+        try:
+            # Obter ID do canal de notificação por hora
+            hourly_channel_id = ""
+            if self.config:
+                if hasattr(self.config, 'get_discord_hourly_notification_channel_id') and callable(getattr(self.config, 'get_discord_hourly_notification_channel_id')):
+                    hourly_channel_id = self.config.get_discord_hourly_notification_channel_id()
+                elif hasattr(self.config, 'get_env_var') and callable(getattr(self.config, 'get_env_var')):
+                    hourly_channel_id = self.config.get_env_var("DISCORD_HOURLY_NOTIFICATION_CHANNEL_ID", "")
+                elif hasattr(self.config, 'DISCORD_HOURLY_NOTIFICATION_CHANNEL_ID'):
+                    hourly_channel_id = self.config.DISCORD_HOURLY_NOTIFICATION_CHANNEL_ID
+            
+            # Fallback para variável de ambiente
+            if not hourly_channel_id:
+                hourly_channel_id = os.getenv("DISCORD_HOURLY_NOTIFICATION_CHANNEL_ID", "1383090628379934851")
+            
+            if not hourly_channel_id:
+                logger.warning("Canal de notificação por hora do Discord não configurado")
+                return False
+            
+            # Enviar notificação
+            return self.send_notification(hourly_channel_id, message, embeds)
+            
+        except Exception as e:
+            logger.error(f"Erro ao enviar notificação por hora: {e}")
+            return False

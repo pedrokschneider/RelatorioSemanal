@@ -375,6 +375,88 @@ class DiscordBotAutoChannels:
                     logger.error(f"Erro ao exibir status da fila: {e}", exc_info=True)
                     self.send_message(channel_id, f"❌ Erro ao processar comando: {str(e)}")
                     return False
+            
+            # Comando para verificar relatórios semanais
+            elif command == "!controle":
+                logger.info(f"Processando comando !controle para canal {channel_id}")
+                
+                try:
+                    # Verificar status dos relatórios
+                    status = self.report_system.check_weekly_reports_status()
+                    
+                    if "error" in status:
+                        self.send_message(channel_id, f"❌ Erro ao verificar relatórios: {status['error']}")
+                        return False
+                    
+                    # Gerar mensagem de status
+                    message = f"📊 **CONTROLE DE RELATÓRIOS - {status['week_text']}**\n\n"
+                    message += f"📋 **Total de projetos:** {status['total_projects']}\n"
+                    message += f"✅ **Devem gerar:** {status['should_generate']}\n"
+                    message += f"📝 **Já gerados:** {status['was_generated']}\n"
+                    message += f"⚠️ **Em falta:** {status['missing_reports']}\n\n"
+                    
+                    if status['missing_reports'] > 0:
+                        message += "**Coordenadores com relatórios pendentes:**\n"
+                        for coordinator, projects in status['missing_by_coordinator'].items():
+                            message += f"👤 **{coordinator}:** {len(projects)} projetos\n"
+                            for project in projects[:3]:  # Mostrar apenas os primeiros 3
+                                message += f"  • {project}\n"
+                            if len(projects) > 3:
+                                message += f"  ... e mais {len(projects) - 3} projetos\n"
+                            message += "\n"
+                    else:
+                        message += "✅ **Todos os relatórios foram gerados!**"
+                    
+                    self.send_message(channel_id, message)
+                    logger.info(f"Status de relatórios exibido para canal {channel_id}")
+                    return True
+                    
+                except Exception as e:
+                    logger.error(f"Erro ao verificar relatórios: {e}", exc_info=True)
+                    self.send_message(channel_id, f"❌ Erro ao processar comando: {str(e)}")
+                    return False
+            
+            # Comando para enviar notificação de relatórios em falta
+            elif command == "!notificar":
+                logger.info(f"Processando comando !notificar para canal {channel_id}")
+                
+                try:
+                    # Enviar notificação para o próprio canal
+                    success = self.report_system.send_weekly_reports_notification(channel_id)
+                    
+                    if success:
+                        logger.info(f"Notificação de relatórios enviada para canal {channel_id}")
+                        return True
+                    else:
+                        self.send_message(channel_id, "❌ Falha ao enviar notificação de relatórios")
+                        return False
+                        
+                except Exception as e:
+                    logger.error(f"Erro ao enviar notificação: {e}", exc_info=True)
+                    self.send_message(channel_id, f"❌ Erro ao processar comando: {str(e)}")
+                    return False
+            
+            # Comando para enviar notificações diretas aos coordenadores
+            elif command == "!notificar_coordenadores":
+                logger.info(f"Processando comando !notificar_coordenadores para canal {channel_id}")
+                
+                try:
+                    # Enviar notificações diretas (usando o canal atual como admin)
+                    success = self.report_system.send_direct_notifications_to_coordinators(channel_id)
+                    
+                    if success:
+                        self.send_message(channel_id, "✅ Notificações diretas enviadas aos coordenadores!")
+                        logger.info(f"Notificações diretas enviadas via canal {channel_id}")
+                        return True
+                    else:
+                        self.send_message(channel_id, "❌ Falha ao enviar notificações diretas")
+                        return False
+                        
+                except Exception as e:
+                    logger.error(f"Erro ao enviar notificações diretas: {e}", exc_info=True)
+                    self.send_message(channel_id, f"❌ Erro ao processar comando: {str(e)}")
+                    return False
+            
             # Comando não reconhecido
             else:
                 logger.info(f"Comando não reconhecido: {command}")
@@ -452,7 +534,7 @@ class DiscordBotAutoChannels:
                 last_message_ids[channel_id] = "0"  # ID fictício em caso de erro
         
         print("\n✅ Bot inicializado e monitorando!")
-        print("Aguardando comandos '!relatorio', '!fila' ou '!status'...\n")
+        print("Aguardando comandos '!relatorio', '!fila', '!status', '!controle', '!notificar' ou '!notificar_coordenadores'...\n")
         
         # Contadores para controle de verificação
         error_counters = {channel_id: 0 for channel_id in channels_to_monitor}
@@ -591,6 +673,9 @@ class DiscordBotAutoChannels:
             print("3. Iniciar monitoramento REAL de projetos")
             print("4. Configurar número de workers da fila (atual:", self.queue_system.max_workers, ")")
             print("5. Ver status da fila")
+            print("6. Verificar controle de relatórios semanais")
+            print("7. Enviar notificação de relatórios em falta")
+            print("8. Enviar notificações diretas aos coordenadores")
             print("0. Sair")
             
             try:
@@ -671,6 +756,30 @@ class DiscordBotAutoChannels:
                     status_text = self.queue_system.show_queue_status()
                     print("\n" + status_text)
                     
+                elif choice == "6":
+                    # Verificar controle de relatórios semanais
+                    try:
+                        self.process_command(channel_id, "!controle") # Assuming channel_id is available or pass a dummy
+                    except Exception as e:
+                        print(f"Erro ao verificar controle de relatórios: {e}")
+                        logger.error(f"Erro ao verificar controle de relatórios: {e}", exc_info=True)
+                
+                elif choice == "7":
+                    # Enviar notificação de relatórios em falta
+                    try:
+                        self.process_command(channel_id, "!notificar") # Assuming channel_id is available or pass a dummy
+                    except Exception as e:
+                        print(f"Erro ao enviar notificação de relatórios: {e}")
+                        logger.error(f"Erro ao enviar notificação de relatórios: {e}", exc_info=True)
+                
+                elif choice == "8":
+                    # Enviar notificações diretas aos coordenadores
+                    try:
+                        self.process_command(channel_id, "!notificar_coordenadores") # Assuming channel_id is available or pass a dummy
+                    except Exception as e:
+                        print(f"Erro ao enviar notificações diretas: {e}")
+                        logger.error(f"Erro ao enviar notificações diretas: {e}", exc_info=True)
+                
                 else:
                     print("Opção inválida")
                     
@@ -681,6 +790,27 @@ class DiscordBotAutoChannels:
                 break
             except Exception as e:
                 print(f"Erro: {e}")
+
+import discord
+from discord.ext import commands
+from report_system.config import ConfigManager
+from report_system.weekly_report_control import WeeklyReportController
+
+intents = discord.Intents.default()
+intents.message_content = True
+bot = commands.Bot(command_prefix='!', intents=intents)
+
+@bot.command(name='notification')
+async def notification(ctx):
+    config = ConfigManager()
+    controller = WeeklyReportController(config)
+    admin_channel_id = config.get_discord_admin_channel_id()
+    # Se quiser enviar no canal onde o comando foi chamado, use ctx.channel.id
+    if admin_channel_id:
+        controller.send_missing_reports_notification(admin_channel_id)
+        await ctx.send("✅ Notificação enviada para o canal ADM!")
+    else:
+        await ctx.send("❌ Canal ADM não configurado no .env")
 
 def main():
     """Função principal."""

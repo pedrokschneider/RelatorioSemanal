@@ -36,40 +36,44 @@ class WeeklyReportSystem:
     """Sistema principal para geração de relatórios semanais."""
     
     def __init__(self, env_path: str = ".env", verbose_init: bool = True):
-        """Inicializa o sistema de relatórios semanais."""
+        """
+        Inicializa o sistema de relatórios semanais.
+        
+        Args:
+            env_path: Caminho para o arquivo .env
+            verbose_init: Se deve mostrar logs detalhados durante inicialização
+        """
         if verbose_init:
             logger.info("🚀 Inicializando Sistema de Relatórios Semanais")
         
-        # Configuração
+        # Inicializar configuração
         self.config = ConfigManager(env_path)
         
-        # Validar configuração
-        validation = self.config.validate_required_config()
-        if verbose_init:
-            logger.info(f"✅ Configuração validada: {sum(validation.values())}/{len(validation)} componentes")
-        
-        # Inicializar atributos
-        self.project_config_df = None
-        self.discord_manager = None
-        
-        # Inicializar conectores
+        # Inicializar componentes
         self._initialize_connectors(verbose_init)
-        
-        # Inicializar gerenciadores
         self._initialize_managers(verbose_init)
-        
-        # Inicializar processador e gerador
         self._initialize_processor_and_generator(verbose_init)
+        self._initialize_discord_manager()
         
-        # Inicializar Discord
-        self.discord_manager = self._initialize_discord_manager()
+        # Inicializar controlador de relatórios semanais
+        self._initialize_weekly_control()
         
-        # Criar alias para compatibilidade com o bot
-        self.discord = self.discord_manager
+        # Cache para configuração de projetos
+        self.project_config_df = None
         
         if verbose_init:
-            logger.info("✅ Sistema inicializado com sucesso!")
-
+            logger.info("✅ Sistema de Relatórios Semanais inicializado com sucesso")
+    
+    def _initialize_weekly_control(self):
+        """Inicializa o controlador de relatórios semanais."""
+        try:
+            from report_system.weekly_report_control import WeeklyReportController
+            self.weekly_controller = WeeklyReportController(self.config)
+            logger.info("Controlador de relatórios semanais inicializado")
+        except Exception as e:
+            logger.warning(f"Não foi possível inicializar controlador de relatórios semanais: {e}")
+            self.weekly_controller = None
+    
     def _initialize_connectors(self, verbose_init: bool = True):
         """Inicializa os conectores de dados."""
         try:
@@ -1497,18 +1501,107 @@ class WeeklyReportSystem:
         return datetime.now().weekday() == 4  # 0 é segunda, 4 é sexta
     
     def get_cache_status(self):
+        """Obtém o status do cache."""
+        try:
+            return self.cache.get_cache_status()
+        except Exception as e:
+            logger.error(f"Erro ao obter status do cache: {e}")
+            return {}
+    
+    def check_weekly_reports_status(self) -> Dict:
         """
-        Retorna o status atual do sistema de cache.
+        Verifica o status dos relatórios da semana atual.
         
         Returns:
-            DataFrame com status do cache
+            Dicionário com informações sobre relatórios em falta
         """
-        # Verificar se estamos usando o sistema de 5 arquivos
-        if hasattr(self.cache_manager, 'get_cache_status'):
-            return self.cache_manager.get_cache_status()
-        else:
-            # Se não tiver método de status, criar DataFrame vazio
-            return pd.DataFrame(columns=['cache_key', 'source', 'last_update', 'age_hours', 'is_valid'])
+        try:
+            if not self.weekly_controller:
+                logger.warning("Controlador de relatórios semanais não inicializado")
+                return {"error": "Controlador não inicializado"}
+            
+            status_list = self.weekly_controller.get_weekly_report_status()
+            missing_reports = self.weekly_controller.get_missing_reports_by_coordinator()
+            
+            current_week, current_week_text = self.weekly_controller.get_current_week_info()
+            
+            return {
+                "week_number": current_week,
+                "week_text": current_week_text,
+                "total_projects": len(status_list),
+                "should_generate": len([s for s in status_list if s.should_generate]),
+                "was_generated": len([s for s in status_list if s.was_generated]),
+                "missing_reports": len([s for s in status_list if s.should_generate and not s.was_generated]),
+                "missing_by_coordinator": missing_reports,
+                "status_list": status_list
+            }
+            
+        except Exception as e:
+            logger.error(f"Erro ao verificar status dos relatórios: {e}")
+            return {"error": str(e)}
+    
+    def send_weekly_reports_notification(self, channel_id: str) -> bool:
+        """
+        Envia notificação sobre relatórios em falta para um canal específico.
+        
+        Args:
+            channel_id: ID do canal do Discord
+            
+        Returns:
+            True se enviado com sucesso, False caso contrário
+        """
+        try:
+            if not self.weekly_controller:
+                logger.warning("Controlador de relatórios semanais não inicializado")
+                return False
+            
+            return self.weekly_controller.send_missing_reports_notification(channel_id)
+            
+        except Exception as e:
+            logger.error(f"Erro ao enviar notificação de relatórios: {e}")
+            return False
+    
+    def send_direct_notifications_to_coordinators(self, admin_channel_id: str = None) -> bool:
+        """
+        Envia notificações diretas para coordenadores que não geraram relatórios.
+        
+        Args:
+            admin_channel_id: ID do canal admin para logs (opcional)
+            
+        Returns:
+            True se pelo menos uma notificação foi enviada com sucesso
+        """
+        try:
+            if not self.weekly_controller:
+                logger.warning("Controlador de relatórios semanais não inicializado")
+                return False
+            
+            return self.weekly_controller.send_direct_notifications_to_coordinators(admin_channel_id)
+            
+        except Exception as e:
+            logger.error(f"Erro ao enviar notificações diretas: {e}")
+            return False
+    
+    def send_hourly_notification(self, message: str) -> bool:
+        """
+        Envia uma notificação para o canal de notificações por hora configurado.
+        
+        Args:
+            message: Mensagem a ser enviada
+            
+        Returns:
+            True se enviado com sucesso, False caso contrário
+        """
+        try:
+            if not self.discord:
+                logger.warning("Gerenciador de Discord não inicializado")
+                return False
+            
+            return self.discord.send_hourly_notification(message)
+            
+        except Exception as e:
+            logger.error(f"Erro ao enviar notificação por hora: {e}")
+            return False
 
 # Funções de utilidade para execução
 def is_running_in_colab():

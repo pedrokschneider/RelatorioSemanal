@@ -664,7 +664,98 @@ class ConstruflowGraphQLConnector(APIConnector):
         Returns:
             Dicionário com todos os DataFrames
         """
-        return self.get_consolidated_project_data(limit=200)
+        try:
+            logger.info("🎯 Executando query consolidada GraphQL para TODOS os projetos")
+            
+            # Query para buscar todos os projetos e suas issues
+            query = """
+            query GetAllProjectsData($limit: Int) {
+                projects(first: $limit) {
+                    projects {
+                        id
+                        name
+                        status
+                        issues(first: 1000, filter: { standard: "pendencies" }) {
+                            issues {
+                                id
+                                code
+                                title
+                                status
+                            }
+                        }
+                    }
+                    pageInfo {
+                        hasNextPage
+                        endCursor
+                    }
+                }
+            }
+            """
+            
+            variables = {
+                "limit": 200  # Limite de projetos
+            }
+            
+            # Executar query consolidada
+            result = self._execute_graphql_query(query, variables)
+            
+            if not result.get('data'):
+                logger.error("❌ Query consolidada para todos os projetos falhou")
+                return {}
+            
+            data = result['data']
+            
+            # Processar projetos
+            projects_data = []
+            issues_data = []
+            
+            if data.get('projects', {}).get('projects'):
+                for project in data['projects']['projects']:
+                    # Dados do projeto
+                    project_data = {
+                        'id': project['id'],
+                        'name': project['name'],
+                        'status': project.get('status', ''),
+                        'description': '',
+                        'createdAt': '',
+                        'updatedAt': ''
+                    }
+                    projects_data.append(project_data)
+                    
+                    # Issues do projeto
+                    if project.get('issues', {}).get('issues'):
+                        for issue in project['issues']['issues']:
+                            issue_data = {
+                                'id': issue['id'],
+                                'code': issue.get('code', ''),
+                                'title': issue['title'],
+                                'status': issue.get('status', ''),
+                                'projectId': str(project['id']),
+                                'description': '',
+                                'createdAt': '',
+                                'updatedAt': '',
+                                'disciplineId': '',
+                                'commentCount': 0
+                            }
+                            issues_data.append(issue_data)
+            
+            # Converter para DataFrames
+            results = {}
+            
+            if projects_data:
+                results['projects'] = pd.DataFrame(projects_data)
+                logger.info(f"✅ {len(projects_data)} projetos obtidos via GraphQL consolidado")
+            
+            if issues_data:
+                results['issues'] = pd.DataFrame(issues_data)
+                logger.info(f"✅ {len(issues_data)} issues obtidas via GraphQL consolidado")
+            
+            logger.info(f"🚀 Query consolidada para todos os projetos concluída")
+            return results
+            
+        except Exception as e:
+            logger.error(f"❌ Erro ao obter todos os dados: {e}")
+            return {}
 
     def get_data_optimized(self, endpoint: str, **kwargs) -> List[Dict]:
         """

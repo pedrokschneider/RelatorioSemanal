@@ -408,6 +408,109 @@ class DiscordBotAutoChannels:
                     logger.error(f"Erro ao exibir status da fila: {e}", exc_info=True)
                     self.send_message(channel_id, f"❌ Erro ao processar comando: {str(e)}")
                     return False
+            
+            # Comando para verificar relatórios semanais
+            elif command == "!controle":
+                logger.info(f"Processando comando !controle para canal {channel_id}")
+                
+                try:
+                    # Verificar status dos relatórios
+                    status = self.report_system.check_weekly_reports_status()
+                    
+                    if "error" in status:
+                        self.send_message(channel_id, f"❌ Erro ao verificar relatórios: {status['error']}")
+                        return False
+                    
+                    # Gerar mensagem de status
+                    message = f"📊 **CONTROLE DE RELATÓRIOS - {status['week_text']}**\n\n"
+                    message += f"📋 **Total de projetos:** {status['total_projects']}\n"
+                    message += f"✅ **Devem gerar:** {status['should_generate']}\n"
+                    message += f"📝 **Já gerados:** {status['was_generated']}\n"
+                    message += f"⚠️ **Em falta:** {status['missing_reports']}\n\n"
+                    
+                    if status['missing_reports'] > 0:
+                        message += "**Coordenadores com relatórios pendentes:**\n"
+                        for coordinator, projects in status['missing_by_coordinator'].items():
+                            message += f"👤 **{coordinator}:** {len(projects)} projetos\n"
+                            for project in projects[:3]:  # Mostrar apenas os primeiros 3
+                                message += f"  • {project}\n"
+                            if len(projects) > 3:
+                                message += f"  ... e mais {len(projects) - 3} projetos\n"
+                            message += "\n"
+                    else:
+                        message += "✅ **Todos os relatórios foram gerados!**"
+                    
+                    self.send_message(channel_id, message)
+                    logger.info(f"Status de relatórios exibido para canal {channel_id}")
+                    return True
+                    
+                except Exception as e:
+                    logger.error(f"Erro ao verificar relatórios: {e}", exc_info=True)
+                    self.send_message(channel_id, f"❌ Erro ao processar comando: {str(e)}")
+                    return False
+            
+            # Comando para enviar notificação de relatórios em falta
+            elif command == "!notificar":
+                logger.info(f"Processando comando !notificar para canal {channel_id}")
+                
+                try:
+                    # Enviar notificação para o próprio canal
+                    success = self.report_system.send_weekly_reports_notification(channel_id)
+                    
+                    if success:
+                        logger.info(f"Notificação de relatórios enviada para canal {channel_id}")
+                        return True
+                    else:
+                        self.send_message(channel_id, "❌ Falha ao enviar notificação de relatórios")
+                        return False
+                        
+                except Exception as e:
+                    logger.error(f"Erro ao enviar notificação: {e}", exc_info=True)
+                    self.send_message(channel_id, f"❌ Erro ao processar comando: {str(e)}")
+                    return False
+            
+            # Comando para enviar notificações diretas aos coordenadores
+            elif command == "!notificar_coordenadores":
+                logger.info(f"Processando comando !notificar_coordenadores para canal {channel_id}")
+                
+                try:
+                    # Enviar notificações diretas (usando o canal atual como admin)
+                    success = self.report_system.send_direct_notifications_to_coordinators(channel_id)
+                    
+                    if success:
+                        self.send_message(channel_id, "✅ Notificações diretas enviadas aos coordenadores!")
+                        logger.info(f"Notificações diretas enviadas via canal {channel_id}")
+                        return True
+                    else:
+                        self.send_message(channel_id, "❌ Falha ao enviar notificações diretas")
+                        return False
+                        
+                except Exception as e:
+                    logger.error(f"Erro ao enviar notificações diretas: {e}", exc_info=True)
+                    self.send_message(channel_id, f"❌ Erro ao processar comando: {str(e)}")
+                    return False
+            
+            # Comando para enviar notificação (alias para !notificar)
+            elif command == "!notification":
+                logger.info(f"Processando comando !notification para canal {channel_id}")
+                
+                try:
+                    # Enviar notificação para o próprio canal
+                    success = self.report_system.send_weekly_reports_notification(channel_id)
+                    
+                    if success:
+                        self.send_message(channel_id, "✅ Notificação enviada para o canal ADM!")
+                        logger.info(f"Notificação de relatórios enviada para canal {channel_id}")
+                        return True
+                    else:
+                        self.send_message(channel_id, "❌ Falha ao enviar notificação de relatórios")
+                        return False
+                        
+                except Exception as e:
+                    logger.error(f"Erro ao enviar notificação: {e}", exc_info=True)
+                    self.send_message(channel_id, f"❌ Erro ao processar comando: {str(e)}")
+                    return False
+            
             # Comando não reconhecido
             else:
                 logger.info(f"Comando não reconhecido: {command}")
@@ -529,7 +632,7 @@ class DiscordBotAutoChannels:
                                 continue
                                 
                             content = message.get('content', '').strip().lower()
-                            if content in ['!relatorio', '!fila', '!status']:
+                            if content in ['!relatorio', '!fila', '!status', '!controle', '!notificar', '!notificar_coordenadores', '!notification']:
                                 project_name = self.get_project_name(channel_id)
                                 logger.info(f"Comando {content} recebido para {project_name}")
                                 logger.info(f"De: {message.get('author', {}).get('username', 'Desconhecido')}")

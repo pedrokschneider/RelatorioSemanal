@@ -53,7 +53,7 @@ class WeeklyReportSystem:
         self._initialize_connectors(verbose_init)
         self._initialize_managers(verbose_init)
         self._initialize_processor_and_generator(verbose_init)
-        self._initialize_discord_manager()
+        self.discord = self._initialize_discord_manager()
         
         # Inicializar controlador de relatórios semanais
         self._initialize_weekly_control()

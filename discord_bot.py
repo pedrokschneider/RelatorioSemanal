@@ -145,7 +145,18 @@ class DiscordBotAutoChannels:
                         'project_name': project_name
                     }
             
-            logger.info(f"Encontrados {len(channels_dict)} canais ativos na planilha")
+            # Adicionar o canal admin à lista de canais monitorados
+            admin_channel_id = self.report_system.config.get_discord_admin_channel_id()
+            if admin_channel_id:
+                admin_channel_clean = ''.join(c for c in admin_channel_id if c.isdigit())
+                if admin_channel_clean:
+                    channels_dict[admin_channel_clean] = {
+                        'project_id': 'ADMIN',
+                        'project_name': 'Canal Administrativo'
+                    }
+                    logger.info(f"Canal admin adicionado à lista de monitoramento: {admin_channel_clean}")
+            
+            logger.info(f"Encontrados {len(channels_dict)} canais ativos na planilha (incluindo admin)")
             
             # Exibir os canais apenas em nível DEBUG
             for channel, info in channels_dict.items():
@@ -582,7 +593,24 @@ class DiscordBotAutoChannels:
                 logger.info(f"Processando comando !notificar para canal {channel_id}")
                 
                 try:
-                    # Obter o canal de notificação configurado no .env
+                    # Verificar se o comando está sendo executado no canal admin
+                    admin_channel_id = self.report_system.config.get_discord_admin_channel_id()
+                    admin_channel_clean = ''.join(c for c in admin_channel_id if c.isdigit()) if admin_channel_id else ''
+                    
+                    if channel_id != admin_channel_clean:
+                        self.send_message(channel_id, "❌ **COMANDO RESTRITO**\n\nO comando `!notificar` só pode ser executado no canal administrativo.")
+                        logger.warning(f"Tentativa de executar !notificar em canal não autorizado: {channel_id}")
+                        return False
+                    
+                    # Obter o canal de notificação da equipe
+                    team_notification_channel_id = self.report_system.config.get_discord_notification_team_channel_id()
+                    
+                    if not team_notification_channel_id:
+                        self.send_message(channel_id, "❌ Canal de notificação da equipe não configurado no .env (DISCORD_NOTIFICATION_TEAM_CHANNEL_ID)")
+                        logger.error("DISCORD_NOTIFICATION_TEAM_CHANNEL_ID não configurado no .env")
+                        return False
+                    
+                    # Obter o canal de notificação para mensagens de sucesso/erro
                     notification_channel_id = self.report_system.config.get_discord_notification_channel_id()
                     
                     if not notification_channel_id:
@@ -590,74 +618,80 @@ class DiscordBotAutoChannels:
                         logger.error("DISCORD_NOTIFICATION_CHANNEL_ID não configurado no .env")
                         return False
                     
-                    # Obter o canal ADM para controle
-                    admin_channel_id = self.report_system.config.get_discord_admin_channel_id()
+                    # Enviar mensagem de início no canal admin
+                    admin_message = f"🚀 **INICIANDO NOTIFICAÇÃO DE RELATÓRIOS**\n\n"
+                    admin_message += f"**Canal de origem:** <#{channel_id}>\n"
+                    admin_message += f"**Canal da equipe:** <#{team_notification_channel_id}>\n"
+                    admin_message += f"**Canal de status:** <#{notification_channel_id}>\n"
+                    admin_message += f"**Comando:** `!notificar`\n"
+                    admin_message += f"**Status:** Processando..."
                     
-                    # Enviar mensagem de início no canal ADM se configurado
-                    if admin_channel_id:
-                        project_name = self.get_project_name(channel_id)
-                        admin_message = f"🚀 **INICIANDO NOTIFICAÇÃO DE RELATÓRIOS**\n\n"
-                        admin_message += f"**Projeto:** {project_name}\n"
-                        admin_message += f"**Canal de origem:** <#{channel_id}>\n"
-                        admin_message += f"**Canal de destino:** <#{notification_channel_id}>\n"
-                        admin_message += f"**Comando:** `!notificar`\n"
-                        admin_message += f"**Status:** Processando..."
-                        
-                        self.send_message(admin_channel_id, admin_message)
-                        logger.info(f"Mensagem de controle enviada para canal ADM {admin_channel_id}")
+                    self.send_message(channel_id, admin_message)
+                    logger.info(f"Mensagem de controle enviada para canal admin {channel_id}")
                     
-                    # Enviar notificação para o canal configurado no .env
-                    success = self.report_system.send_weekly_reports_notification(notification_channel_id)
+                    # Enviar notificação para o canal da equipe
+                    success = self.report_system.send_weekly_reports_notification(team_notification_channel_id)
                     
                     if success:
-                        # Mensagem de sucesso no canal de origem
-                        self.send_message(channel_id, f"✅ Notificação enviada para o canal de notificação configurado!")
+                        # Mensagem de sucesso no canal de notificação
+                        success_message = f"✅ **NOTIFICAÇÃO ENVIADA COM SUCESSO**\n\n"
+                        success_message += f"A notificação de relatórios em falta foi enviada para a equipe.\n"
+                        success_message += f"**Canal da equipe:** <#{team_notification_channel_id}>\n"
+                        success_message += f"**Status:** Concluído com sucesso"
                         
-                        # Mensagem de confirmação no canal ADM se configurado
-                        if admin_channel_id:
-                            confirm_message = f"✅ **NOTIFICAÇÃO CONCLUÍDA**\n\n"
-                            confirm_message += f"**Projeto:** {project_name}\n"
-                            confirm_message += f"**Canal de origem:** <#{channel_id}>\n"
-                            confirm_message += f"**Canal de destino:** <#{notification_channel_id}>\n"
-                            confirm_message += f"**Status:** Sucesso"
-                            
-                            self.send_message(admin_channel_id, confirm_message)
+                        self.send_message(notification_channel_id, success_message)
                         
-                        logger.info(f"Notificação de relatórios enviada para canal configurado {notification_channel_id}")
+                        # Mensagem de confirmação no canal admin
+                        confirm_message = f"✅ **NOTIFICAÇÃO CONCLUÍDA**\n\n"
+                        confirm_message += f"**Canal de origem:** <#{channel_id}>\n"
+                        confirm_message += f"**Canal da equipe:** <#{team_notification_channel_id}>\n"
+                        confirm_message += f"**Canal de status:** <#{notification_channel_id}>\n"
+                        confirm_message += f"**Status:** Sucesso"
+                        
+                        self.send_message(channel_id, confirm_message)
+                        
+                        logger.info(f"Notificação de relatórios enviada para canal da equipe {team_notification_channel_id}")
                         return True
                     else:
-                        # Mensagem de erro no canal de origem
-                        self.send_message(channel_id, "❌ Falha ao enviar notificação de relatórios")
+                        # Mensagem de erro no canal de notificação
+                        error_message = f"❌ **FALHA NA NOTIFICAÇÃO**\n\n"
+                        error_message += f"Falha ao enviar notificação de relatórios em falta para a equipe.\n"
+                        error_message += f"**Canal da equipe:** <#{team_notification_channel_id}>\n"
+                        error_message += f"**Status:** Falha"
                         
-                        # Mensagem de erro no canal ADM se configurado
-                        if admin_channel_id:
-                            error_message = f"❌ **FALHA NA NOTIFICAÇÃO**\n\n"
-                            error_message += f"**Projeto:** {project_name}\n"
-                            error_message += f"**Canal de origem:** <#{channel_id}>\n"
-                            error_message += f"**Canal de destino:** <#{notification_channel_id}>\n"
-                            error_message += f"**Status:** Falha"
-                            
-                            self.send_message(admin_channel_id, error_message)
+                        self.send_message(notification_channel_id, error_message)
+                        
+                        # Mensagem de erro no canal admin
+                        admin_error_message = f"❌ **FALHA NA NOTIFICAÇÃO**\n\n"
+                        admin_error_message += f"**Canal de origem:** <#{channel_id}>\n"
+                        admin_error_message += f"**Canal da equipe:** <#{team_notification_channel_id}>\n"
+                        admin_error_message += f"**Canal de status:** <#{notification_channel_id}>\n"
+                        admin_error_message += f"**Status:** Falha"
+                        
+                        self.send_message(channel_id, admin_error_message)
                         
                         return False
                         
                 except Exception as e:
                     logger.error(f"Erro ao enviar notificação: {e}", exc_info=True)
                     
-                    # Mensagem de erro no canal de origem
-                    self.send_message(channel_id, f"❌ Erro ao processar comando: {str(e)}")
-                    
-                    # Mensagem de erro no canal ADM se configurado
-                    admin_channel_id = self.report_system.config.get_discord_admin_channel_id()
-                    if admin_channel_id:
-                        project_name = self.get_project_name(channel_id)
+                    # Mensagem de erro no canal de notificação
+                    notification_channel_id = self.report_system.config.get_discord_notification_channel_id()
+                    if notification_channel_id:
                         error_message = f"❌ **ERRO NA NOTIFICAÇÃO**\n\n"
-                        error_message += f"**Projeto:** {project_name}\n"
-                        error_message += f"**Canal de origem:** <#{channel_id}>\n"
+                        error_message += f"Ocorreu um erro ao enviar notificação de relatórios em falta.\n"
                         error_message += f"**Erro:** {str(e)}\n"
                         error_message += f"**Status:** Erro"
                         
-                        self.send_message(admin_channel_id, error_message)
+                        self.send_message(notification_channel_id, error_message)
+                    
+                    # Mensagem de erro no canal admin
+                    admin_error_message = f"❌ **ERRO NA NOTIFICAÇÃO**\n\n"
+                    admin_error_message += f"**Canal de origem:** <#{channel_id}>\n"
+                    admin_error_message += f"**Erro:** {str(e)}\n"
+                    admin_error_message += f"**Status:** Erro"
+                    
+                    self.send_message(channel_id, admin_error_message)
                     
                     return False
             
@@ -825,7 +859,7 @@ class DiscordBotAutoChannels:
         print("• !relatorio - Gerar relatório semanal")
         print("• !fila / !status - Verificar status da fila")
         print("• !controle - Verificar controle de relatórios")
-        print("• !notificar - Enviar notificação de relatórios em falta")
+        print("• !notificar - Enviar notificação de relatórios em falta (só no canal admin)")
         print("• !notificar_coordenadores - Enviar notificações diretas")
         print("• !topico - Encontrar tópico correto do projeto")
         print("• !canais - Listar canais ativos para relatórios")
@@ -969,7 +1003,7 @@ class DiscordBotAutoChannels:
             print("4. Configurar número de workers da fila (atual:", self.queue_system.max_workers, ")")
             print("5. Ver status da fila")
             print("6. Verificar controle de relatórios semanais")
-            print("7. Enviar notificação de relatórios em falta")
+            print("7. Enviar notificação de relatórios em falta (só no canal admin)")
             print("8. Enviar notificações diretas aos coordenadores")
             print("0. Sair")
             

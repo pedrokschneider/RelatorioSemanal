@@ -320,3 +320,12 @@ class ConfigManager:
             ID do canal de notificação semanal
         """
         return self.get_env_var('DISCORD_NOTIFICATION_CHANNEL_ID', '')
+    
+    def get_discord_notification_team_channel_id(self) -> str:
+        """
+        Obtém o ID do canal para notificações da equipe.
+        
+        Returns:
+            ID do canal de notificação da equipe
+        """
+        return self.get_env_var('DISCORD_NOTIFICATION_TEAM_CHANNEL_ID', '')

@@ -771,7 +771,7 @@ class DiscordBotAutoChannels:
             return "O projeto foi encontrado, mas não possui dados suficientes para gerar o relatório."
         elif "Credenciais do Google não disponíveis" in stderr:
             return "Problema com as credenciais do Google. Verifique a configuração."
-        elif "ERROR" in stderr:
+        elif stderr and "ERROR" in stderr:
             # Tentar extrair apenas a linha com ERROR mais relevante
             error_lines = [line for line in stderr.split('\n') if "ERROR" in line]
             if error_lines:
@@ -1023,6 +1023,9 @@ class DiscordBotAutoChannels:
                             
                         selections = input("Projetos: ")
                         try:
+                            if selections is None:
+                                print("Nenhuma seleção fornecida")
+                                continue
                             selected_indices = [int(i.strip()) for i in selections.split(",") if i.strip().isdigit()]
                             selected_channels = [list(channels.keys())[i-1] for i in selected_indices if 1 <= i <= len(channels)]
                             

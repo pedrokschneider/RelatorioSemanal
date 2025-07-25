@@ -310,9 +310,21 @@ Qualquer dúvida, estamos à disposição!
         try:
             # Tentar obter diretamente do connector
             if hasattr(self, 'construflow') and self.construflow:
-                issues_df = self.construflow.get_issues()
+                # Usar o método correto do connector GraphQL
+                if hasattr(self.construflow, 'get_project_issues'):
+                    issues_df = self.construflow.get_project_issues(project_id)
+                elif hasattr(self.construflow, 'get_issues'):
+                    issues_df = self.construflow.get_issues()
+                else:
+                    issues_df = None
             elif system and hasattr(system, 'processor') and hasattr(system.processor, 'construflow'):
-                issues_df = system.processor.construflow.get_issues()
+                construflow_connector = system.processor.construflow
+                if hasattr(construflow_connector, 'get_project_issues'):
+                    issues_df = construflow_connector.get_project_issues(project_id)
+                elif hasattr(construflow_connector, 'get_issues'):
+                    issues_df = construflow_connector.get_issues()
+                else:
+                    issues_df = None
             else:
                 issues_df = None
             
@@ -462,7 +474,7 @@ Qualquer dúvida, estamos à disposição!
             completed_tasks = []
             for task in all_tasks:
                 if isinstance(task, dict):
-                    status = task.get('Status', '').lower()
+                    status = str(task.get('Status', '')).lower()
                     if 'conclu' in status or 'realiz' in status or 'feito' in status or 'done' in status or 'complete' in status:
                         completed_tasks.append(task)
             logger.info(f"Filtradas {len(completed_tasks)} tarefas concluídas de {len(all_tasks)} tarefas")
@@ -471,7 +483,7 @@ Qualquer dúvida, estamos à disposição!
             completed_tasks = []
             for task in all_tasks:
                 if isinstance(task, dict):
-                    status = task.get('Status', '').lower()
+                    status = str(task.get('Status', '')).lower()
                     if 'conclu' in status or 'realiz' in status or 'feito' in status or 'done' in status or 'complete' in status:
                         completed_tasks.append(task)
                 elif isinstance(task, str):
@@ -922,6 +934,7 @@ Qualquer dúvida, estamos à disposição!
         safe_project_name = safe_project_name.replace(" ", "_")
         
         # Priorizar formato MD para melhor compatibilidade com Google Docs
+        format_type = str(format_type or 'md')
         if format_type.lower() == 'md' or format_type.lower() == 'markdown':
             # Salvar como arquivo markdown
             file_name = f"Relatorio_{safe_project_name}_{today_str}.md"

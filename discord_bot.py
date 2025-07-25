@@ -174,6 +174,158 @@ class DiscordBotAutoChannels:
             return self.channels_info[channel_id]['project_name']
         return "projeto"
     
+    def validate_channel_for_reports(self, channel_id):
+        """
+        Valida se um canal está configurado corretamente para gerar relatórios.
+        
+        Args:
+            channel_id: ID do canal
+            
+        Returns:
+            dict: Dicionário com informações de validação
+        """
+        try:
+            # Carregar a planilha de configuração
+            projects_df = self.report_system._load_project_config()
+            
+            if projects_df is None or projects_df.empty:
+                return {
+                    'valid': False,
+                    'reason': 'config_error',
+                    'message': '❌ **Erro de Configuração**\n\nNão foi possível acessar a planilha de configuração. Contate o time de Dados e Tecnologia.'
+                }
+            
+            # Verificar se as colunas necessárias existem
+            if 'discord_id' not in projects_df.columns:
+                return {
+                    'valid': False,
+                    'reason': 'config_error',
+                    'message': '❌ **Erro de Configuração**\n\nColuna "discord_id" não encontrada na planilha. Contate o time de Dados e Tecnologia.'
+                }
+            
+            # Buscar o projeto pelo canal
+            channel_id_str = str(channel_id).strip()
+            channel_id_clean = ''.join(c for c in channel_id_str if c.isdigit())
+            
+            # Procurar o projeto na planilha
+            project_row = None
+            for _, row in projects_df.iterrows():
+                row_channel_id = str(row['discord_id']).strip()
+                row_channel_clean = ''.join(c for c in row_channel_id if c.isdigit())
+                
+                if row_channel_clean == channel_id_clean:
+                    project_row = row
+                    break
+            
+            # Se não encontrou o projeto
+            if project_row is None:
+                return {
+                    'valid': False,
+                    'reason': 'not_configured',
+                    'message': f'❌ **Canal Não Configurado**\n\nEste canal não está configurado para gerar relatórios semanais.\n\n**Para solicitar o cadastro:**\n📧 Entre em contato com o time de **Dados e Tecnologia**\n📋 Informe o nome do projeto e o ID do canal: `{channel_id}`\n\n**Canais ativos disponíveis:**\n{self._get_active_channels_list()}'
+                }
+            
+            # Verificar se o projeto tem status ativo
+            if 'relatoriosemanal_status' in projects_df.columns:
+                status = str(project_row['relatoriosemanal_status']).strip().lower()
+                if status != 'sim':
+                    project_name = str(project_row.get('Projeto - PR', 'Projeto sem nome')).strip()
+                    return {
+                        'valid': False,
+                        'reason': 'inactive',
+                        'message': f'❌ **Relatórios Desativados**\n\nO projeto **{project_name}** está com relatórios semanais **desativados**.\n\n**Status atual:** {status.upper()}\n\n**Para reativar:**\n📧 Entre em contato com o time de **Dados e Tecnologia**\n📋 Solicite a reativação do projeto: **{project_name}**'
+                    }
+            
+            # Verificar se o projeto tem ID do Construflow
+            construflow_id = str(project_row.get('construflow_id', '')).strip()
+            if not construflow_id:
+                project_name = str(project_row.get('Projeto - PR', 'Projeto sem nome')).strip()
+                return {
+                    'valid': False,
+                    'reason': 'no_construflow_id',
+                    'message': f'❌ **Projeto Incompleto**\n\nO projeto **{project_name}** não possui ID do Construflow configurado.\n\n**Para completar o cadastro:**\n📧 Entre em contato com o time de **Dados e Tecnologia**\n📋 Solicite a configuração do ID Construflow para: **{project_name}**'
+                }
+            
+            # Se chegou até aqui, o canal está válido
+            project_name = str(project_row.get('Projeto - PR', 'Projeto sem nome')).strip()
+            return {
+                'valid': True,
+                'project_id': construflow_id,
+                'project_name': project_name,
+                'message': None
+            }
+            
+        except Exception as e:
+            logger.error(f"Erro ao validar canal {channel_id}: {e}")
+            return {
+                'valid': False,
+                'reason': 'validation_error',
+                'message': f'❌ **Erro de Validação**\n\nOcorreu um erro ao validar este canal.\n\n**Erro:** {str(e)}\n\n**Para suporte:**\n📧 Entre em contato com o time de **Dados e Tecnologia**'
+            }
+    
+    def _get_active_channels_list(self):
+        """
+        Obtém uma lista formatada dos canais ativos para orientação.
+        
+        Returns:
+            str: Lista formatada dos canais ativos
+        """
+        try:
+            active_channels = self.get_channels_from_spreadsheet()
+            
+            if not active_channels:
+                return "Nenhum canal ativo encontrado."
+            
+            # Limitar a 10 canais para não poluir a mensagem
+            channels_list = []
+            for channel_id, info in list(active_channels.items())[:10]:
+                project_name = info['project_name']
+                channels_list.append(f"• **{project_name}** (Canal: `{channel_id}`)")
+            
+            if len(active_channels) > 10:
+                channels_list.append(f"... e mais {len(active_channels) - 10} projetos")
+            
+            return "\n".join(channels_list)
+            
+        except Exception as e:
+            logger.error(f"Erro ao obter lista de canais ativos: {e}")
+            return "Erro ao carregar lista de canais ativos."
+    
+    def get_correct_thread_info(self, channel_id):
+        """
+        Obtém informações sobre o tópico correto para um projeto.
+        
+        Args:
+            channel_id: ID do canal
+            
+        Returns:
+            str: Informações sobre o tópico correto ou None se não encontrado
+        """
+        try:
+            # Buscar o projeto na planilha
+            projects_df = self.report_system._load_project_config()
+            
+            if projects_df is None or projects_df.empty:
+                return None
+            
+            channel_id_str = str(channel_id).strip()
+            channel_id_clean = ''.join(c for c in channel_id_str if c.isdigit())
+            
+            # Procurar o projeto na planilha
+            for _, row in projects_df.iterrows():
+                row_channel_id = str(row['discord_id']).strip()
+                row_channel_clean = ''.join(c for c in row_channel_id if c.isdigit())
+                
+                if row_channel_clean == channel_id_clean:
+                    project_name = str(row.get('Projeto - PR', 'Projeto sem nome')).strip()
+                    return f"📋 **Tópico Correto:**\n\nPara o projeto **{project_name}**, use o comando `!relatorio` no tópico dedicado:\n<#{channel_id_clean}>"
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Erro ao obter informações do tópico correto: {e}")
+            return None
+    
     def get_formatted_token(self):
         """Obtém o token formatado para uso na API."""
         if not self.token:
@@ -338,6 +490,15 @@ class DiscordBotAutoChannels:
             # Comando para gerar relatório
             if command == "!relatorio":
                 logger.info(f"Processando comando !relatorio para canal {channel_id}")
+                
+                # Validar se o canal está configurado corretamente
+                validation = self.validate_channel_for_reports(channel_id)
+                
+                if not validation['valid']:
+                    # Enviar mensagem de orientação
+                    self.send_message(channel_id, validation['message'])
+                    logger.info(f"Canal {channel_id} não validado: {validation['reason']}")
+                    return True  # Retorna True pois processamos o comando (mesmo que com erro)
                 
                 # Verificar se a fila está inicializada corretamente
                 if not hasattr(self, 'queue_system') or not self.queue_system:
@@ -521,6 +682,68 @@ class DiscordBotAutoChannels:
                     self.send_message(channel_id, f"❌ Erro ao processar comando: {str(e)}")
                     return False
             
+            # Comando para encontrar tópico correto
+            elif command == "!topico":
+                logger.info(f"Processando comando !topico para canal {channel_id}")
+                
+                try:
+                    # Buscar informações sobre o tópico correto
+                    thread_info = self.get_correct_thread_info(channel_id)
+                    
+                    if thread_info:
+                        self.send_message(channel_id, thread_info)
+                    else:
+                        # Se não encontrou o projeto, mostrar orientação geral
+                        message = "❓ **Tópico Não Encontrado**\n\n"
+                        message += "Este canal não está configurado para relatórios semanais.\n\n"
+                        message += "**Canais ativos disponíveis:**\n"
+                        message += self._get_active_channels_list()
+                        message += "\n\n**Para solicitar cadastro:**\n"
+                        message += "📧 Entre em contato com o time de **Dados e Tecnologia**"
+                        
+                        self.send_message(channel_id, message)
+                    
+                    logger.info(f"Informações de tópico exibidas para canal {channel_id}")
+                    return True
+                    
+                except Exception as e:
+                    logger.error(f"Erro ao buscar informações de tópico: {e}", exc_info=True)
+                    self.send_message(channel_id, f"❌ Erro ao processar comando: {str(e)}")
+                    return False
+            
+            # Comando para listar canais ativos
+            elif command == "!canais":
+                logger.info(f"Processando comando !canais para canal {channel_id}")
+                
+                try:
+                    active_channels = self.get_channels_from_spreadsheet()
+                    
+                    if not active_channels:
+                        self.send_message(channel_id, "❌ Nenhum canal ativo encontrado na configuração.")
+                        return True
+                    
+                    message = "📋 **CANAIS ATIVOS PARA RELATÓRIOS**\n\n"
+                    message += "Lista de projetos com relatórios semanais ativos:\n\n"
+                    
+                    # Mostrar até 15 canais para não poluir muito
+                    for i, (channel_id_list, info) in enumerate(list(active_channels.items())[:15], 1):
+                        project_name = info['project_name']
+                        message += f"{i}. **{project_name}**\n   Canal: <#{channel_id_list}>\n\n"
+                    
+                    if len(active_channels) > 15:
+                        message += f"... e mais {len(active_channels) - 15} projetos\n\n"
+                    
+                    message += "💡 **Dica:** Use `!topico` para encontrar o tópico correto do seu projeto."
+                    
+                    self.send_message(channel_id, message)
+                    logger.info(f"Lista de canais exibida para canal {channel_id}")
+                    return True
+                    
+                except Exception as e:
+                    logger.error(f"Erro ao listar canais: {e}", exc_info=True)
+                    self.send_message(channel_id, f"❌ Erro ao processar comando: {str(e)}")
+                    return False
+            
             # Comando não reconhecido
             else:
                 logger.info(f"Comando não reconhecido: {command}")
@@ -598,7 +821,15 @@ class DiscordBotAutoChannels:
                 last_message_ids[channel_id] = "0"  # ID fictício em caso de erro
         
         print("\n✅ Bot inicializado e monitorando!")
-        print("Aguardando comandos '!relatorio', '!fila', '!status', '!controle', '!notificar' ou '!notificar_coordenadores'...\n")
+        print("Aguardando comandos:")
+        print("• !relatorio - Gerar relatório semanal")
+        print("• !fila / !status - Verificar status da fila")
+        print("• !controle - Verificar controle de relatórios")
+        print("• !notificar - Enviar notificação de relatórios em falta")
+        print("• !notificar_coordenadores - Enviar notificações diretas")
+        print("• !topico - Encontrar tópico correto do projeto")
+        print("• !canais - Listar canais ativos para relatórios")
+        print("\n")
         
         # Contadores para controle de verificação
         error_counters = {channel_id: 0 for channel_id in channels_to_monitor}
@@ -669,7 +900,7 @@ class DiscordBotAutoChannels:
                                 
                             # Verificar se é um dos comandos que conhecemos
                             content = message.get('content', '').strip().lower()
-                            if content in ['!relatorio', '!fila', '!status']:
+                            if content in ['!relatorio', '!fila', '!status', '!controle', '!notificar', '!notificar_coordenadores', '!topico', '!canais']:
                                 project_name = self.get_project_name(channel_id)
                                 print(f"\n\n📣 Comando {content} recebido para {project_name}!")
                                 print(f"De: {message.get('author', {}).get('username', 'Desconhecido')}")

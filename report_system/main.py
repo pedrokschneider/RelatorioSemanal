@@ -467,192 +467,60 @@ class WeeklyReportSystem:
     def _update_project_cache(self, project_id: str) -> bool:
         """
         Atualiza o cache para um projeto específico usando queries GraphQL otimizadas.
-        Versão ultra-otimizada que substitui 4+ chamadas REST por 1 query GraphQL consolidada.
+        Atualiza apenas o projeto solicitado, sem atualizar todos os projetos ativos.
         
         Args:
             project_id: ID do projeto
-            
+        
         Returns:
             True se a atualização foi bem-sucedida, False caso contrário
         """
         try:
-            logger.info(f"🚀 Atualizando cache otimizado para o projeto {project_id} via GraphQL consolidado")
+            logger.info(f"🚀 Atualizando cache otimizado apenas para o projeto {project_id} via GraphQL consolidado")
             
             # Verificar se o cache manager está disponível
             if not self.cache_manager:
                 logger.error("Cache manager não inicializado")
                 return False
-                
-            # Usar o cache manager atual
+            
             cache = self.cache_manager
             
-            # Verificar se estamos usando o conector GraphQL
+            # Usar apenas o conector GraphQL otimizado para o projeto solicitado
             if hasattr(self.processor.construflow, 'get_project_data_optimized'):
-                logger.info("🎯 Usando query consolidada GraphQL para otimização máxima")
-                
-                # Obter todos os dados em uma única query GraphQL
+                logger.info("🎯 Usando query consolidada GraphQL para otimização máxima (apenas 1 projeto)")
                 consolidated_data = self.processor.construflow.get_project_data_optimized(project_id)
                 
                 if consolidated_data:
-                    # Salvar cada tipo de dados no cache
                     if 'projects' in consolidated_data and hasattr(cache, 'save_construflow_data'):
                         projects_data = consolidated_data['projects'].to_dict('records')
                         cache.save_construflow_data("projects", projects_data)
                         logger.info(f"✅ {len(projects_data)} projetos salvos via GraphQL consolidado")
-                    
                     if 'disciplines' in consolidated_data and hasattr(cache, 'save_construflow_data'):
                         disciplines_data = consolidated_data['disciplines'].to_dict('records')
                         cache.save_construflow_data("disciplines", disciplines_data)
                         logger.info(f"✅ {len(disciplines_data)} disciplinas salvas via GraphQL consolidado")
-                    
                     if 'issues' in consolidated_data and hasattr(cache, 'save_construflow_data'):
                         issues_data = consolidated_data['issues'].to_dict('records')
                         cache.save_construflow_data("issues", issues_data)
                         logger.info(f"✅ {len(issues_data)} issues salvas via GraphQL consolidado")
-                        
-                        # Log informativo sobre issues deste projeto
                         try:
                             project_issues = consolidated_data['issues'][consolidated_data['issues']['projectId'] == str(project_id)]
                             logger.info(f"🎯 {len(project_issues)} issues específicas do projeto {project_id} obtidas via GraphQL")
                         except Exception as e:
                             logger.warning(f"Erro ao analisar issues para o projeto {project_id}: {e}")
-                    
                     if 'issue_disciplines' in consolidated_data and hasattr(cache, 'save_construflow_data'):
                         issue_disciplines_data = consolidated_data['issue_disciplines'].to_dict('records')
                         cache.save_construflow_data("issues-disciplines", issue_disciplines_data)
                         logger.info(f"✅ {len(issue_disciplines_data)} relacionamentos issue-discipline salvos via GraphQL consolidado")
-                    
-                    logger.info(f"🚀 Cache otimizado concluído para projeto {project_id} - 1 query GraphQL vs 4+ REST")
+                    logger.info(f"🚀 Cache otimizado concluído para projeto {project_id} - 1 query GraphQL")
                     return True
                 else:
-                    logger.warning("Query consolidada GraphQL retornou dados vazios, tentando método tradicional")
+                    logger.warning("Query consolidada GraphQL retornou dados vazios para o projeto solicitado")
             else:
-                logger.info("Conector GraphQL otimizado não disponível, usando método tradicional")
-            
-            # Fallback para método tradicional (threads paralelas)
-            from concurrent.futures import ThreadPoolExecutor
-            
-            # Verificar e atualizar arquivos de cache
-            construflow = self.processor.construflow
-            
-            # Funções auxiliares para executar em threads paralelas
-            def update_disciplines():
-                try:
-                    logger.info("Atualizando arquivo disciplines (thread paralela)")
-                    disciplines_data = construflow.get_data("disciplines", force_refresh=True, use_cache=False)
-                    if disciplines_data and hasattr(cache, 'save_construflow_data'):
-                        cache.save_construflow_data("disciplines", disciplines_data)
-                        logger.info(f"Arquivo disciplines atualizado com {len(disciplines_data)} registros")
-                        return disciplines_data
-                    return None
-                except Exception as e:
-                    logger.error(f"Erro ao atualizar disciplines em thread paralela: {e}")
-                    return None
-                    
-            def update_issue_disciplines():
-                try:
-                    logger.info("Atualizando arquivo issues-disciplines (thread paralela)")
-                    issue_disciplines_data = construflow.get_data("issues-disciplines", force_refresh=True, use_cache=False)
-                    if issue_disciplines_data and hasattr(cache, 'save_construflow_data'):
-                        cache.save_construflow_data("issues-disciplines", issue_disciplines_data)
-                        logger.info(f"Arquivo issues-disciplines atualizado com {len(issue_disciplines_data)} registros")
-                        return issue_disciplines_data
-                    return None
-                except Exception as e:
-                    logger.error(f"Erro ao atualizar issues-disciplines em thread paralela: {e}")
-                    return None
-                    
-            def update_issues():
-                try:
-                    logger.info("Atualizando arquivo issues (thread paralela)")
-                    # Obter todas as issues sem filtro
-                    issues_data = construflow.get_data("issues", force_refresh=True, use_cache=False)
-                    
-                    if issues_data and hasattr(cache, 'save_construflow_data'):
-                        # Converter para DataFrame para verificação (apenas para log)
-                        issues_df = pd.DataFrame(issues_data)
-                        
-                        # Salvar todas as issues no cache
-                        cache.save_construflow_data("issues", issues_data)
-                        
-                        # Log informativo sobre issues deste projeto
-                        try:
-                            issues_df['projectId'] = issues_df['projectId'].astype(str)
-                            project_issues = issues_df[issues_df['projectId'] == str(project_id)]
-                            logger.info(f"Identificadas {len(project_issues)} issues para o projeto {project_id} " +
-                                    f"de um total de {len(issues_df)} issues")
-                        except Exception as e:
-                            logger.warning(f"Erro ao analisar issues para o projeto {project_id}: {e}")
-                        
-                        return issues_data
-                    return None
-                except Exception as e:
-                    logger.error(f"Erro ao atualizar issues em thread paralela: {e}")
-                    return None
-            
-            def update_projects():
-                try:
-                    logger.info("Atualizando arquivo projects (thread paralela)")
-                    projects_data = construflow.get_data("projects", force_refresh=True, use_cache=False)
-                    if projects_data and hasattr(cache, 'save_construflow_data'):
-                        cache.save_construflow_data("projects", projects_data)
-                        logger.info(f"Arquivo projects atualizado")
-                        return projects_data
-                    return None
-                except Exception as e:
-                    logger.error(f"Erro ao atualizar projects em thread paralela: {e}")
-                    return None
-            
-            # 1. Atualizar projects, disciplines, issues-disciplines e issues em paralelo
-            with ThreadPoolExecutor(max_workers=4) as executor:
-                # Submeter tarefas
-                logger.info("Iniciando atualização paralela de projects, disciplines, issues-disciplines e issues")
-                future_projects = executor.submit(update_projects)
-                future_disciplines = executor.submit(update_disciplines)
-                future_issue_disciplines = executor.submit(update_issue_disciplines)
-                future_issues = executor.submit(update_issues)
-                
-                # Aguardar conclusão e obter resultados
-                projects_data = future_projects.result()
-                disciplines_data = future_disciplines.result()
-                issue_disciplines_data = future_issue_disciplines.result()
-                issues_data = future_issues.result()
-                
-                logger.info("Atualização paralela concluída")
-            
-            # 2. Buscar e atualizar o Smartsheet separadamente (precisa do ID do Smartsheet)
-            try:
-                smartsheet_id = self.get_project_smartsheet_id(project_id)
-                if smartsheet_id:
-                    logger.info(f"Atualizando dados do Smartsheet para projeto {project_id} (ID: {smartsheet_id})")
-                    smartsheet_data = self.processor.smartsheet.get_sheet(smartsheet_id, force_refresh=True)
-                    
-                    if smartsheet_data:
-                        # Usar o método do SimpleCacheManager para salvar dados do Smartsheet
-                        if hasattr(cache, 'save_smartsheet_data'):
-                            cache.save_smartsheet_data(smartsheet_id, project_id, smartsheet_data)
-                            logger.info(f"Dados do Smartsheet {smartsheet_id} salvos com associação ao projeto {project_id}")
-                        else:
-                            # Fallback manual caso o método específico não exista
-                            # Adicionar identificadores
-                            for item in smartsheet_data:
-                                if isinstance(item, dict):
-                                    item['sheet_id'] = str(smartsheet_id)
-                                    item['project_id'] = str(project_id)
-                            
-                            # Salvar no cache
-                            file_name = f"sheet_{smartsheet_id}"
-                            cache.save_data(file_name, smartsheet_data, 'smartsheet')
-                            logger.info(f"Smartsheet {smartsheet_id} atualizado com {len(smartsheet_data)} registros para projeto {project_id}")
-                else:
-                    logger.warning(f"ID do Smartsheet não encontrado para o projeto {project_id}")
-            except Exception as e:
-                logger.error(f"Erro ao atualizar dados do Smartsheet: {e}")
-            
-            logger.info(f"Atualização de cache para projeto {project_id} concluída")
-            return True
+                logger.error("Conector GraphQL otimizado não disponível. Não foi possível atualizar apenas o projeto solicitado.")
+                return False
         except Exception as e:
-            logger.error(f"Erro ao atualizar cache para projeto {project_id}: {e}")
+            logger.error(f"Erro ao atualizar cache do projeto {project_id}: {e}")
             return False
 
     def _format_final_success_message(self, project_name, doc_url, folder_url=None):

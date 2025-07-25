@@ -531,15 +531,15 @@ class ConstruflowGraphQLConnector(APIConnector):
             self.token_cache = {'access_token': None, 'refresh_token': None, 'expires_at': None}
             logger.info("Tokens limpos do cache") 
 
-    def get_consolidated_project_data(self, project_id: str = None, limit: int = 50) -> Dict[str, pd.DataFrame]:
+    def get_consolidated_project_data(self, project_id: str = None, limit: int = None) -> Dict[str, pd.DataFrame]:
         """
         Obtém todos os dados de um projeto em uma única query GraphQL otimizada.
         Substitui múltiplas chamadas REST por uma única query consolidada.
         
         Args:
             project_id: ID do projeto específico (obrigatório para otimização)
-            limit: Limite de issues por projeto
-            
+            limit: Limite de issues por projeto (None = infinito)
+        
         Returns:
             Dicionário com DataFrames: {'projects', 'issues', 'disciplines', 'issue_disciplines'}
         """
@@ -554,13 +554,10 @@ class ConstruflowGraphQLConnector(APIConnector):
             # Baseada nos campos que realmente existem no schema
             query = """
             query GetProjectDataOptimized($projectId: Int!, $limit: Int) {
-                # Buscar projeto específico
                 project(projectId: $projectId) {
                     id
                     name
                     status
-                    
-                    # Buscar issues do projeto específico
                     issues(first: $limit, filter: { standard: "pendencies" }) {
                         issues {
                             id
@@ -577,9 +574,11 @@ class ConstruflowGraphQLConnector(APIConnector):
             }
             """
             
+            # Se limit for None, usar um valor muito alto (ex: 1000000)
+            query_limit = limit if limit is not None else 1000000
             variables = {
                 "projectId": int(project_id),
-                "limit": limit
+                "limit": query_limit
             }
             
             # Executar query consolidada otimizada
@@ -654,7 +653,8 @@ class ConstruflowGraphQLConnector(APIConnector):
         Returns:
             Dicionário com DataFrames dos dados do projeto
         """
-        return self.get_consolidated_project_data(project_id, limit=100)
+        # Limite None = infinito
+        return self.get_consolidated_project_data(project_id, limit=None)
 
     def get_all_data_optimized(self) -> Dict[str, pd.DataFrame]:
         """

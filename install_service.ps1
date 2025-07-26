@@ -6,7 +6,7 @@ $serviceName = "DiscordReportBot"
 $displayName = "Discord Report Bot"
 $description = "Bot Discord para Relatórios Semanais"
 $pythonPath = (Get-Command python).Source
-$scriptPath = "C:\GitHub\RelatorioSemanal\discord_bot_universal.pyw"
+$scriptPath = "C:\GitHub\RelatorioSemanal\discord_bot.py"
 
 # Verificar se o script existe
 if (-not (Test-Path $scriptPath)) {

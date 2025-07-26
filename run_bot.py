@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Script para escolher e executar o bot Discord.
+Script para executar o bot Discord.
 """
 
 import os
@@ -13,24 +13,15 @@ load_dotenv()
 
 def show_menu():
     """Mostra o menu de opções."""
-    print("🤖 BOT DISCORD - ESCOLHA A VERSÃO")
+    print("🤖 BOT DISCORD")
     print("=" * 50)
     print()
-    print("1. Bot Original (discord_bot.py)")
-    print("   • Monitora apenas canais configurados na planilha")
+    print("1. Executar Bot Discord")
+    print("   • Monitora canais configurados na planilha")
     print("   • Usa polling para verificar mensagens")
     print("   • Interface de menu interativo")
     print()
-    print("2. Bot Universal (discord_bot_universal.py)")
-    print("   • Monitora TODOS os canais e tópicos")
-    print("   • Responde instantaneamente a comandos")
-    print("   • Funciona em qualquer canal (com validação)")
-    print("   • Melhor experiência do usuário")
-    print()
-    print("3. Testar Bot Universal")
-    print("   • Executa testes sem conectar ao Discord")
-    print()
-    print("4. Verificar Configuração")
+    print("2. Verificar Configuração")
     print("   • Testa se tudo está configurado corretamente")
     print()
     print("0. Sair")
@@ -84,7 +75,6 @@ def check_configuration():
     # Verificar arquivos do sistema
     required_files = [
         "discord_bot.py",
-        "discord_bot_universal.py", 
         "report_system/main.py",
         "report_queue.py"
     ]
@@ -99,9 +89,9 @@ def check_configuration():
     print("\n✅ Configuração verificada com sucesso!")
     return True
 
-def run_bot_original():
-    """Executa o bot original."""
-    print("🚀 Iniciando Bot Original...")
+def run_bot():
+    """Executa o bot Discord."""
+    print("🚀 Iniciando Bot Discord...")
     print("   Pressione Ctrl+C para parar")
     print()
     
@@ -110,30 +100,7 @@ def run_bot_original():
     except KeyboardInterrupt:
         print("\n⏹️  Bot interrompido pelo usuário")
     except subprocess.CalledProcessError as e:
-        print(f"\n❌ Erro ao executar bot original: {e}")
-
-def run_bot_universal():
-    """Executa o bot universal."""
-    print("🚀 Iniciando Bot Universal...")
-    print("   Pressione Ctrl+C para parar")
-    print()
-    
-    try:
-        subprocess.run([sys.executable, "discord_bot_universal.py"], check=True)
-    except KeyboardInterrupt:
-        print("\n⏹️  Bot interrompido pelo usuário")
-    except subprocess.CalledProcessError as e:
-        print(f"\n❌ Erro ao executar bot universal: {e}")
-
-def test_bot_universal():
-    """Testa o bot universal."""
-    print("🧪 Testando Bot Universal...")
-    print()
-    
-    try:
-        subprocess.run([sys.executable, "test_universal_bot.py"], check=True)
-    except subprocess.CalledProcessError as e:
-        print(f"\n❌ Erro nos testes: {e}")
+        print(f"\n❌ Erro ao executar bot: {e}")
 
 def main():
     """Função principal."""
@@ -149,23 +116,12 @@ def main():
                 
             elif choice == "1":
                 if check_configuration():
-                    run_bot_original()
+                    run_bot()
                 else:
                     print("\n❌ Configuração incompleta. Verifique os erros acima.")
                     input("Pressione Enter para continuar...")
                 
             elif choice == "2":
-                if check_configuration():
-                    run_bot_universal()
-                else:
-                    print("\n❌ Configuração incompleta. Verifique os erros acima.")
-                    input("Pressione Enter para continuar...")
-                
-            elif choice == "3":
-                test_bot_universal()
-                input("\nPressione Enter para continuar...")
-                
-            elif choice == "4":
                 check_configuration()
                 input("\nPressione Enter para continuar...")
                 

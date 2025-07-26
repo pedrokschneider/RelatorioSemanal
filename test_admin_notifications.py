@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Script para testar as mensagens de controle no canal ADM.
+Script para testar especificamente as notificações do canal admin.
 """
 
 import os
@@ -14,67 +14,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "rep
 # Carregar variáveis de ambiente
 load_dotenv()
 
-def test_admin_channel_config():
-    """Testa se o canal ADM está configurado."""
+def test_admin_notifications():
+    """Testa as notificações do canal admin."""
     
-    print("🧪 Testando configuração do canal ADM...")
-    
-    try:
-        from report_system.config import ConfigManager
-        
-        # Inicializar configuração
-        config = ConfigManager()
-        
-        # Obter o canal ADM configurado
-        admin_channel_id = config.get_discord_admin_channel_id()
-        
-        print(f"📋 Canal ADM configurado: {admin_channel_id}")
-        
-        if admin_channel_id:
-            print("✅ Canal ADM encontrado no .env")
-            return admin_channel_id
-        else:
-            print("❌ Canal ADM não configurado no .env")
-            print("   Verifique se a variável DISCORD_ADMIN_CHANNEL_ID está definida")
-            return None
-            
-    except Exception as e:
-        print(f"❌ Erro ao testar configuração: {e}")
-        return None
-
-def test_notification_channels():
-    """Testa se os canais de notificação estão configurados."""
-    
-    print("\n🧪 Testando configuração dos canais de notificação...")
-    
-    try:
-        from report_system.config import ConfigManager
-        
-        # Inicializar configuração
-        config = ConfigManager()
-        
-        # Obter os canais configurados
-        notification_channel_id = config.get_discord_notification_channel_id()
-        admin_channel_id = config.get_discord_admin_channel_id()
-        
-        print(f"📋 Canal de notificação: {notification_channel_id}")
-        print(f"📋 Canal ADM: {admin_channel_id}")
-        
-        if notification_channel_id and admin_channel_id:
-            print("✅ Ambos os canais estão configurados")
-            return True
-        else:
-            print("❌ Um ou ambos os canais não estão configurados")
-            return False
-            
-    except Exception as e:
-        print(f"❌ Erro ao testar configuração: {e}")
-        return False
-
-def test_admin_message_sending():
-    """Testa o envio de mensagens para o canal ADM."""
-    
-    print("\n🧪 Testando envio de mensagens para o canal ADM...")
+    print("🧪 TESTANDO NOTIFICAÇÕES DO CANAL ADMIN")
+    print("=" * 50)
     
     try:
         from discord_bot import DiscordBotAutoChannels
@@ -82,86 +26,143 @@ def test_admin_message_sending():
         # Inicializar o bot
         bot = DiscordBotAutoChannels()
         
-        # Obter canais da planilha
-        channels = bot.get_channels_from_spreadsheet()
-        
-        if not channels:
-            print("❌ Nenhum canal encontrado na planilha")
-            return False
-        
-        # Pegar o primeiro canal para teste
-        test_channel_id = list(channels.keys())[0]
-        test_project_name = channels[test_channel_id]['project_name']
-        
-        print(f"📋 Testando com canal: {test_project_name} (ID: {test_channel_id})")
-        
-        # Obter o canal ADM
+        # Obter o ID do canal admin
         admin_channel_id = bot.report_system.config.get_discord_admin_channel_id()
+        print(f"📋 Canal Admin ID: {admin_channel_id}")
         
         if not admin_channel_id:
-            print("❌ Canal ADM não configurado")
-            return False
+            print("❌ Canal admin não configurado no .env")
+            return
         
-        # Testar envio de mensagem de controle
-        print("🔍 Enviando mensagem de teste para o canal ADM...")
+        # Verificar se o canal admin está na lista de canais ativos
+        channels = bot.get_channels_from_spreadsheet()
+        admin_channel_clean = ''.join(c for c in admin_channel_id if c.isdigit())
         
-        test_message = f"🧪 **TESTE DE MENSAGEM DE CONTROLE**\n\n"
-        test_message += f"**Projeto:** {test_project_name}\n"
-        test_message += f"**Canal de origem:** <#{test_channel_id}>\n"
-        test_message += f"**Canal ADM:** <#{admin_channel_id}>\n"
-        test_message += f"**Status:** Teste de funcionalidade"
-        
-        success = bot.send_message(admin_channel_id, test_message)
-        
-        if success:
-            print("✅ Mensagem de teste enviada com sucesso para o canal ADM!")
-            return True
+        if admin_channel_clean in channels:
+            print(f"✅ Canal admin encontrado na lista de canais ativos")
+            print(f"   Nome: {channels[admin_channel_clean]['project_name']}")
         else:
-            print("❌ Falha ao enviar mensagem de teste")
-            return False
-            
+            print(f"❌ Canal admin NÃO encontrado na lista de canais ativos")
+            print(f"   Procurado: {admin_channel_clean}")
+            print(f"   Canais disponíveis: {list(channels.keys())[:5]}...")
+        
+        # Testar validação do canal admin
+        print(f"\n🔍 Validando canal admin: {admin_channel_clean}")
+        validation = bot.validate_channel_for_reports(admin_channel_clean)
+        
+        if validation['valid']:
+            print(f"✅ Canal admin é válido para relatórios")
+        else:
+            print(f"❌ Canal admin não é válido: {validation['reason']}")
+            print(f"   Mensagem: {validation['message'][:100]}...")
+        
+        # Testar comando !notificar
+        print(f"\n🔍 Testando comando !notificar no canal admin")
+        try:
+            bot.process_command(admin_channel_clean, "!notificar")
+            print("✅ Comando !notificar executado com sucesso")
+        except Exception as e:
+            print(f"❌ Erro ao executar !notificar: {e}")
+        
+        # Testar comando !controle
+        print(f"\n🔍 Testando comando !controle no canal admin")
+        try:
+            bot.process_command(admin_channel_clean, "!controle")
+            print("✅ Comando !controle executado com sucesso")
+        except Exception as e:
+            print(f"❌ Erro ao executar !controle: {e}")
+        
+        # Verificar se o bot consegue enviar mensagens para o canal admin
+        print(f"\n🔍 Testando envio de mensagem para o canal admin")
+        try:
+            result = bot.send_message(admin_channel_clean, "🧪 Teste de conectividade - Bot funcionando!")
+            if result:
+                print("✅ Mensagem enviada com sucesso para o canal admin")
+            else:
+                print("❌ Falha ao enviar mensagem para o canal admin")
+        except Exception as e:
+            print(f"❌ Erro ao enviar mensagem: {e}")
+        
+        print("\n✅ Testes concluídos!")
+        
     except Exception as e:
-        print(f"❌ Erro ao testar envio de mensagens: {e}")
+        print(f"❌ Erro durante os testes: {e}")
         import traceback
         traceback.print_exc()
-        return False
+
+def test_specific_channel_notifications(channel_id):
+    """Testa notificações em um canal específico."""
+    
+    print(f"🧪 TESTANDO NOTIFICAÇÕES NO CANAL: {channel_id}")
+    print("=" * 50)
+    
+    try:
+        from discord_bot import DiscordBotAutoChannels
+        
+        # Inicializar o bot
+        bot = DiscordBotAutoChannels()
+        
+        # Verificar se o canal está na lista
+        channels = bot.get_channels_from_spreadsheet()
+        
+        if channel_id in channels:
+            print(f"✅ Canal encontrado na lista de canais ativos")
+            print(f"   Nome: {channels[channel_id]['project_name']}")
+        else:
+            print(f"❌ Canal NÃO encontrado na lista de canais ativos")
+            return
+        
+        # Testar validação
+        validation = bot.validate_channel_for_reports(channel_id)
+        
+        if validation['valid']:
+            print(f"✅ Canal é válido para relatórios")
+        else:
+            print(f"❌ Canal não é válido: {validation['reason']}")
+            print(f"   Mensagem: {validation['message']}")
+            return
+        
+        # Testar comando !relatorio
+        print(f"\n🔍 Testando comando !relatorio")
+        try:
+            bot.process_command(channel_id, "!relatorio")
+            print("✅ Comando !relatorio executado com sucesso")
+        except Exception as e:
+            print(f"❌ Erro ao executar !relatorio: {e}")
+        
+        # Testar envio de mensagem
+        print(f"\n🔍 Testando envio de mensagem")
+        try:
+            result = bot.send_message(channel_id, "🧪 Teste de conectividade - Bot funcionando!")
+            if result:
+                print("✅ Mensagem enviada com sucesso")
+            else:
+                print("❌ Falha ao enviar mensagem")
+        except Exception as e:
+            print(f"❌ Erro ao enviar mensagem: {e}")
+        
+        print("\n✅ Testes concluídos!")
+        
+    except Exception as e:
+        print(f"❌ Erro durante os testes: {e}")
+        import traceback
+        traceback.print_exc()
 
 def main():
     """Função principal."""
-    print("🚀 Testando mensagens de controle no canal ADM")
-    print("=" * 50)
-    
-    # Testar configuração do canal ADM
-    admin_channel = test_admin_channel_config()
-    
-    if not admin_channel:
-        print("\n❌ Canal ADM não configurado. Verifique o arquivo .env")
-        return 1
-    
-    # Testar configuração dos canais
-    channels_ok = test_notification_channels()
-    
-    if not channels_ok:
-        print("\n❌ Configuração de canais incompleta")
-        return 1
-    
-    # Testar envio de mensagens
-    success = test_admin_message_sending()
-    
-    print("\n" + "=" * 50)
-    if success:
-        print("🎉 Testes de mensagens de controle passaram!")
-        print("✅ O sistema está configurado para enviar mensagens de controle no canal ADM")
-        print("\n📋 Resumo do que foi implementado:")
-        print("   • Mensagem de início quando o comando é executado")
-        print("   • Mensagem de sucesso quando a notificação é enviada")
-        print("   • Mensagem de erro se algo der errado")
-        print("   • Informações detalhadas sobre projeto, canais e status")
+    if len(sys.argv) == 1:
+        # Teste do canal admin
+        test_admin_notifications()
+    elif len(sys.argv) == 2:
+        # Teste de canal específico
+        channel_id = sys.argv[1]
+        test_specific_channel_notifications(channel_id)
     else:
-        print("⚠️ Alguns testes falharam")
-        print("❌ Verifique os logs para mais detalhes")
-    
-    return 0 if success else 1
+        print("Uso:")
+        print("  python test_admin_notifications.py                    # Teste do canal admin")
+        print("  python test_admin_notifications.py <canal_id>        # Teste de canal específico")
+        print("Exemplo:")
+        print("  python test_admin_notifications.py 1383090628379934851")
 
 if __name__ == "__main__":
-    sys.exit(main()) 
+    main() 

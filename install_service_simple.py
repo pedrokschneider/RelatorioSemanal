@@ -37,7 +37,7 @@ class DiscordBotService(win32serviceutil.ServiceFramework):
         )
         
         # Obter o caminho completo do script principal
-        main_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "discord_bot.pyw")
+        main_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "discord_bot_universal.pyw")
         
         while self.is_alive:
             try:

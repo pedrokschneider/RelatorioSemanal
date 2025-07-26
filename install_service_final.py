@@ -16,9 +16,9 @@ logging.basicConfig(
 logger = logging.getLogger("ServiceInstaller")
 
 class DiscordBotService(win32serviceutil.ServiceFramework):
-    _svc_name_ = "DiscordReportBot"
-    _svc_display_name_ = "Discord Report Bot"
-    _svc_description_ = "Bot Discord para Relatórios Semanais"
+    _svc_name_ = "DiscordReportBotUniversal"
+    _svc_display_name_ = "Discord Report Bot Universal"
+    _svc_description_ = "Bot Discord Universal para Relatórios Semanais"
 
     def __init__(self, args):
         win32serviceutil.ServiceFramework.__init__(self, args)
@@ -37,8 +37,8 @@ class DiscordBotService(win32serviceutil.ServiceFramework):
             (self._svc_name_, '')
         )
         
-        # Obter o caminho completo do script principal
-        main_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "discord_bot.pyw")
+        # Obter o caminho completo do script principal (Bot Universal)
+        main_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "discord_bot_universal.pyw")
         
         while self.is_alive:
             try:

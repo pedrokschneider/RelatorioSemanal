@@ -16,17 +16,21 @@ python discord_bot.py
 python run_bot.py
 ```
 
-### Opção 2: Instalação como Serviço Windows
+### Opção 2: Instalação como Serviço Windows (NSSM)
 
-```bash
+```powershell
 # Instalar o serviço
-.\install_service_powershell.ps1
+.\install_service.ps1
 
-# Verificar se foi instalado
-sc query DiscordReportBot
+# Gerenciar o serviço
+nssm status "Discord Report Bot"    # Ver status
+nssm stop "Discord Report Bot"      # Parar serviço
+nssm start "Discord Report Bot"     # Iniciar serviço
+nssm restart "Discord Report Bot"   # Reiniciar serviço
 
-# Iniciar o serviço
-sc start DiscordReportBot
+# Monitorar logs
+Get-Content "C:\GitHub\RelatorioSemanal\logs\service.log" -Wait    # Ver logs em tempo real
+Get-Content "C:\GitHub\RelatorioSemanal\logs\service.log" -Tail 50 # Ver últimas 50 linhas
 ```
 
 ### Opção 3: Instalação Simples
@@ -94,14 +98,35 @@ O bot precisa das seguintes permissões:
 
 ## 🔍 Troubleshooting
 
-### Verificar Logs
+### Verificar Status do Serviço
 
-```bash
-# Ver logs em tempo real
-Get-Content logs/discord_bot_2025-01-27.log -Wait
+```powershell
+# Verificar status do serviço
+nssm status "Discord Report Bot"
 
-# Ver últimas linhas
-Get-Content logs/discord_bot_2025-01-27.log -Tail 50
+# Ver logs do serviço
+Get-Content "C:\GitHub\RelatorioSemanal\logs\service.log" -Wait
+
+# Ver logs do bot
+Get-Content "C:\GitHub\RelatorioSemanal\logs\discord_bot_$(Get-Date -Format 'yyyy-MM-dd').log" -Wait
+```
+
+### Reiniciar Serviço
+
+Se o bot não estiver respondendo:
+
+```powershell
+# Parar o serviço
+nssm stop "Discord Report Bot"
+
+# Aguardar 5 segundos
+Start-Sleep -Seconds 5
+
+# Iniciar o serviço
+nssm start "Discord Report Bot"
+
+# Verificar status
+nssm status "Discord Report Bot"
 ```
 
 ### Verificar Configuração
@@ -113,18 +138,25 @@ python run_bot.py
 
 ### Problemas Comuns
 
-1. **Bot não responde**
-   - Verificar se o token está correto
-   - Verificar permissões no Discord
-   - Verificar logs
+1. **Serviço não inicia**
+   - Verificar logs em `C:\GitHub\RelatorioSemanal\logs\service.log`
+   - Verificar se Python está instalado e no PATH
+   - Verificar permissões do usuário
 
-2. **Comandos não funcionam**
+2. **Bot não responde**
+   - Verificar se o token está correto no `.env`
+   - Verificar permissões no Discord
+   - Verificar logs do bot e do serviço
+
+3. **Comandos não funcionam**
    - Verificar se o canal está configurado na planilha
    - Verificar se o projeto está ativo
+   - Verificar permissões do bot no canal
 
-3. **Erro de conexão**
+4. **Erro de conexão**
    - Verificar internet
    - Verificar se o Discord está online
+   - Reiniciar o serviço usando NSSM
 
 ## 📁 Estrutura do Projeto
 
@@ -141,18 +173,24 @@ RelatorioSemanal/
 
 ## 🚀 Comandos Rápidos
 
-```bash
-# Executar bot
-python discord_bot.py
+```powershell
+# Gerenciamento do Serviço
+nssm status "Discord Report Bot"    # Ver status
+nssm stop "Discord Report Bot"      # Parar
+nssm start "Discord Report Bot"     # Iniciar
+nssm restart "Discord Report Bot"   # Reiniciar
 
-# Executar relatórios
-python run.py --project ID_PROJETO
+# Monitoramento
+Get-Content "C:\GitHub\RelatorioSemanal\logs\service.log" -Wait  # Logs do serviço
+Get-Content "logs\discord_bot_$(Get-Date -Format 'yyyy-MM-dd').log" -Wait  # Logs do bot
 
-# Verificar configuração
-python run_bot.py
+# Execução Manual (para testes)
+python discord_bot.py              # Executar bot
+python run.py --project ID_PROJETO # Executar relatórios
+python run_bot.py                  # Menu interativo
 
-# Instalar serviço
-.\install_service_powershell.ps1
+# Instalação
+.\install_service.ps1             # Instalar serviço com NSSM
 ```
 
 ## 📞 Suporte
@@ -161,3 +199,6 @@ Para problemas ou dúvidas:
 1. Verificar logs em `logs/discord_bot_YYYY-MM-DD.log`
 2. Verificar configuração com `python run_bot.py`
 3. Verificar se todos os arquivos estão presentes 
+
+
+PS C:\Users\Otus - TI> C:\GitHub\RelatorioSemanal\nssm\nssm.exe restart "Discord Report Bot"

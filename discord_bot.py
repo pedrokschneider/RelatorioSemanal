@@ -1150,8 +1150,26 @@ def main():
         # Inicializar o bot
         bot = DiscordBotAutoChannels()
         
-        # Executar o simulador de comandos
-        bot.simulate_command()
+        # Verificar se está rodando como serviço (sem interação)
+        if len(sys.argv) > 1 and sys.argv[1] == "--service":
+            # Modo serviço: iniciar monitoramento automaticamente
+            logger.info("Iniciando bot em modo serviço (monitoramento automático)")
+            
+            # Obter canais da planilha
+            channels = bot.get_channels_from_spreadsheet()
+            if not channels:
+                logger.error("Nenhum canal encontrado na planilha")
+                return 1
+            
+            # Extrair IDs dos canais
+            channel_ids = list(channels.keys())
+            
+            # Iniciar monitoramento de todos os canais
+            logger.info(f"Iniciando monitoramento de {len(channel_ids)} canais")
+            bot.start_real_monitoring(channel_ids)
+        else:
+            # Modo interativo: executar menu
+            bot.simulate_command()
         
     except Exception as e:
         logger.error(f"Erro fatal: {e}")

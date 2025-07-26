@@ -29,7 +29,7 @@ try {
 
 # Criar o serviço
 Write-Host "Instalando novo serviço..."
-$binPath = "`"$pythonPath`" `"$scriptPath`""
+$binPath = "`"$pythonPath`" `"$scriptPath`" --service"
 sc.exe create $serviceName binPath= $binPath DisplayName= $displayName start= auto
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Erro ao criar serviço"

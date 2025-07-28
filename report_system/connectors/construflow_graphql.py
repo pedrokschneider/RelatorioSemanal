@@ -330,6 +330,7 @@ class ConstruflowGraphQLConnector(APIConnector):
                                 code
                                 title
                                 status
+                                priority
                                 createdAt
                                 updatedAt
                                 disciplines {
@@ -387,6 +388,7 @@ class ConstruflowGraphQLConnector(APIConnector):
                                     'code': issue['code'],
                                     'title': issue['title'],
                                     'status_x': issue['status'],  # Status da issue (active, closed, etc.)
+                                    'priority': issue.get('priority'),  # Prioridade da issue
                                     'projectId': project_id,
                                     'createdAt': issue.get('createdAt'),
                                     'updatedAt': issue.get('updatedAt'),
@@ -400,6 +402,7 @@ class ConstruflowGraphQLConnector(APIConnector):
                                 'code': issue['code'],
                                 'title': issue['title'],
                                 'status_x': issue['status'],  # Status da issue (active, closed, etc.)
+                                'priority': issue.get('priority'),  # Prioridade da issue
                                 'projectId': project_id,
                                 'createdAt': issue.get('createdAt'),
                                 'updatedAt': issue.get('updatedAt'),

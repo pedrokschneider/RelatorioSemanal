@@ -278,6 +278,9 @@ Qualquer dúvida, estamos à disposição!
         # Filtrar apontamentos - CORRIGIDO: apenas issues com status 'todo' na disciplina
         # CORREÇÃO: Incluir apenas issues com status da disciplina = 'todo'
         todo_issues = []
+        
+
+        
         for issue in client_issues:
             # CORREÇÃO: Incluir apenas issues com status da disciplina = 'todo'
             # Não incluir issues com status 'done' ou 'follow'
@@ -307,6 +310,7 @@ Qualquer dúvida, estamos à disposição!
         logger.info(f"Encontradas {len(issues_cache)} issues no cache para busca por code")
         
         # Agora vamos buscar nos dados originais de issues para garantir que o ID correto seja obtido
+        raw_issues = {}  # Inicializar a variável
         try:
             # Tentar obter diretamente do connector
             if hasattr(self, 'construflow') and self.construflow:
@@ -331,7 +335,6 @@ Qualquer dúvida, estamos à disposição!
             if issues_df is not None and not issues_df.empty:
                 # Converter para dicionário para busca rápida
                 # Chave é uma tupla (project_id, code)
-                raw_issues = {}
                 for _, row in issues_df.iterrows():
                     if pd.notna(row.get('code')) and pd.notna(row.get('projectId')):
                         key = (str(row['projectId']), str(row['code']))
@@ -340,7 +343,7 @@ Qualquer dúvida, estamos à disposição!
                 logger.info(f"Carregadas {len(raw_issues)} issues brutas para busca precisa por (projectId, code)")
         except Exception as e:
             logger.warning(f"Erro ao carregar issues brutas: {e}")
-            raw_issues = {}
+            # raw_issues já foi inicializado como {}
         
         # Agrupar issues por prioridade
         issues_por_prioridade = {
@@ -354,6 +357,8 @@ Qualquer dúvida, estamos à disposição!
         for issue in todo_issues:
             issue_code = str(issue.get('code', 'N/A'))
             issue_title = issue.get('title', 'Apontamento sem título')
+            
+
             
             # Buscar o ID correto primeiro no dicionário de issues brutas usando (project_id, code)
             correct_issue_id = None
@@ -432,6 +437,8 @@ Qualquer dúvida, estamos à disposição!
         
         # Construir o resultado final agrupado por prioridade
         result = ""
+        
+
         
         # Prioridade Alta - Vermelho
         if issues_por_prioridade['alta']:

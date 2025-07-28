@@ -157,6 +157,19 @@ class DataProcessor:
             # Adicionar todas as issues para processamento
             result['construflow_data']['all_issues'] = issues_df.to_dict('records')
             logger.info(f"Total de issues processadas: {len(issues_df)}")
+            
+            # Filtrar apontamentos do cliente
+            try:
+                client_issues_df = self.filter_client_issues(issues_df, project_id)
+                if not client_issues_df.empty:
+                    result['construflow_data']['client_issues'] = client_issues_df.to_dict('records')
+                    logger.info(f"Filtrados {len(client_issues_df)} apontamentos do cliente")
+                else:
+                    result['construflow_data']['client_issues'] = []
+                    logger.info("Nenhum apontamento do cliente encontrado")
+            except Exception as e:
+                logger.warning(f"Erro ao filtrar apontamentos do cliente: {e}")
+                result['construflow_data']['client_issues'] = []
         
         return result
     

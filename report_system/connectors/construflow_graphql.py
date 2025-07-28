@@ -177,10 +177,13 @@ class ConstruflowGraphQLConnector(APIConnector):
             logger.error(f"Erro na requisição GraphQL: {e}")
             raise
     
+
+
     def get_projects(self, force_refresh: bool = False) -> pd.DataFrame:
         """
         Obtém lista de projetos usando GraphQL.
-        Busca os IDs dos projetos da planilha e depois busca os dados via GraphQL.
+        CORREÇÃO: Busca projetos da planilha E também tenta buscar projetos específicos
+        que podem estar compartilhados mas não na planilha.
         
         Args:
             force_refresh: Se deve forçar atualização do cache
@@ -213,7 +216,7 @@ class ConstruflowGraphQLConnector(APIConnector):
             if projects_df.empty:
                 logger.warning("Planilha de configuração vazia, usando lista padrão")
                 # Fallback para lista padrão se a planilha estiver vazia
-                known_project_ids = [1700, 2100, 2400, 2500, 3035, 4557]
+                known_project_ids = [1700, 2100, 2400, 2500, 3035, 4557, 4560]
             else:
                 # Extrair IDs dos projetos da planilha
                 if 'construflow_id' in projects_df.columns:
@@ -236,11 +239,11 @@ class ConstruflowGraphQLConnector(APIConnector):
                     logger.info(f"Encontrados {len(known_project_ids)} projetos ativos na planilha")
                 else:
                     logger.warning("Coluna 'construflow_id' não encontrada na planilha, usando lista padrão")
-                    known_project_ids = [1700, 2100, 2400, 2500, 3035, 4557]
+                    known_project_ids = [1700, 2100, 2400, 2500, 3035, 4557, 4560]
                     
         except Exception as e:
             logger.warning(f"Erro ao carregar planilha: {e}, usando lista padrão")
-            known_project_ids = [1700, 2100, 2400, 2500, 3035, 4557]
+            known_project_ids = [1700, 2100, 2400, 2500, 3035, 4557, 4560]
         
         all_projects = []
         

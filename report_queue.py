@@ -14,6 +14,18 @@ import time
 import platform
 from datetime import datetime
 
+# Configurar encoding padrão para UTF-8
+if sys.platform == "win32":
+    import locale
+    # Tentar configurar locale para UTF-8 no Windows
+    try:
+        locale.setlocale(locale.LC_ALL, 'pt_BR.UTF-8')
+    except locale.Error:
+        try:
+            locale.setlocale(locale.LC_ALL, 'Portuguese_Brazil.1252')
+        except locale.Error:
+            pass  # Usar configuração padrão se não conseguir
+
 # Configuração de logging
 logging.basicConfig(
     level=logging.INFO,
@@ -210,9 +222,32 @@ class ReportQueue:
                 self.report_queue.task_done()
                 
                 if not success:
-                    # Enviar mensagem de erro se o processo falhou
-                    error_message = f"❌ Ocorreu um erro ao gerar o relatório para {project_name}. Antes de entrar em contato com o suporte, verifique se as colunas **STATUS** e **DISCIPLINA** do cronograma do SmartSheet não possuem dados vazios."
+                    # Enviar mensagem de erro detalhada para o canal do projeto
+                    error_message = f"❌ **Erro ao gerar relatório para {project_name}**\n\nAntes de entrar em contato com o suporte, verifique se as colunas **STATUS** e **DISCIPLINA** do cronograma do SmartSheet não possuem dados vazios."
                     self.send_message_with_rate_limit(channel_id, error_message)
+                    
+                    # Enviar notificação adicional para o canal admin/notificação
+                    try:
+                        from report_system.main import WeeklyReportSystem
+                        system = WeeklyReportSystem()
+                        notification_channel_id = system.config.get_discord_notification_channel_id()
+                        
+                        if notification_channel_id:
+                            admin_error_message = f"🚨 **ERRO NO RELATÓRIO - {project_name}**\n\n"
+                            admin_error_message += f"**Canal:** <#{channel_id}>\n"
+                            admin_error_message += f"**Projeto:** {project_name}\n"
+                            admin_error_message += f"**Status:** Falha na geração\n"
+                            admin_error_message += f"**Motivo:** {error_reason}\n"
+                            admin_error_message += f"**Ação:** Verificar logs e configurações"
+                            
+                            # Adicionar detalhes técnicos se disponíveis
+                            if error_details:
+                                admin_error_message += f"\n\n**Detalhes Técnicos:**{error_details}"
+                            
+                            system.discord.send_notification(notification_channel_id, admin_error_message)
+                            logger.info(f"Notificação de erro enviada para canal admin {notification_channel_id}")
+                    except Exception as e:
+                        logger.error(f"Erro ao enviar notificação admin: {e}")
                 
                 # Marcar como concluído
                 with self.lock:
@@ -249,6 +284,7 @@ class ReportQueue:
         
         try:
             # Executar o processo redirecionando saída para capturar o URL
+            # Permitir notificações automáticas para erros (serão enviadas para canal admin/notificação)
             cmd = [sys.executable, script_path, "--channel", channel_id, "--quiet"]
             
             # Imprimir comando que será executado
@@ -259,17 +295,26 @@ class ReportQueue:
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True
+                text=True,
+                encoding='utf-8',
+                errors='replace'
             )
             
             # Verificar resultado
+            logger.info(f"Resultado do subprocess: returncode={result.returncode}, stdout_length={len(result.stdout) if result.stdout else 0}, stderr_length={len(result.stderr) if result.stderr else 0}")
+            
             if result.returncode == 0:
                 # Procurar URL do documento na saída
                 doc_url = None
-                for line in result.stdout.split('\n'):
-                    if "docs.google.com/document" in line:
-                        doc_url = line.strip()
-                        break
+                if result.stdout:
+                    logger.info(f"Procurando URL na saída: {repr(result.stdout[:500])}...")
+                    for line in result.stdout.split('\n'):
+                        if "docs.google.com/document" in line:
+                            doc_url = line.strip()
+                            logger.info(f"URL encontrado: {doc_url}")
+                            break
+                else:
+                    logger.warning("stdout está vazio, não foi possível encontrar URL")
                 
                 # Importamos aqui para evitar importação circular
                 from report_system.main import WeeklyReportSystem
@@ -310,19 +355,54 @@ class ReportQueue:
                     
                     formatted_message = "\n".join(message)
                     self.send_message_with_rate_limit(channel_id, formatted_message)
+                    logger.info(f"Relatório gerado com sucesso para {project_name} com URL: {doc_url}")
+                    return True
                 else:
-                    # Mensagem de sucesso simplificada se não encontrarmos o URL
-                    message = f"✅ **Relatório de {project_name} gerado com sucesso!**"
-                    self.send_message_with_rate_limit(channel_id, message)
-                return True
+                    # Se não encontramos o URL, considerar como falha
+                    logger.error(f"Relatório não gerado com sucesso para {project_name}: URL não encontrado na saída")
+                    # Mensagem simples para o canal do projeto
+                    error_message = f"❌ **Erro ao gerar relatório para {project_name}**\n\nO relatório foi processado mas não foi possível obter o link do documento. Isso pode indicar um problema na criação do Google Doc ou nas permissões do Google Drive."
+                    self.send_message_with_rate_limit(channel_id, error_message)
+                    
+                    # Enviar notificação adicional para o canal admin/notificação
+                    try:
+                        from report_system.main import WeeklyReportSystem
+                        system = WeeklyReportSystem()
+                        notification_channel_id = system.config.get_discord_notification_channel_id()
+                        
+                        if notification_channel_id:
+                            admin_error_message = f"🚨 **ERRO NO RELATÓRIO - {project_name}**\n\n"
+                            admin_error_message += f"**Canal:** <#{channel_id}>\n"
+                            admin_error_message += f"**Projeto:** {project_name}\n"
+                            admin_error_message += f"**Status:** Documento não criado\n"
+                            admin_error_message += f"**Motivo:** Documento não foi criado no Google Docs - URL não encontrado na saída\n"
+                            admin_error_message += f"**Ação:** Verificar permissões do Google Drive e configurações"
+                            
+                            system.discord.send_notification(notification_channel_id, admin_error_message)
+                            logger.info(f"Notificação de erro enviada para canal admin {notification_channel_id}")
+                    except Exception as e:
+                        logger.error(f"Erro ao enviar notificação admin: {e}")
+                    
+                    return False
             else:
-                # Mensagem de erro
+                # Mensagem de erro com mais detalhes
+                error_details = ""
+                if result.stderr:
+                    error_details = f"\n\n**Detalhes do erro:**\n{result.stderr[:500]}"
+                
+                # Determinar o motivo do erro baseado no returncode e stderr (apenas para canal admin)
+                error_reason = self._determine_error_reason(result.returncode, result.stderr)
+                
+                # Mensagem simples para o canal do projeto
                 message = f"❌ **Erro ao gerar relatório para {project_name}**\n\nAntes de entrar em contato com o suporte, verifique se as colunas **STATUS** e **DISCIPLINA** do cronograma do SmartSheet não possuem dados vazios."
+                
                 self.send_message_with_rate_limit(channel_id, message)
+                logger.error(f"Subprocess falhou com returncode {result.returncode}. stderr: {result.stderr}")
                 return False
                 
         except Exception as e:
             logger.error(f"Erro ao executar script: {e}")
+            logger.error(f"Detalhes do erro: stdout={getattr(result, 'stdout', 'N/A')}, stderr={getattr(result, 'stderr', 'N/A')}")
             self.send_message_with_rate_limit(channel_id, f"❌ **Erro ao gerar relatório**\n\nAntes de entrar em contato com o suporte, verifique se as colunas **STATUS** e **DISCIPLINA** do cronograma do SmartSheet não possuem dados vazios.")
             return False
     
@@ -466,6 +546,47 @@ class ReportQueue:
         
         return formatted_message
 
+    def _determine_error_reason(self, returncode, stderr):
+        """
+        Determina o motivo do erro baseado no returncode e stderr.
+        
+        Args:
+            returncode: Código de retorno do subprocess
+            stderr: Saída de erro do subprocess
+            
+        Returns:
+            str: Descrição do motivo do erro
+        """
+        stderr_lower = stderr.lower() if stderr else ""
+        
+        # Verificar erros específicos baseados no conteúdo do stderr
+        if "smartsheet" in stderr_lower and ("token" in stderr_lower or "auth" in stderr_lower):
+            return "Erro de autenticação no SmartSheet - Token inválido ou expirado"
+        elif "google" in stderr_lower and ("auth" in stderr_lower or "credentials" in stderr_lower):
+            return "Erro de autenticação no Google - Credenciais inválidas ou expiradas"
+        elif "construflow" in stderr_lower and ("api" in stderr_lower or "connection" in stderr_lower):
+            return "Erro de conexão com a API do ConstruFlow"
+        elif "permission" in stderr_lower or "access" in stderr_lower:
+            return "Erro de permissão - Acesso negado aos recursos necessários"
+        elif "timeout" in stderr_lower or "connection" in stderr_lower:
+            return "Erro de timeout ou conexão - Serviço indisponível temporariamente"
+        elif "data" in stderr_lower and ("empty" in stderr_lower or "missing" in stderr_lower):
+            return "Dados insuficientes - Colunas obrigatórias vazias no SmartSheet"
+        elif "file" in stderr_lower and ("not found" in stderr_lower or "missing" in stderr_lower):
+            return "Arquivo não encontrado - Template ou configuração ausente"
+        elif "memory" in stderr_lower or "out of memory" in stderr_lower:
+            return "Erro de memória - Sistema sobrecarregado"
+        elif returncode == 1:
+            return "Erro geral de execução - Verificar logs para detalhes"
+        elif returncode == 2:
+            return "Erro de configuração - Verificar arquivos de configuração"
+        elif returncode == 126:
+            return "Erro de permissão - Script não pode ser executado"
+        elif returncode == 127:
+            return "Comando não encontrado - Python ou dependências não disponíveis"
+        else:
+            return f"Erro desconhecido (código {returncode}) - Verificar logs para detalhes"
+    
     def send_message_with_rate_limit(self, channel_id, content):
         """
         Envia uma mensagem respeitando limites de rate do Discord.

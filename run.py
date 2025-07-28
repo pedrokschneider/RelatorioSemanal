@@ -156,13 +156,20 @@ def main():
                     doc_url = f"https://docs.google.com/document/d/{doc_id}/edit"
                     logger.info(f"  - Link do relatório: {doc_url}")
                     print(doc_url)
-            # Enviar mensagem individual para o administrador se solicitado
+            # Enviar mensagem para o canal de notificação se solicitado
             if not args.no_admin_notification and hasattr(system, 'discord') and system.discord:
                 if result[0]:
                     message = f"✅ Projeto {project_name} gerado com sucesso!"
                 else:
                     message = f"❌ Projeto {project_name} falhou: {mensagem}"
-                system.discord.send_admin_notification(message)
+                
+                # Tentar enviar para o canal de notificação primeiro
+                notification_channel_id = system.config.get_discord_notification_channel_id()
+                if notification_channel_id:
+                    system.discord.send_notification(notification_channel_id, message)
+                else:
+                    # Fallback para o canal admin
+                    system.discord.send_admin_notification(message)
         else:
             results = system.run_scheduled(force=args.force, quiet_mode=True, skip_notifications=args.no_notifications, notification_delay=2)
             for project_id, (success, file_path, drive_id, *rest) in results.items():
@@ -183,7 +190,14 @@ def main():
                         msg = f"✅ Projeto {project_name} gerado com sucesso!"
                     else:
                         msg = f"❌ Projeto {project_name} falhou: {motivo_falha}"
-                    system.discord.send_admin_notification(msg)
+                    
+                    # Tentar enviar para o canal de notificação primeiro
+                    notification_channel_id = system.config.get_discord_notification_channel_id()
+                    if notification_channel_id:
+                        system.discord.send_notification(notification_channel_id, msg)
+                    else:
+                        # Fallback para o canal admin
+                        system.discord.send_admin_notification(msg)
         logger.info("=== Fim do processamento ===")
     except Exception as e:
         logger.error(f"Erro não tratado: {e}", exc_info=True)
@@ -192,7 +206,14 @@ def main():
                 error_message = f"### ❌ ERRO NA EXECUÇÃO DO SISTEMA\n\n"
                 error_message += f"**Erro:** {str(e)}\n\n"
                 error_message += "Verifique os logs para mais detalhes."
-                system.discord.send_admin_notification(error_message)
+                
+                # Tentar enviar para o canal de notificação primeiro
+                notification_channel_id = system.config.get_discord_notification_channel_id()
+                if notification_channel_id:
+                    system.discord.send_notification(notification_channel_id, error_message)
+                else:
+                    # Fallback para o canal admin
+                    system.discord.send_admin_notification(error_message)
         except Exception as notify_error:
             logger.error(f"Falha ao enviar notificação de erro: {notify_error}")
         return 1

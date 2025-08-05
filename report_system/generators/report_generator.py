@@ -473,34 +473,42 @@ Qualquer dúvida, estamos à disposição!
     def _gerar_tarefas_realizadas(self, data: Dict[str, Any]) -> str:
         """Gera a seção de tarefas realizadas no período."""
         smartsheet_data = data.get('smartsheet_data', {})
+        
+        # Usar dados categorizados se disponíveis
         if isinstance(smartsheet_data, dict) and 'completed_tasks' in smartsheet_data:
             completed_tasks = smartsheet_data.get('completed_tasks', [])
-            logger.info(f"Usando {len(completed_tasks)} tarefas concluídas do dicionário")
+            logger.info(f"Usando {len(completed_tasks)} tarefas concluídas categorizadas")
         elif isinstance(smartsheet_data, dict) and 'all_tasks' in smartsheet_data:
             all_tasks = smartsheet_data.get('all_tasks', [])
             completed_tasks = []
             for task in all_tasks:
                 if isinstance(task, dict):
                     status = str(task.get('Status', '')).lower()
-                    if 'conclu' in status or 'realiz' in status or 'feito' in status or 'done' in status or 'complete' in status:
-                        completed_tasks.append(task)
-            logger.info(f"Filtradas {len(completed_tasks)} tarefas concluídas de {len(all_tasks)} tarefas")
+                    # Excluir explicitamente tarefas com status "Não Feito"
+                    if status not in ['não feito', 'nao feito', 'não feita', 'nao feita', 'not done', 'pending', 'pendente']:
+                        if 'conclu' in status or 'realiz' in status or 'feito' in status or 'done' in status or 'complete' in status:
+                            completed_tasks.append(task)
+            logger.info(f"Filtradas {len(completed_tasks)} tarefas concluídas de {len(all_tasks)} tarefas (excluindo 'Não Feito')")
         elif isinstance(smartsheet_data, list):
             all_tasks = smartsheet_data
             completed_tasks = []
             for task in all_tasks:
                 if isinstance(task, dict):
                     status = str(task.get('Status', '')).lower()
-                    if 'conclu' in status or 'realiz' in status or 'feito' in status or 'done' in status or 'complete' in status:
-                        completed_tasks.append(task)
+                    # Excluir explicitamente tarefas com status "Não Feito"
+                    if status not in ['não feito', 'nao feito', 'não feita', 'nao feita', 'not done', 'pending', 'pendente']:
+                        if 'conclu' in status or 'realiz' in status or 'feito' in status or 'done' in status or 'complete' in status:
+                            completed_tasks.append(task)
                 elif isinstance(task, str):
                     completed_tasks.append({'Nome da Tarefa': task})
-            logger.info(f"Processadas {len(completed_tasks)} tarefas do formato antigo")
+            logger.info(f"Processadas {len(completed_tasks)} tarefas do formato antigo (excluindo 'Não Feito')")
         else:
             logger.warning(f"Formato não reconhecido para smartsheet_data: {type(smartsheet_data)}")
             return "Sem tarefas concluídas no período."
+        
         if not completed_tasks:
             return "Sem tarefas concluídas no período."
+        
         from datetime import datetime
         def get_task_date(task):
             task_date = task.get('Data Término', task.get('Data de Término', ''))
@@ -514,7 +522,9 @@ Qualquer dúvida, estamos à disposição!
             elif hasattr(task_date, 'strftime'):
                 return task_date
             return datetime.min
+        
         completed_tasks.sort(key=get_task_date, reverse=True)
+        
         # Agrupar tarefas realizadas por disciplina
         tarefas_por_disciplina = {}
         for task in completed_tasks:
@@ -523,6 +533,7 @@ Qualquer dúvida, estamos à disposição!
             task_date = task.get('Data Término', task.get('Data de Término', ''))
             task_name = task.get('Nome da Tarefa', task.get('Task Name', ''))
             task_discipline = task.get('Disciplina', task.get('Discipline', '')) or 'Sem Disciplina'
+            
             # Formatar data SEM negrito, sempre dd/mm
             dt = parse_data_flex(task_date)
             if not dt and isinstance(task_date, str) and len(task_date) >= 10:
@@ -544,19 +555,23 @@ Qualquer dúvida, estamos à disposição!
                         formatted_date = f"{match2.group(1)}/{match2.group(2)}"
                     else:
                         formatted_date = str(task_date).strip()[:5]
+            
             linha = f"{formatted_date} │ {task_name}"
             if task_discipline not in tarefas_por_disciplina:
                 tarefas_por_disciplina[task_discipline] = []
             tarefas_por_disciplina[task_discipline].append(linha)
+        
         # Montar resultado agrupado
         if not tarefas_por_disciplina:
             return "Sem tarefas concluídas no período."
+        
         result = ""
         for disciplina, tarefas in tarefas_por_disciplina.items():
             result += f"{disciplina}\n"
             for tarefa in tarefas:
                 result += f"{tarefa}\n"
             result += "\n"
+        
         return result.strip()
 
     def _gerar_atividades_iniciadas_proxima_semana(self, data: Dict[str, Any]) -> str:
@@ -565,6 +580,8 @@ Qualquer dúvida, estamos à disposição!
         Se o relatório for solicitado antes de sexta-feira, considera atividades da semana atual e da próxima.
         """
         smartsheet_data = data.get('smartsheet_data', {})
+        
+        # Usar dados categorizados se disponíveis
         if isinstance(smartsheet_data, dict) and 'all_tasks' in smartsheet_data:
             all_tasks = smartsheet_data.get('all_tasks', [])
         elif isinstance(smartsheet_data, list):
@@ -686,28 +703,40 @@ Qualquer dúvida, estamos à disposição!
     def _gerar_atrasos_periodo(self, data: Dict[str, Any]) -> str:
         """Gera a seção de atrasos e desvios do período, incluindo baseline e motivo de atraso."""
         smartsheet_data = data.get('smartsheet_data', {})
+        
+        # Usar dados categorizados se disponíveis
         if isinstance(smartsheet_data, dict) and 'delayed_tasks' in smartsheet_data:
             delayed_tasks = smartsheet_data.get('delayed_tasks', [])
-            logger.info(f"Usando {len(delayed_tasks)} tarefas atrasadas do dicionário")
+            logger.info(f"Usando {len(delayed_tasks)} tarefas atrasadas categorizadas")
         elif isinstance(smartsheet_data, dict) and 'all_tasks' in smartsheet_data:
             all_tasks = smartsheet_data.get('all_tasks', [])
             delayed_tasks = []
             for task in all_tasks:
-                if isinstance(task, dict) and (task.get('Categoria de atraso') or task.get('Delay Category')):
-                    delayed_tasks.append(task)
-            logger.info(f"Filtradas {len(delayed_tasks)} tarefas atrasadas de {len(all_tasks)} tarefas")
+                if isinstance(task, dict):
+                    status = str(task.get('Status', '')).lower()
+                    # Incluir tarefas com status "Não Feito" e outras categorias de atraso
+                    if (status in ['não feito', 'nao feito', 'não feita', 'nao feita', 'not done', 'pending', 'pendente'] or 
+                        task.get('Categoria de atraso') or task.get('Delay Category')):
+                        delayed_tasks.append(task)
+            logger.info(f"Filtradas {len(delayed_tasks)} tarefas atrasadas de {len(all_tasks)} tarefas (incluindo 'Não Feito')")
         elif isinstance(smartsheet_data, list):
             all_tasks = smartsheet_data
             delayed_tasks = []
             for task in all_tasks:
-                if isinstance(task, dict) and (task.get('Categoria de atraso') or task.get('Delay Category')):
-                    delayed_tasks.append(task)
-            logger.info(f"Processadas {len(delayed_tasks)} tarefas atrasadas do formato antigo")
+                if isinstance(task, dict):
+                    status = str(task.get('Status', '')).lower()
+                    # Incluir tarefas com status "Não Feito" e outras categorias de atraso
+                    if (status in ['não feito', 'nao feito', 'não feita', 'nao feita', 'not done', 'pending', 'pendente'] or 
+                        task.get('Categoria de atraso') or task.get('Delay Category')):
+                        delayed_tasks.append(task)
+            logger.info(f"Processadas {len(delayed_tasks)} tarefas atrasadas do formato antigo (incluindo 'Não Feito')")
         else:
             logger.warning(f"Formato não reconhecido para smartsheet_data: {type(smartsheet_data)}")
             return "Não foram identificados atrasos no período."
+        
         if not delayed_tasks:
             return "Não foram identificados atrasos no período."
+        
         result = ""
         for task in delayed_tasks:
             if not isinstance(task, dict):
@@ -715,6 +744,7 @@ Qualquer dúvida, estamos à disposição!
             task_discipline = task.get('Disciplina', task.get('Discipline', ''))
             task_name = task.get('Nome da Tarefa', task.get('Task Name', ''))
             nova_data = task.get('Data Término', task.get('Data de Término', task.get('Due Date', '')))
+            
             # Buscar baseline mais recente
             import re
             baseline = task.get('Data de Fim - Baseline Otus')
@@ -724,9 +754,17 @@ Qualquer dúvida, estamos à disposição!
                 # Ordenar pelo número do R (maior para menor)
                 baseline_keys.sort(key=lambda x: int(re.findall(r'R(\\d+)$', x)[0]), reverse=True)
                 baseline = task.get(baseline_keys[0]) or baseline
+            
             baseline_fmt = baseline if baseline else "-"
             motivo = task.get('Motivo de atraso')
             motivo_fmt = motivo if motivo else "-"
+            
+            # Verificar se é uma tarefa "Não Feito" para adicionar informação específica
+            status = str(task.get('Status', '')).lower()
+            if status in ['não feito', 'nao feito', 'não feita', 'nao feita', 'not done', 'pending', 'pendente']:
+                if not motivo_fmt or motivo_fmt == "-":
+                    motivo_fmt = "Tarefa não realizada (status: Não Feito)"
+            
             # Formatar datas
             nova_data_fmt = ""
             if nova_data:
@@ -747,6 +785,7 @@ Qualquer dúvida, estamos à disposição!
                             nova_data_fmt = str(nova_data)[:5]
                     else:
                         nova_data_fmt = str(nova_data)[:5]
+            
             # Corrigir baseline para sempre dd/mm
             if baseline:
                 baseline_dt = parse_data_flex(baseline)
@@ -756,18 +795,22 @@ Qualquer dúvida, estamos à disposição!
                     baseline_fmt = str(baseline)[:5]
             else:
                 baseline_fmt = "-"
+            
             result += (f"* {task_discipline} – {task_name}\n"
                        f"    - Nova data programada: {nova_data_fmt}\n"
                        f"    - Data prevista inicial: {baseline_fmt}\n"
                        f"    - Motivo do atraso: {motivo_fmt}\n")
+        
         return result if result else "Não foram identificados atrasos no período."
     
     def _gerar_programacao_semana(self, data: Dict[str, Any]) -> str:
         """Gera a seção de programação para as próximas duas semanas."""
         smartsheet_data = data.get('smartsheet_data', {})
+        
+        # Usar dados categorizados se disponíveis
         if isinstance(smartsheet_data, dict) and 'scheduled_tasks' in smartsheet_data:
             future_tasks = smartsheet_data.get('scheduled_tasks', [])
-            logger.info(f"Usando {len(future_tasks)} tarefas programadas do dicionário")
+            logger.info(f"Usando {len(future_tasks)} tarefas programadas categorizadas")
         elif isinstance(smartsheet_data, dict) and 'all_tasks' in smartsheet_data:
             all_tasks = smartsheet_data.get('all_tasks', [])
             from datetime import datetime, timedelta
@@ -816,8 +859,10 @@ Qualquer dúvida, estamos à disposição!
         else:
             logger.warning(f"Formato não reconhecido para smartsheet_data: {type(smartsheet_data)}")
             return "Sem atividades programadas para as próximas duas semanas."
+        
         if not future_tasks:
             return "Sem atividades programadas para as próximas duas semanas."
+        
         def get_task_date(task):
             task_date = task.get('Data Término', task.get('Data de Término', task.get('Due Date', '')))
             if isinstance(task_date, str):
@@ -826,7 +871,9 @@ Qualquer dúvida, estamos à disposição!
                 except:
                     return datetime.now() + timedelta(days=14)
             return task_date if task_date else datetime.now() + timedelta(days=14)
+        
         future_tasks.sort(key=get_task_date, reverse=False)
+        
         # Agrupar entregas por disciplina
         entregas_por_disciplina = {}
         for task in future_tasks:
@@ -835,6 +882,7 @@ Qualquer dúvida, estamos à disposição!
             task_date = task.get('Data Término', task.get('Data de Término', task.get('Due Date', '')))
             task_name = task.get('Nome da Tarefa', task.get('Task Name', ''))
             task_discipline = task.get('Disciplina', task.get('Discipline', '')) or 'Sem Disciplina'
+            
             # Formatar data SEM negrito, sempre dd/mm
             dt = parse_data_flex(task_date)
             if not dt and isinstance(task_date, str) and len(task_date) >= 10:
@@ -856,19 +904,23 @@ Qualquer dúvida, estamos à disposição!
                         formatted_date = f"{match2.group(1)}/{match2.group(2)}"
                     else:
                         formatted_date = str(task_date).strip()[:5]
+            
             linha = f"{formatted_date} │ {task_name}"
             if task_discipline not in entregas_por_disciplina:
                 entregas_por_disciplina[task_discipline] = []
             entregas_por_disciplina[task_discipline].append(linha)
+        
         # Montar resultado agrupado
         if not entregas_por_disciplina:
             return "Sem atividades programadas para as próximas duas semanas."
+        
         result = ""
         for disciplina, entregas in entregas_por_disciplina.items():
             result += f"{disciplina}\n"
             for entrega in entregas:
                 result += f"{entrega}\n"
             result += "\n"
+        
         return result.strip()
         
     def _gerar_tabela_apontamentos(self, data: dict) -> str:

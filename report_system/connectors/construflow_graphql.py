@@ -247,6 +247,7 @@ class ConstruflowGraphQLConnector(APIConnector):
         
         all_projects = []
         
+        # Primeiro, buscar projetos conhecidos da planilha
         for project_id in known_project_ids:
             try:
                 query = '''
@@ -275,12 +276,54 @@ class ConstruflowGraphQLConnector(APIConnector):
             except Exception as e:
                 logger.warning(f"Erro ao buscar projeto {project_id}: {e}")
         
+        # Agora buscar projetos compartilhados que podem não estar na planilha
+        try:
+            logger.info("Buscando projetos compartilhados adicionais...")
+            query = '''
+                query getSharedProjects {
+                    projects {
+                        id
+                        name
+                        status
+                    }
+                }
+            '''
+            
+            result = self._execute_graphql_query(query)
+            
+            if result.get('data', {}).get('projects'):
+                shared_projects = result['data']['projects']
+                logger.info(f"Encontrados {len(shared_projects)} projetos totais na API")
+                
+                # Filtrar apenas projetos que não estão na lista conhecida
+                known_ids_set = set(str(pid) for pid in known_project_ids)
+                additional_projects = []
+                
+                for project in shared_projects:
+                    project_id_str = str(project['id'])
+                    if project_id_str not in known_ids_set:
+                        additional_projects.append({
+                            'id': project_id_str,
+                            'name': project['name'],
+                            'status': project['status']
+                        })
+                        logger.info(f"Projeto compartilhado encontrado: {project['name']} (ID: {project_id_str})")
+                
+                # Adicionar projetos compartilhados à lista
+                all_projects.extend(additional_projects)
+                logger.info(f"Adicionados {len(additional_projects)} projetos compartilhados")
+            else:
+                logger.warning("Não foi possível obter lista de projetos compartilhados")
+                
+        except Exception as e:
+            logger.warning(f"Erro ao buscar projetos compartilhados: {e}")
+        
         # Salvar em cache
         if all_projects:
             try:
                 with open(cache_file, 'wb') as f:
                     pickle.dump(all_projects, f)
-                logger.info(f"Cache atualizado para {len(all_projects)} projetos")
+                logger.info(f"Cache atualizado para {len(all_projects)} projetos (incluindo compartilhados)")
             except Exception as e:
                 logger.warning(f"Erro ao salvar cache: {e}")
         

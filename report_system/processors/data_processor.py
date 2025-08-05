@@ -98,13 +98,63 @@ class DataProcessor:
             # Processar dados do Smartsheet
             tasks_df = self.smartsheet.get_recent_tasks(smartsheet_id)
             if not tasks_df.empty:
-                result['smartsheet_data'] = tasks_df.to_dict('records')
-                result['summary']['total_tasks'] = len(tasks_df)
+                # Categorizar tarefas por status
+                completed_tasks = []
+                delayed_tasks = []
+                scheduled_tasks = []
+                all_tasks = []
+                
+                for _, task in tasks_df.iterrows():
+                    task_dict = task.to_dict()
+                    all_tasks.append(task_dict)
+                    
+                    # Verificar status da tarefa
+                    status = str(task.get('Status', '')).lower().strip()
+                    
+                    # Verificar se tem categoria de atraso não vazia
+                    categoria_atraso = task.get('Categoria de atraso') or task.get('Delay Category')
+                    tem_categoria_atraso = categoria_atraso and str(categoria_atraso).strip() not in ['', 'nan', 'None']
+                    
+                    # Categorizar baseado no status e categoria de atraso
+                    if status in ['concluído', 'concluida', 'realizado', 'realizada', 'feito', 'feita', 'done', 'complete', 'completed']:
+                        completed_tasks.append(task_dict)
+                    elif status in ['não feito', 'nao feito', 'não feita', 'nao feita', 'not done', 'pending', 'pendente']:
+                        # Tarefas "Não Feito" sempre vão para atrasadas
+                        delayed_tasks.append(task_dict)
+                    elif status in ['em andamento', 'andamento', 'in progress', 'progress']:
+                        # Tarefas "Em andamento" vão para atrasadas se tiverem categoria de atraso
+                        if tem_categoria_atraso:
+                            delayed_tasks.append(task_dict)
+                        else:
+                            scheduled_tasks.append(task_dict)
+                    else:
+                        # Para outros status (como "a iniciar"), verificar categoria de atraso
+                        if tem_categoria_atraso:
+                            delayed_tasks.append(task_dict)
+                        elif pd.notna(task.get('Data Término')) or pd.notna(task.get('Data de Término')):
+                            completed_tasks.append(task_dict)
+                        else:
+                            scheduled_tasks.append(task_dict)
+                
+                # Organizar dados categorizados
+                result['smartsheet_data'] = {
+                    'all_tasks': all_tasks,
+                    'completed_tasks': completed_tasks,
+                    'delayed_tasks': delayed_tasks,
+                    'scheduled_tasks': scheduled_tasks
+                }
+                
+                result['summary']['total_tasks'] = len(all_tasks)
+                result['summary']['completed_tasks'] = len(completed_tasks)
+                result['summary']['delayed_tasks'] = len(delayed_tasks)
+                result['summary']['scheduled_tasks'] = len(scheduled_tasks)
                 
                 # Calcular estatísticas de status
                 if 'Status' in tasks_df.columns:
                     status_counts = tasks_df['Status'].value_counts().to_dict()
                     result['summary']['status_counts'] = status_counts
+                
+                logger.info(f"Tarefas categorizadas: {len(completed_tasks)} concluídas, {len(delayed_tasks)} atrasadas, {len(scheduled_tasks)} programadas")
         else:
             logger.warning(f"ID do Smartsheet não encontrado para projeto {project_id}")
         

@@ -202,3 +202,4 @@ Para problemas ou dúvidas:
 
 
 PS C:\Users\Otus - TI> C:\GitHub\RelatorioSemanal\nssm\nssm.exe restart "Discord Report Bot"
+cd "C:\GitHub\RelatorioSemanal" && .\nssm\nssm.exe restart "Discord Report Bot"

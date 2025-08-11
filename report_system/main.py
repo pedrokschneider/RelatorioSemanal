@@ -713,6 +713,10 @@ class WeeklyReportSystem:
                     
                 report_text = self.generator.generate_report(project_data)
                 
+                # Verificar se o projeto tem apontamentos e notificar se não tiver
+                if not skip_notifications:
+                    self._check_and_notify_no_issues(project_data, project_id, project_name)
+                
                 # Salvar localmente primeiro
                 file_path = self.generator.save_report(
                     report_text, 
@@ -1582,6 +1586,52 @@ class WeeklyReportSystem:
             logger.error(f"Erro ao enviar notificações diretas: {e}")
             return False
     
+    def _check_and_notify_no_issues(self, project_data: Dict[str, Any], project_id: str, project_name: str) -> None:
+        """
+        Verifica se o projeto tem apontamentos e notifica no Discord se não tiver.
+        
+        Args:
+            project_data: Dados processados do projeto
+            project_id: ID do projeto
+            project_name: Nome do projeto
+        """
+        try:
+            # Verificar se há dados do Construflow
+            construflow_data = project_data.get('construflow_data')
+            if not construflow_data:
+                logger.info(f"Projeto {project_id} ({project_name}) não tem dados do Construflow")
+                return
+            
+            # Verificar se há apontamentos ativos
+            active_issues = construflow_data.get('active_issues', [])
+            if not active_issues:
+                logger.info(f"Projeto {project_id} ({project_name}) não tem apontamentos ativos")
+                
+                # Obter canal do Discord para este projeto
+                discord_channel_id = self.get_project_discord_channel(project_id)
+                
+                if discord_channel_id:
+                    # Formatar mensagem de notificação
+                    today_str = datetime.now().strftime("%d/%m/%Y")
+                    notification_message = (
+                        f"📋 **Relatório Semanal - {project_name}**\n\n"
+                        f"ℹ️ **Status:** Relatório gerado com sucesso\n"
+                        f"📅 **Data:** {today_str}\n"
+                        f"⚠️ **Observação:** Este projeto não possui apontamentos pendentes no Construflow\n\n"
+                        f"O relatório foi gerado normalmente, mas as seções de apontamentos estão vazias."
+                    )
+                    
+                    # Enviar notificação
+                    logger.info(f"Enviando notificação sobre falta de apontamentos para canal {discord_channel_id}")
+                    self.send_discord_notification(discord_channel_id, notification_message)
+                else:
+                    logger.warning(f"Canal do Discord não encontrado para projeto {project_id}")
+            else:
+                logger.info(f"Projeto {project_id} ({project_name}) tem {len(active_issues)} apontamentos ativos")
+                
+        except Exception as e:
+            logger.error(f"Erro ao verificar apontamentos do projeto {project_id}: {e}")
+
     def send_hourly_notification(self, message: str) -> bool:
         """
         Envia uma notificação para o canal de notificações por hora configurado.

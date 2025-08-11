@@ -246,7 +246,8 @@ Qualquer dúvida, estamos à disposição!
         project_id = data.get('project_id', '')
         
         # Verificar se temos dados de apontamentos
-        if not data.get('construflow_data', {}).get('active_issues'):
+        construflow_data = data.get('construflow_data')
+        if not construflow_data or not construflow_data.get('active_issues'):
             return "Sem apontamentos pendentes para o cliente nesta semana."
             
         # Obter apontamentos do cliente

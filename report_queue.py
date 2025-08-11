@@ -237,12 +237,8 @@ class ReportQueue:
                             admin_error_message += f"**Canal:** <#{channel_id}>\n"
                             admin_error_message += f"**Projeto:** {project_name}\n"
                             admin_error_message += f"**Status:** Falha na geração\n"
-                            admin_error_message += f"**Motivo:** {error_reason}\n"
+                            admin_error_message += f"**Motivo:** Erro durante o processamento do relatório\n"
                             admin_error_message += f"**Ação:** Verificar logs e configurações"
-                            
-                            # Adicionar detalhes técnicos se disponíveis
-                            if error_details:
-                                admin_error_message += f"\n\n**Detalhes Técnicos:**{error_details}"
                             
                             system.discord.send_notification(notification_channel_id, admin_error_message)
                             logger.info(f"Notificação de erro enviada para canal admin {notification_channel_id}")

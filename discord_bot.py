@@ -352,6 +352,37 @@ class DiscordBotAutoChannels:
         else:
             return self.token
     
+    def _get_bot_user_id(self):
+        """
+        Obtém o ID do usuário do nosso bot.
+        
+        Returns:
+            str: ID do bot ou None se não conseguir obter
+        """
+        try:
+            # Se já temos o ID armazenado, retornar
+            if hasattr(self, '_bot_user_id') and self._bot_user_id:
+                return self._bot_user_id
+            
+            # Fazer requisição para obter informações do bot
+            url = f"{self.api_endpoint}/users/@me"
+            headers = {"Authorization": self.get_formatted_token()}
+            
+            response = requests.get(url, headers=headers, timeout=10)
+            
+            if response.status_code == 200:
+                bot_info = response.json()
+                self._bot_user_id = bot_info.get('id')
+                logger.info(f"ID do bot obtido: {self._bot_user_id}")
+                return self._bot_user_id
+            else:
+                logger.error(f"Erro ao obter ID do bot: {response.status_code}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Erro ao obter ID do bot: {e}")
+            return None
+    
     def get_channel_messages(self, channel_id, limit=10, max_retries=3):
         """
         Obtém as mensagens mais recentes de um canal usando a API REST.
@@ -457,6 +488,34 @@ class DiscordBotAutoChannels:
                     return None
         
         return None  
+    
+    def send_message_with_command(self, channel_id, content, command_to_execute=None):
+        """
+        Envia uma mensagem que pode conter um comando que o próprio bot executará.
+        
+        Args:
+            channel_id: ID do canal
+            content: Conteúdo da mensagem
+            command_to_execute: Comando opcional para incluir na mensagem
+            
+        Returns:
+            str: ID da mensagem se enviado com sucesso, None caso contrário
+        """
+        if not self.discord:
+            logger.error("Gerenciador de Discord não inicializado")
+            return None
+        
+        # Se um comando foi especificado, adicionar à mensagem
+        if command_to_execute:
+            content += f"\n\n{command_to_execute}"
+        
+        try:
+            message_id = self.discord.send_notification(channel_id, content, return_message_id=True)
+            logger.info(f"Mensagem com comando enviada para canal {channel_id}: {command_to_execute}")
+            return message_id
+        except Exception as e:
+            logger.error(f"Erro ao enviar mensagem com comando: {e}")
+            return None
 
     def update_message(self, channel_id, message_id, new_content):
         """
@@ -928,8 +987,44 @@ class DiscordBotAutoChannels:
                             # Atualizar o ID da última mensagem processada
                             last_message_ids[channel_id] = message['id']
                             
-                            # Verificar se é uma mensagem do nosso próprio bot
-                            if message.get('author', {}).get('bot', False):
+                            # Verificar se é uma mensagem de bot
+                            message_author = message.get('author', {})
+                            is_bot_message = message_author.get('bot', False)
+                            
+                            # Se for mensagem de bot, verificar se é do nosso próprio bot
+                            if is_bot_message:
+                                # Obter o ID do nosso bot para comparação
+                                bot_user_id = self._get_bot_user_id()
+                                
+                                # Se não conseguimos obter o ID do bot ou se não é nossa mensagem, pular
+                                if not bot_user_id or message_author.get('id') != bot_user_id:
+                                    continue
+                                
+                                # Se é nossa própria mensagem, verificar se contém comandos conhecidos
+                                content = message.get('content', '').strip().lower()
+                                
+                                # Lista de comandos que o bot pode executar em suas próprias mensagens
+                                allowed_self_commands = ['!notificar', '!notificar_coordenadores', '!controle']
+                                
+                                # Verificar se a mensagem contém algum comando permitido
+                                detected_command = None
+                                for cmd in allowed_self_commands:
+                                    if cmd in content:
+                                        detected_command = cmd
+                                        break
+                                
+                                if detected_command:
+                                    project_name = self.get_project_name(channel_id)
+                                    print(f"\n\n🤖 Bot detectou comando {detected_command} em sua própria mensagem para {project_name}!")
+                                    print(f"Conteúdo: {message.get('content', '').strip()}")
+                                    
+                                    # Processar o comando detectado
+                                    try:
+                                        self.process_command(channel_id, detected_command)
+                                        time.sleep(1)
+                                    except Exception as cmd_error:
+                                        logger.error(f"Erro ao processar comando {detected_command} do próprio bot: {cmd_error}", exc_info=True)
+                                        self.send_message(channel_id, f"❌ Erro ao processar comando: {str(cmd_error)}")
                                 continue
                                 
                             # Verificar se é um dos comandos que conhecemos
@@ -1005,6 +1100,7 @@ class DiscordBotAutoChannels:
             print("6. Verificar controle de relatórios semanais")
             print("7. Enviar notificação de relatórios em falta (só no canal admin)")
             print("8. Enviar notificações diretas aos coordenadores")
+            print("9. Testar envio de mensagem com comando automático")
             print("0. Sair")
             
             try:
@@ -1111,6 +1207,45 @@ class DiscordBotAutoChannels:
                     except Exception as e:
                         print(f"Erro ao enviar notificações diretas: {e}")
                         logger.error(f"Erro ao enviar notificações diretas: {e}", exc_info=True)
+                
+                elif choice == "9":
+                    # Testar envio de mensagem com comando automático
+                    try:
+                        # Selecionar canal
+                        channel_num = int(input(f"Selecione o número do projeto (1-{len(channels)}): "))
+                        if 1 <= channel_num <= len(channels):
+                            channel_id = list(channels.keys())[channel_num-1]
+                            project_info = list(channels.values())[channel_num-1]
+                            
+                            print("\nComandos disponíveis para teste:")
+                            print("1. !notificar")
+                            print("2. !notificar_coordenadores")
+                            print("3. !controle")
+                            
+                            cmd_choice = input("Escolha o comando (1-3): ")
+                            commands = {"1": "!notificar", "2": "!notificar_coordenadores", "3": "!controle"}
+                            
+                            if cmd_choice in commands:
+                                command = commands[cmd_choice]
+                                message_content = f"🤖 **TESTE DE COMANDO AUTOMÁTICO**\n\n"
+                                message_content += f"Esta é uma mensagem de teste para o projeto **{project_info['project_name']}**.\n"
+                                message_content += f"O bot deve detectar e executar o comando automaticamente."
+                                
+                                result = self.send_message_with_command(channel_id, message_content, command)
+                                if result:
+                                    print(f"✅ Mensagem com comando {command} enviada para {project_info['project_name']}")
+                                    print("O bot deve detectar e executar o comando automaticamente.")
+                                else:
+                                    print(f"❌ Falha ao enviar mensagem para {project_info['project_name']}")
+                            else:
+                                print("Comando inválido")
+                        else:
+                            print("Número de projeto inválido")
+                    except ValueError:
+                        print("Por favor, digite um número válido")
+                    except Exception as e:
+                        print(f"Erro ao testar comando automático: {e}")
+                        logger.error(f"Erro ao testar comando automático: {e}", exc_info=True)
                 
                 else:
                     print("Opção inválida")

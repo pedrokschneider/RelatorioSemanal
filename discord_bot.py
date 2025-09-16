@@ -412,6 +412,44 @@ class DiscordBotAutoChannels:
             logger.error(f"Erro ao carregar bots autorizados: {e}")
             return ['n8n_bot', 'automatização de projetos']  # Fallback para lista padrão
     
+    def _is_system_bot(self, username, message_author):
+        """
+        Verifica se um bot pertence ao sistema "Automatização de Projetos".
+        
+        Args:
+            username: Nome do usuário do bot
+            message_author: Dados completos do autor da mensagem
+            
+        Returns:
+            bool: True se é um bot do sistema
+        """
+        try:
+            # Padrões que indicam que é um bot do sistema "Automatização de Projetos"
+            system_patterns = [
+                'n8n_bot',
+                'automatização de projetos',
+                'automatizacao de projetos',
+                'automatização',
+                'automatizacao',
+                'n8n',
+                'workflow',
+                'automation'
+            ]
+            
+            username_lower = username.lower()
+            
+            # Verificar se o nome contém algum padrão do sistema
+            for pattern in system_patterns:
+                if pattern in username_lower:
+                    logger.info(f"Bot do sistema detectado: {username} (padrão: {pattern})")
+                    return True
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"Erro ao verificar se é bot do sistema: {e}")
+            return False
+    
     def get_channel_messages(self, channel_id, limit=10, max_retries=3):
         """
         Obtém as mensagens mais recentes de um canal usando a API REST.
@@ -1032,8 +1070,11 @@ class DiscordBotAutoChannels:
                                 # Verificar se é um bot autorizado
                                 is_authorized_bot = author_username.lower() in [bot.lower() for bot in self.authorized_bots]
                                 
-                                # Se não é nosso bot nem um bot autorizado, pular
-                                if not is_own_bot and not is_authorized_bot:
+                                # Verificar se é um bot do sistema "Automatização de Projetos"
+                                is_system_bot = self._is_system_bot(author_username, message_author)
+                                
+                                # Se não é nosso bot, nem autorizado, nem do sistema, pular
+                                if not is_own_bot and not is_authorized_bot and not is_system_bot:
                                     continue
                                 
                                 # Se é um bot autorizado, verificar se contém comandos conhecidos
@@ -1051,7 +1092,15 @@ class DiscordBotAutoChannels:
                                 
                                 if detected_command:
                                     project_name = self.get_project_name(channel_id)
-                                    bot_type = "próprio bot" if is_own_bot else f"bot autorizado ({author_username})"
+                                    
+                                    # Determinar o tipo de bot
+                                    if is_own_bot:
+                                        bot_type = "próprio bot"
+                                    elif is_system_bot:
+                                        bot_type = f"bot do sistema ({author_username})"
+                                    else:
+                                        bot_type = f"bot autorizado ({author_username})"
+                                    
                                     print(f"\n\n🤖 Bot detectou comando {detected_command} de {bot_type} para {project_name}!")
                                     print(f"Conteúdo: {message.get('content', '').strip()}")
                                     

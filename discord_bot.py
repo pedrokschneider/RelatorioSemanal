@@ -75,6 +75,9 @@ class DiscordBotAutoChannels:
             # Armazenar informações dos canais/projetos
             self.channels_info = {}
             
+            # Lista de bots autorizados para executar comandos
+            self.authorized_bots = self._load_authorized_bots()
+            
             # Inicializar o sistema de filas com 2 workers por padrão
             from report_queue import ReportQueue  # Importação explícita
             self.queue_system = ReportQueue(self, max_workers=2)
@@ -382,6 +385,32 @@ class DiscordBotAutoChannels:
         except Exception as e:
             logger.error(f"Erro ao obter ID do bot: {e}")
             return None
+    
+    def _load_authorized_bots(self):
+        """
+        Carrega a lista de bots autorizados para executar comandos.
+        
+        Returns:
+            list: Lista de nomes de bots autorizados
+        """
+        try:
+            # Lista padrão de bots autorizados
+            default_bots = ['n8n_bot', 'automatização de projetos']
+            
+            # Tentar carregar do arquivo .env
+            authorized_bots_env = os.getenv('DISCORD_AUTHORIZED_BOTS', '')
+            if authorized_bots_env:
+                # Separar por vírgula e limpar espaços
+                env_bots = [bot.strip() for bot in authorized_bots_env.split(',') if bot.strip()]
+                logger.info(f"Bots autorizados carregados do .env: {env_bots}")
+                return env_bots
+            
+            logger.info(f"Usando lista padrão de bots autorizados: {default_bots}")
+            return default_bots
+            
+        except Exception as e:
+            logger.error(f"Erro ao carregar bots autorizados: {e}")
+            return ['n8n_bot', 'automatização de projetos']  # Fallback para lista padrão
     
     def get_channel_messages(self, channel_id, limit=10, max_retries=3):
         """
@@ -990,32 +1019,40 @@ class DiscordBotAutoChannels:
                             # Verificar se é uma mensagem de bot
                             message_author = message.get('author', {})
                             is_bot_message = message_author.get('bot', False)
+                            author_username = message_author.get('username', '')
                             
-                            # Se for mensagem de bot, verificar se é do nosso próprio bot
+                            # Se for mensagem de bot, verificar se é autorizada
                             if is_bot_message:
                                 # Obter o ID do nosso bot para comparação
                                 bot_user_id = self._get_bot_user_id()
                                 
-                                # Se não conseguimos obter o ID do bot ou se não é nossa mensagem, pular
-                                if not bot_user_id or message_author.get('id') != bot_user_id:
+                                # Verificar se é nosso próprio bot
+                                is_own_bot = bot_user_id and message_author.get('id') == bot_user_id
+                                
+                                # Verificar se é um bot autorizado
+                                is_authorized_bot = author_username.lower() in [bot.lower() for bot in self.authorized_bots]
+                                
+                                # Se não é nosso bot nem um bot autorizado, pular
+                                if not is_own_bot and not is_authorized_bot:
                                     continue
                                 
-                                # Se é nossa própria mensagem, verificar se contém comandos conhecidos
+                                # Se é um bot autorizado, verificar se contém comandos conhecidos
                                 content = message.get('content', '').strip().lower()
                                 
-                                # Lista de comandos que o bot pode executar em suas próprias mensagens
-                                allowed_self_commands = ['!notificar', '!notificar_coordenadores', '!controle']
+                                # Lista de comandos que bots autorizados podem executar
+                                allowed_bot_commands = ['!notificar', '!notificar_coordenadores', '!controle']
                                 
                                 # Verificar se a mensagem contém algum comando permitido
                                 detected_command = None
-                                for cmd in allowed_self_commands:
+                                for cmd in allowed_bot_commands:
                                     if cmd in content:
                                         detected_command = cmd
                                         break
                                 
                                 if detected_command:
                                     project_name = self.get_project_name(channel_id)
-                                    print(f"\n\n🤖 Bot detectou comando {detected_command} em sua própria mensagem para {project_name}!")
+                                    bot_type = "próprio bot" if is_own_bot else f"bot autorizado ({author_username})"
+                                    print(f"\n\n🤖 Bot detectou comando {detected_command} de {bot_type} para {project_name}!")
                                     print(f"Conteúdo: {message.get('content', '').strip()}")
                                     
                                     # Processar o comando detectado
@@ -1023,7 +1060,7 @@ class DiscordBotAutoChannels:
                                         self.process_command(channel_id, detected_command)
                                         time.sleep(1)
                                     except Exception as cmd_error:
-                                        logger.error(f"Erro ao processar comando {detected_command} do próprio bot: {cmd_error}", exc_info=True)
+                                        logger.error(f"Erro ao processar comando {detected_command} de {bot_type}: {cmd_error}", exc_info=True)
                                         self.send_message(channel_id, f"❌ Erro ao processar comando: {str(cmd_error)}")
                                 continue
                                 
@@ -1101,6 +1138,7 @@ class DiscordBotAutoChannels:
             print("7. Enviar notificação de relatórios em falta (só no canal admin)")
             print("8. Enviar notificações diretas aos coordenadores")
             print("9. Testar envio de mensagem com comando automático")
+            print("10. Gerenciar bots autorizados")
             print("0. Sair")
             
             try:
@@ -1246,6 +1284,67 @@ class DiscordBotAutoChannels:
                     except Exception as e:
                         print(f"Erro ao testar comando automático: {e}")
                         logger.error(f"Erro ao testar comando automático: {e}", exc_info=True)
+                
+                elif choice == "10":
+                    # Gerenciar bots autorizados
+                    try:
+                        print(f"\n=== BOTS AUTORIZADOS ===")
+                        print(f"Bots atualmente autorizados: {', '.join(self.authorized_bots)}")
+                        print("\nOpções:")
+                        print("1. Adicionar bot autorizado")
+                        print("2. Remover bot autorizado")
+                        print("3. Listar bots autorizados")
+                        print("4. Voltar ao menu principal")
+                        
+                        bot_choice = input("Escolha uma opção: ")
+                        
+                        if bot_choice == "1":
+                            new_bot = input("Digite o nome do bot para autorizar: ").strip()
+                            if new_bot and new_bot.lower() not in [bot.lower() for bot in self.authorized_bots]:
+                                self.authorized_bots.append(new_bot)
+                                print(f"✅ Bot '{new_bot}' adicionado à lista de autorizados")
+                                logger.info(f"Bot '{new_bot}' adicionado à lista de autorizados")
+                            elif new_bot.lower() in [bot.lower() for bot in self.authorized_bots]:
+                                print(f"❌ Bot '{new_bot}' já está na lista de autorizados")
+                            else:
+                                print("❌ Nome do bot não pode estar vazio")
+                        
+                        elif bot_choice == "2":
+                            if self.authorized_bots:
+                                print("Bots autorizados:")
+                                for i, bot in enumerate(self.authorized_bots, 1):
+                                    print(f"{i}. {bot}")
+                                
+                                try:
+                                    bot_index = int(input("Digite o número do bot para remover: ")) - 1
+                                    if 0 <= bot_index < len(self.authorized_bots):
+                                        removed_bot = self.authorized_bots.pop(bot_index)
+                                        print(f"✅ Bot '{removed_bot}' removido da lista de autorizados")
+                                        logger.info(f"Bot '{removed_bot}' removido da lista de autorizados")
+                                    else:
+                                        print("❌ Número inválido")
+                                except ValueError:
+                                    print("❌ Por favor, digite um número válido")
+                            else:
+                                print("❌ Nenhum bot autorizado para remover")
+                        
+                        elif bot_choice == "3":
+                            print(f"\n=== LISTA DE BOTS AUTORIZADOS ===")
+                            if self.authorized_bots:
+                                for i, bot in enumerate(self.authorized_bots, 1):
+                                    print(f"{i}. {bot}")
+                            else:
+                                print("Nenhum bot autorizado")
+                        
+                        elif bot_choice == "4":
+                            continue
+                        
+                        else:
+                            print("❌ Opção inválida")
+                            
+                    except Exception as e:
+                        print(f"Erro ao gerenciar bots autorizados: {e}")
+                        logger.error(f"Erro ao gerenciar bots autorizados: {e}", exc_info=True)
                 
                 else:
                     print("Opção inválida")

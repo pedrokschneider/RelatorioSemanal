@@ -66,15 +66,35 @@ class DataProcessor:
         # Obter nome do projeto
         projects_df = self.construflow.get_projects()
         # Conversão forçada de ID para string
-        projects_df['id'] = projects_df['id'].astype(str)
+        if not projects_df.empty and 'id' in projects_df.columns:
+            projects_df['id'] = projects_df['id'].astype(str)
+        else:
+            projects_df = pd.DataFrame(columns=['id', 'name'])
         # Filtrar projeto
         project_row = projects_df[projects_df['id'] == project_id]
         
         # Verificar se o projeto foi encontrado
         if project_row.empty:
+            # Tentar buscar diretamente o projeto via GraphQL otimizado (cobre casos fora da planilha/ativos)
+            logger.warning(f"Projeto {project_id} não encontrado na lista padrão. Tentando buscar diretamente na API...")
+            try:
+                optimized = self.construflow.get_project_data_optimized(project_id)
+                if optimized and 'projects' in optimized and not optimized['projects'].empty:
+                    project_row = optimized['projects']
+                    # Normalizar tipos
+                    if 'id' in project_row.columns:
+                        project_row['id'] = project_row['id'].astype(str)
+                    project_row = project_row[project_row['id'] == project_id]
+                else:
+                    logger.warning(f"API não retornou dados para o projeto {project_id}")
+            except Exception as e:
+                logger.warning(f"Falha ao buscar projeto {project_id} diretamente na API: {e}")
+        
+        if project_row.empty:
             logger.error(f"Projeto {project_id} não encontrado")
-            logger.error("IDs disponíveis:")
-            logger.error(projects_df['id'].tolist())
+            if not projects_df.empty and 'id' in projects_df.columns:
+                logger.error("IDs disponíveis:")
+                logger.error(projects_df['id'].tolist())
             return result
         
         # Obter nome do projeto
@@ -132,7 +152,21 @@ class DataProcessor:
             logger.warning(f"ID do Smartsheet não encontrado para projeto {project_id}")
         
         # Processar dados do Construflow
-        issues_df = self.construflow.get_project_issues(project_id)
+        issues_df = pd.DataFrame()
+        try:
+            issues_df = self.construflow.get_project_issues(project_id)
+            if issues_df is None:
+                issues_df = pd.DataFrame()
+        except Exception as e:
+            logger.error(f"Erro ao buscar issues do Construflow para projeto {project_id}: {e}")
+            issues_df = pd.DataFrame()
+        
+        # Se não conseguiu obter dados do Construflow ou DataFrame está vazio, 
+        # manter construflow_data como None para que a notificação seja enviada
+        if issues_df is None or issues_df.empty:
+            logger.warning(f"Nenhuma issue encontrada no Construflow para projeto {project_id} - construflow_data permanecerá None para notificação")
+            # Manter construflow_data como None para que o sistema notifique sobre a falta de dados
+            return result
         
         if not issues_df.empty:
             # Filtrar issues ativas - adaptado para GraphQL
@@ -169,13 +203,16 @@ class DataProcessor:
                     result['construflow_data']['disciplines'] = discipline_counts
                     logger.info(f"Disciplinas encontradas: {list(discipline_counts.keys())}")
             else:
-                # Inicializar estrutura vazia para evitar erros
+                # Se não há issues ativas mas há issues no total, inicializar estrutura vazia
+                # Isso indica que há issues mas nenhuma está ativa
                 result['construflow_data'] = {
                     'active_issues': [],
                     'issue_counts': 0,
-                    'disciplines': {}
+                    'disciplines': {},
+                    'all_issues': issues_df.to_dict('records'),
+                    'client_issues': []
                 }
-                logger.warning("Nenhuma issue ativa encontrada")
+                logger.warning("Nenhuma issue ativa encontrada, mas há issues no projeto")
             
             # Adicionar todas as issues para processamento
             result['construflow_data']['all_issues'] = issues_df.to_dict('records')
@@ -219,11 +256,29 @@ class DataProcessor:
             # Tentar carregar da planilha
             try:
                 projects_df = self.gdrive.load_project_config_from_sheet()
-                if not projects_df.empty and 'construflow_id' in projects_df.columns and 'construflow_disciplinasclientes' in projects_df.columns:
-                    project_row = projects_df[projects_df['construflow_id'] == project_id]
-                    if not project_row.empty and pd.notna(project_row['construflow_disciplinasclientes'].values[0]):
-                        disciplinas_str = project_row['construflow_disciplinasclientes'].values[0]
-                        disciplinas_cliente = [d.strip() for d in disciplinas_str.split(',')]
+                if not projects_df.empty and 'construflow_disciplinasclientes' in projects_df.columns:
+                    # Tentar diferentes nomes de coluna para o ID do Construflow
+                    id_column = None
+                    for col_name in ['construflow_id', 'flow_id', 'ID_Construflow', 'construflowid']:
+                        if col_name in projects_df.columns:
+                            id_column = col_name
+                            break
+                    
+                    if id_column:
+                        # Converter para string para comparação
+                        projects_df[id_column] = projects_df[id_column].astype(str)
+                        project_row = projects_df[projects_df[id_column] == str(project_id)]
+                        
+                        if not project_row.empty and pd.notna(project_row['construflow_disciplinasclientes'].values[0]):
+                            disciplinas_str = str(project_row['construflow_disciplinasclientes'].values[0])
+                            # Suportar tanto vírgula quanto ponto e vírgula como separadores
+                            if ';' in disciplinas_str:
+                                disciplinas_cliente = [d.strip() for d in disciplinas_str.split(';') if d.strip()]
+                            else:
+                                disciplinas_cliente = [d.strip() for d in disciplinas_str.split(',') if d.strip()]
+                            logger.info(f"Disciplinas do cliente carregadas para projeto {project_id}: {disciplinas_cliente}")
+                    else:
+                        logger.warning(f"Coluna de ID do Construflow não encontrada na planilha para projeto {project_id}")
             except Exception as e:
                 logger.warning(f"Erro ao obter disciplinas do cliente da planilha: {e}")
         
@@ -231,8 +286,17 @@ class DataProcessor:
             logger.warning(f"Não foi possível filtrar issues para o cliente. Disciplinas: {disciplinas_cliente}")
             return df_issues
         
-        # Filtrar pelas disciplinas do cliente
-        mask = df_issues['name'].isin(disciplinas_cliente)
+        # Normalizar disciplinas do cliente para comparação case-insensitive
+        disciplinas_cliente_normalized = [d.strip().lower() for d in disciplinas_cliente if d.strip()]
+        logger.info(f"Filtrando por disciplinas do cliente (normalizadas): {disciplinas_cliente_normalized}")
+        
+        # Filtrar pelas disciplinas do cliente (comparação case-insensitive)
+        if df_issues['name'].dtype == 'object':
+            # Normalizar nomes das issues para comparação
+            mask = df_issues['name'].astype(str).str.strip().str.lower().isin(disciplinas_cliente_normalized)
+        else:
+            mask = df_issues['name'].isin(disciplinas_cliente)
+        
         filtered_df = df_issues[mask]
         
         logger.info(f"Filtradas {len(filtered_df)} issues de cliente de um total de {len(df_issues)}")

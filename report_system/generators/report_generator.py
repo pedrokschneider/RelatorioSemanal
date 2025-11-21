@@ -171,9 +171,14 @@ Qualquer dúvida, estamos à disposição!
             logger.error("Template de prompt não disponível")
             return "Erro: Template de relatório não disponível."
         
+        # Validar que data não é None
+        if data is None:
+            logger.error("Dados do projeto são None - não é possível gerar relatório")
+            return "Erro: Dados do projeto não disponíveis."
+        
         # Obter nome do cliente corretamente
-        project_name = data.get('project_name', 'Projeto')
-        project_id = data.get('project_id', '')
+        project_name = data.get('project_name', 'Projeto') if isinstance(data, dict) else 'Projeto'
+        project_id = data.get('project_id', '') if isinstance(data, dict) else ''
         system = self._get_system_instance()  # Obtém instância do sistema
         client_names = system.get_client_names(project_id) if system else []
         if client_names and client_names[0]:
@@ -243,6 +248,11 @@ Qualquer dúvida, estamos à disposição!
     
     def _gerar_apontamentos_cliente(self, data: Dict[str, Any]) -> str:
         """Gera a seção de apontamentos que precisam de resposta do cliente."""
+        # Validar que data não é None
+        if data is None or not isinstance(data, dict):
+            logger.warning("Dados são None ou inválidos em _gerar_apontamentos_cliente")
+            return "Sem apontamentos pendentes para o cliente nesta semana."
+        
         project_id = data.get('project_id', '')
         
         # Verificar se temos dados de apontamentos
@@ -346,18 +356,33 @@ Qualquer dúvida, estamos à disposição!
             logger.warning(f"Erro ao carregar issues brutas: {e}")
             # raw_issues já foi inicializado como {}
         
-        # Agrupar issues por prioridade
+        # Agrupar issues por prioridade E por disciplina
+        # Estrutura: issues_por_prioridade[prioridade][disciplina] = [issues]
         issues_por_prioridade = {
-            'alta': [],
-            'media': [],
-            'baixa': [],
-            'sem_prioridade': []
+            'alta': {},
+            'media': {},
+            'baixa': {},
+            'sem_prioridade': {}
         }
+        
+        # Obter disciplinas do cliente para agrupamento
+        disciplinas_cliente = []
+        try:
+            if system and hasattr(system, 'get_client_disciplines'):
+                disciplinas_cliente = system.get_client_disciplines(project_id)
+                logger.info(f"Disciplinas do cliente para agrupamento: {disciplinas_cliente}")
+        except Exception as e:
+            logger.warning(f"Erro ao obter disciplinas do cliente para agrupamento: {e}")
+        
+        # Determinar se devemos mostrar separação por disciplinas
+        # Mostrar separação se houver mais de uma disciplina do cliente
+        mostrar_separacao_disciplinas = len(disciplinas_cliente) > 1
         
         # Processar cada issue para encontrar o ID correto e criar o link
         for issue in todo_issues:
             issue_code = str(issue.get('code', 'N/A'))
             issue_title = issue.get('title', 'Apontamento sem título')
+            issue_disciplina = issue.get('name', '')  # Campo 'name' contém o nome da disciplina
             
 
             
@@ -427,47 +452,95 @@ Qualquer dúvida, estamos à disposição!
             else:
                 priority_group = 'sem_prioridade'
             
-            # Armazenar a linha formatada no grupo correto
-            # issue_line = f"[#{issue_code}]({construflow_url}) – {issue_title} {dias_sem_atualizacao}"
-            # issues_por_prioridade[priority_group].append(issue_line)
+            # Determinar a disciplina da issue
+            # Normalizar o nome da disciplina para comparação case-insensitive
+            disciplina_normalized = str(issue_disciplina).strip().lower() if issue_disciplina else ''
+            
+            # Usar o nome real da disciplina do cliente, não "Cliente 01", "Cliente 02"
+            disciplina_key = 'outras'
+            if disciplinas_cliente and issue_disciplina:
+                # Procurar a disciplina correspondente na lista do cliente
+                for disc_cliente in disciplinas_cliente:
+                    if disc_cliente and str(disc_cliente).strip().lower() == disciplina_normalized:
+                        # Usar o nome real da disciplina como está configurado
+                        disciplina_key = str(disc_cliente).strip()
+                        break
+                # Se não encontrou nas disciplinas do cliente, usar o nome da disciplina da issue
+                if disciplina_key == 'outras' and issue_disciplina:
+                    disciplina_key = str(issue_disciplina).strip()
+            elif issue_disciplina:
+                # Se não há disciplinas do cliente configuradas, usar o nome da disciplina da issue
+                disciplina_key = str(issue_disciplina).strip()
+            
+            # Inicializar o dicionário da disciplina se não existir
+            if disciplina_key not in issues_por_prioridade[priority_group]:
+                issues_por_prioridade[priority_group][disciplina_key] = []
+            
+            # Armazenar a linha formatada no grupo correto (prioridade + disciplina)
             if dias_sem_atualizacao and 'sem atualização' in dias_sem_atualizacao:
                 issue_line = f"[#{issue_code}]({construflow_url}) – {issue_title}\n   ⏳ {dias_sem_atualizacao.strip('()')}"
             else:
                 issue_line = f"[#{issue_code}]({construflow_url}) – {issue_title}"
-            issues_por_prioridade[priority_group].append(issue_line)
+            issues_por_prioridade[priority_group][disciplina_key].append(issue_line)
         
-        # Construir o resultado final agrupado por prioridade
+        # Construir o resultado final agrupado por prioridade E por disciplina
         result = ""
         
-
+        # Função auxiliar para renderizar uma seção de prioridade com separação por disciplinas
+        # Usar mostrar_separacao_disciplinas do escopo externo
+        def render_priority_section(priority_group, emoji, title, mostrar_sep=mostrar_separacao_disciplinas):
+            """Renderiza uma seção de prioridade com separação por disciplinas."""
+            section_result = ""
+            if issues_por_prioridade[priority_group]:
+                # Verificar se há issues em alguma disciplina
+                has_issues = any(issues_por_prioridade[priority_group].values())
+                if has_issues:
+                    section_result += f"{emoji} {title}\n"
+                    
+                    # Ordenar disciplinas conforme a ordem configurada nas disciplinas do cliente
+                    # Manter a ordem das disciplinas do cliente
+                    disciplinas_ordenadas = list(issues_por_prioridade[priority_group].keys())
+                    
+                    # Se temos disciplinas do cliente configuradas, ordenar por essa ordem
+                    if disciplinas_cliente:
+                        # Criar um dicionário de ordem baseado nas disciplinas do cliente
+                        ordem_disciplinas = {str(d).strip().lower(): idx for idx, d in enumerate(disciplinas_cliente)}
+                        
+                        # Ordenar: primeiro as que estão na lista do cliente (na ordem configurada), depois outras
+                        disciplinas_ordenadas = sorted(
+                            disciplinas_ordenadas,
+                            key=lambda x: (
+                                ordem_disciplinas.get(str(x).strip().lower(), 999),  # Ordem na lista do cliente
+                                x  # Nome como fallback
+                            )
+                        )
+                    
+                    for disciplina_key in disciplinas_ordenadas:
+                        issues_da_disciplina = issues_por_prioridade[priority_group][disciplina_key]
+                        if issues_da_disciplina:
+                            # Adicionar cabeçalho da disciplina se houver múltiplas disciplinas do cliente
+                            # Mostra o nome real da disciplina (ex: [Produto Planeta], [Projetos Planeta])
+                            if mostrar_sep:
+                                section_result += f"\n[{disciplina_key}]:\n\n"
+                            
+                            # Adicionar as issues da disciplina
+                            for issue_line in issues_da_disciplina:
+                                section_result += f"- {issue_line}\n"
+                    
+                    section_result += "\n"
+            return section_result
         
         # Prioridade Alta - Vermelho
-        if issues_por_prioridade['alta']:
-            result += "🔴 Prioridade Alta\n"
-            for issue_line in issues_por_prioridade['alta']:
-                result += f"- {issue_line}\n"
-            result += "\n"
+        result += render_priority_section('alta', '🔴', 'Prioridade Alta')
         
         # Prioridade Média - Laranja
-        if issues_por_prioridade['media']:
-            result += "🟠 Prioridade Média\n"
-            for issue_line in issues_por_prioridade['media']:
-                result += f"- {issue_line}\n"
-            result += "\n"
+        result += render_priority_section('media', '🟠', 'Prioridade Média')
         
         # Prioridade Baixa - Verde
-        if issues_por_prioridade['baixa']:
-            result += "🟢 Prioridade Baixa\n"
-            for issue_line in issues_por_prioridade['baixa']:
-                result += f"- {issue_line}\n"
-            result += "\n"
+        result += render_priority_section('baixa', '🟢', 'Prioridade Baixa')
         
         # Sem prioridade definida
-        if issues_por_prioridade['sem_prioridade']:
-            result += "⚪ Sem Prioridade Definida\n"
-            for issue_line in issues_por_prioridade['sem_prioridade']:
-                result += f"- {issue_line}\n"
-            result += "\n"
+        result += render_priority_section('sem_prioridade', '⚪', 'Sem Prioridade Definida')
         
         return result.strip() if result else "Sem apontamentos pendentes para o cliente nesta semana."
 
@@ -486,6 +559,10 @@ Qualquer dúvida, estamos à disposição!
 
     def _gerar_tarefas_realizadas(self, data: Dict[str, Any]) -> str:
         """Gera a seção de tarefas realizadas no período."""
+        if data is None or not isinstance(data, dict):
+            logger.warning("Dados são None ou inválidos em _gerar_tarefas_realizadas")
+            return "Sem tarefas realizadas no período."
+        
         smartsheet_data = data.get('smartsheet_data', {})
 
         # Base de dados: usar all_tasks e excluir explicitamente Não Feito
@@ -574,6 +651,10 @@ Qualquer dúvida, estamos à disposição!
         Gera a seção de atividades que irão iniciar na próxima semana (segunda a domingo).
         Se o relatório for solicitado antes de sexta-feira, considera atividades da semana atual e da próxima.
         """
+        if data is None or not isinstance(data, dict):
+            logger.warning("Dados são None ou inválidos em _gerar_atividades_iniciadas_proxima_semana")
+            return "Sem atividades programadas para iniciar na próxima semana."
+        
         smartsheet_data = data.get('smartsheet_data', {})
         
         # Usar dados categorizados se disponíveis
@@ -697,6 +778,10 @@ Qualquer dúvida, estamos à disposição!
 
     def _gerar_atrasos_periodo(self, data: Dict[str, Any]) -> str:
         """Gera a seção de atrasos e desvios do período, incluindo baseline e motivo de atraso."""
+        if data is None or not isinstance(data, dict):
+            logger.warning("Dados são None ou inválidos em _gerar_atrasos_periodo")
+            return "Sem atrasos registrados no período."
+        
         smartsheet_data = data.get('smartsheet_data', {})
 
         # Preferir lista já preparada pelo processador
@@ -776,6 +861,10 @@ Qualquer dúvida, estamos à disposição!
     
     def _gerar_programacao_semana(self, data: Dict[str, Any]) -> str:
         """Gera a seção de programação para as próximas duas semanas."""
+        if data is None or not isinstance(data, dict):
+            logger.warning("Dados são None ou inválidos em _gerar_programacao_semana")
+            return "Sem programação disponível para as próximas semanas."
+        
         smartsheet_data = data.get('smartsheet_data', {})
         
         # Usar dados categorizados se disponíveis
@@ -896,7 +985,12 @@ Qualquer dúvida, estamos à disposição!
         
     def _gerar_tabela_apontamentos(self, data: dict) -> str:
         """Gera uma tabela de apontamentos por disciplina mostrando apenas status 'todo' (A Fazer)."""
-        issues = data.get('construflow_data', {}).get('all_issues', [])
+        # Validar que data não é None
+        if data is None or not isinstance(data, dict):
+            logger.warning("Dados são None ou inválidos em _gerar_tabela_apontamentos")
+            return "Sem dados de apontamentos por disciplina."
+        
+        issues = data.get('construflow_data', {}).get('all_issues', []) if data.get('construflow_data') else []
         if not issues:
             return "Sem dados de apontamentos por disciplina."
 

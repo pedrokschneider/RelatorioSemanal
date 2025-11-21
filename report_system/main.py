@@ -279,8 +279,11 @@ class WeeklyReportSystem:
                 if 'construflow_disciplinasclientes' in row and pd.notna(row['construflow_disciplinasclientes']):
                     disciplines_str = str(row['construflow_disciplinasclientes'])
                     if disciplines_str:
-                        # Separar por vírgula e remover espaços extras
-                        disciplines = [d.strip() for d in disciplines_str.split(',')]
+                        # Suportar tanto vírgula quanto ponto e vírgula como separadores
+                        if ';' in disciplines_str:
+                            disciplines = [d.strip() for d in disciplines_str.split(';') if d.strip()]
+                        else:
+                            disciplines = [d.strip() for d in disciplines_str.split(',') if d.strip()]
                         project_dict['disciplinas_cliente'] = disciplines
                 
                 # Adicionar nome_cliente se disponível
@@ -382,8 +385,17 @@ class WeeklyReportSystem:
             logger.warning(f"Não foi possível filtrar issues para o cliente. Disciplinas: {disciplinas_cliente}")
             return df_issues
         
-        # Filtrar pelas disciplinas do cliente
-        mask = df_issues['name'].isin(disciplinas_cliente)
+        # Normalizar disciplinas do cliente para comparação case-insensitive
+        disciplinas_cliente_normalized = [d.strip().lower() for d in disciplinas_cliente if d.strip()]
+        logger.info(f"Filtrando por disciplinas do cliente (normalizadas): {disciplinas_cliente_normalized}")
+        
+        # Filtrar pelas disciplinas do cliente (comparação case-insensitive)
+        if df_issues['name'].dtype == 'object':
+            # Normalizar nomes das issues para comparação
+            mask = df_issues['name'].astype(str).str.strip().str.lower().isin(disciplinas_cliente_normalized)
+        else:
+            mask = df_issues['name'].isin(disciplinas_cliente)
+        
         filtered_df = df_issues[mask]
         
         logger.info(f"Filtradas {len(filtered_df)} issues de cliente de um total de {len(df_issues)}")
@@ -672,6 +684,7 @@ class WeeklyReportSystem:
                     smartsheet_id = None  # Garantir que é None e não outro valor que represente "falso"
                 
                 # Chamar process_project_data com proteção adicional
+                project_data = None
                 try:
                     project_data = self.processor.process_project_data(project_id, smartsheet_id)
                 except Exception as e:
@@ -680,25 +693,48 @@ class WeeklyReportSystem:
                     # Se o erro foi causado por dados do Smartsheet, tentar novamente sem usar Smartsheet
                     if smartsheet_id is not None:
                         logger.info(f"Tentando processar projeto {project_id} novamente sem usar dados do Smartsheet")
-                        project_data = self.processor.process_project_data(project_id, None)
+                        try:
+                            project_data = self.processor.process_project_data(project_id, None)
+                        except Exception as e2:
+                            logger.error(f"Erro ao processar projeto {project_id} sem Smartsheet: {e2}")
+                            project_data = None
                     else:
-                        # Se já estamos tentando sem Smartsheet, propagar o erro
-                        raise
+                        # Se já estamos tentando sem Smartsheet, manter project_data como None
+                        project_data = None
                 
-                if not project_data or not project_data.get('project_name'):
+                # Validar project_data antes de continuar
+                if not project_data or not isinstance(project_data, dict) or not project_data.get('project_name'):
                     logger.error(f"Projeto {project_id} não encontrado ou sem dados")
                     
+                    # Verificar se é falta de dados do Construflow especificamente
+                    construflow_data_missing = False
+                    if isinstance(project_data, dict):
+                        construflow_data = project_data.get('construflow_data')
+                        if construflow_data is None:
+                            construflow_data_missing = True
+                            logger.warning(f"Projeto {project_id} não tem dados do Construflow")
+                    
+                    # Notificar no Discord sobre falta de dados do Construflow
+                    if not skip_notifications and construflow_data_missing:
+                        try:
+                            self._check_and_notify_no_issues(project_data, project_id, project_name)
+                        except Exception as notify_error:
+                            logger.error(f"Erro ao enviar notificação sobre falta de dados do Construflow: {notify_error}")
+                    
                     if progress_reporter:
+                        error_msg = f"❌ **Erro:** Não foi possível encontrar dados para o projeto {project_name}."
+                        if construflow_data_missing:
+                            error_msg += "\n\n⚠️ **Dados do Construflow não disponíveis.**"
                         progress_reporter.complete(
                             success=False, 
-                            final_message=f"❌ **Erro:** Não foi possível encontrar dados para o projeto {project_name}."
+                            final_message=error_msg
                         )
                     # Log de falha
                     self.log_execution_to_sheet(
                         project_id=codigo_projeto or project_id,
                         project_name=project_name,
                         status="Falha",
-                        message="Não foi possível encontrar dados para o projeto.",
+                        message="Não foi possível encontrar dados para o projeto." + (" Dados do Construflow não disponíveis." if construflow_data_missing else ""),
                         doc_url=None
                     )
                     return False, "", None
@@ -710,6 +746,11 @@ class WeeklyReportSystem:
                 # Gerar relatório
                 if progress_reporter:
                     progress_reporter.update("Geração de relatório", "Criando conteúdo do relatório...")
+                
+                # Validar project_data antes de gerar relatório
+                if not project_data or not isinstance(project_data, dict):
+                    logger.error(f"project_data é inválido antes de gerar relatório para projeto {project_id}")
+                    raise ValueError(f"Dados do projeto {project_id} são inválidos")
                     
                 report_text = self.generator.generate_report(project_data)
                 
@@ -1596,10 +1637,40 @@ class WeeklyReportSystem:
             project_name: Nome do projeto
         """
         try:
+            # Validar project_data
+            if not project_data or not isinstance(project_data, dict):
+                logger.warning(f"project_data inválido em _check_and_notify_no_issues para projeto {project_id}")
+                return
+            
             # Verificar se há dados do Construflow
             construflow_data = project_data.get('construflow_data')
             if not construflow_data:
-                logger.info(f"Projeto {project_id} ({project_name}) não tem dados do Construflow")
+                logger.warning(f"Projeto {project_id} ({project_name}) não tem dados do Construflow - enviando notificação")
+                
+                # Obter canal do Discord para este projeto
+                discord_channel_id = self.get_project_discord_channel(project_id)
+                
+                if discord_channel_id:
+                    # Formatar mensagem de notificação sobre falta de dados do Construflow
+                    today_str = datetime.now().strftime("%d/%m/%Y")
+                    notification_message = (
+                        f"⚠️ **Atenção - Dados do Construflow Indisponíveis**\n\n"
+                        f"📋 **Projeto:** {project_name}\n"
+                        f"📅 **Data:** {today_str}\n\n"
+                        f"❌ **Problema:** Não foi possível obter dados do Construflow para este projeto.\n\n"
+                        f"**Possíveis causas:**\n"
+                        f"• Problemas de conexão com a API do Construflow\n"
+                        f"• Projeto não encontrado no Construflow\n"
+                        f"• Permissões insuficientes para acessar os dados\n\n"
+                        f"Por favor, verifique a configuração do projeto e tente novamente."
+                    )
+                    
+                    # Enviar notificação
+                    logger.info(f"Enviando notificação sobre falta de dados do Construflow para canal {discord_channel_id}")
+                    self.send_discord_notification(discord_channel_id, notification_message)
+                else:
+                    logger.warning(f"Canal do Discord não encontrado para projeto {project_id} - não foi possível notificar sobre falta de dados do Construflow")
+                
                 return
             
             # Verificar se há apontamentos ativos

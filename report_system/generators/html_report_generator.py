@@ -242,7 +242,7 @@ class HTMLReportGenerator:
                             <table cellpadding="0" cellspacing="0" border="0" width="100%">
                                 <tr>
                                     <td style="vertical-align:middle;">
-                                        <img src="https://raw.githubusercontent.com/pedrokschneider/RelatorioSemanal/main/Logo.png" alt="Otus" style="height:32px;width:auto;" />
+                                        <img src="data:image/png;base64,{LOGO_BASE64}" alt="Otus" style="height:32px;width:auto;" />
                                     </td>
                                     <td align="right" style="vertical-align:middle;">
                                         <span style="font-family:'Source Sans Pro',sans-serif;font-size:12px;color:{otus_text_light};">{date}</span>

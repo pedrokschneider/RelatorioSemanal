@@ -104,7 +104,8 @@ class HTMLReportGenerator:
     def generate_client_report(self, data: Dict[str, Any], project_id: str = None,
                                project_image_base64: Optional[str] = None,
                                email_url_gant: Optional[str] = None,
-                               email_url_disciplina: Optional[str] = None) -> str:
+                               email_url_disciplina: Optional[str] = None,
+                               show_dashboard_button: bool = True) -> str:
         """
         Gera relatório HTML para o cliente.
         
@@ -112,6 +113,9 @@ class HTMLReportGenerator:
             data: Dados processados do projeto
             project_id: ID do projeto (opcional)
             project_image_base64: Imagem do projeto em base64 (opcional)
+            email_url_gant: URL do cronograma Gantt (opcional)
+            email_url_disciplina: URL do relatório de disciplinas (opcional)
+            show_dashboard_button: Se True, exibe o botão do Dashboard de Indicadores
             
         Returns:
             HTML do relatório
@@ -167,7 +171,7 @@ class HTMLReportGenerator:
                     'open': False
                 }
             ],
-            show_dashboard_button=True,
+            show_dashboard_button=show_dashboard_button,
             project_id=project_id,
             header_color='#0f172a',
             report_type="Relatório Cliente",
@@ -983,7 +987,8 @@ class HTMLReportGenerator:
     def save_reports(self, data: Dict[str, Any], project_name: str, 
                     project_id: str = None, project_image_base64: Optional[str] = None,
                     email_url_gant: Optional[str] = None,
-                    email_url_disciplina: Optional[str] = None) -> Dict[str, str]:
+                    email_url_disciplina: Optional[str] = None,
+                    show_dashboard_button: bool = True) -> Dict[str, str]:
         """
         Salva os dois relatórios HTML (cliente e equipe).
         
@@ -994,6 +999,7 @@ class HTMLReportGenerator:
             project_image_base64: Imagem do projeto em base64 (opcional)
             email_url_gant: URL do cronograma Gantt (opcional)
             email_url_disciplina: URL do relatório de disciplinas (opcional)
+            show_dashboard_button: Se True, exibe o botão do Dashboard de Indicadores no relatório do cliente
             
         Returns:
             Dicionário com caminhos dos arquivos salvos
@@ -1005,7 +1011,7 @@ class HTMLReportGenerator:
         paths = {}
         
         # Gerar e salvar relatório do cliente
-        client_html = self.generate_client_report(data, project_id, project_image_base64, email_url_gant, email_url_disciplina)
+        client_html = self.generate_client_report(data, project_id, project_image_base64, email_url_gant, email_url_disciplina, show_dashboard_button)
         client_filename = f"Email_cliente_{safe_name}_{today_str}.html"
         client_path = os.path.join(self.reports_dir, client_filename)
         

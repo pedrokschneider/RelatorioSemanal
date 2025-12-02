@@ -65,17 +65,18 @@ class ReportQueue:
             
         logger.info(f"Sistema de fila iniciado com {max_workers} workers")
     
-    def add_report_request(self, channel_id):
+    def add_report_request(self, channel_id, hide_dashboard=False):
         """
         Adiciona uma solicitação de relatório à fila.
         
         Args:
             channel_id: ID do canal que solicitou o relatório
+            hide_dashboard: Se True, não exibe o botão do Dashboard no relatório
             
         Returns:
             int: Posição na fila (0 significa processamento imediato)
         """
-        logger.info(f"Tentando adicionar relatório para canal {channel_id} à fila")
+        logger.info(f"Tentando adicionar relatório para canal {channel_id} à fila (sem-dashboard={hide_dashboard})")
 
         with self.lock:
             # Verificar se já existe um relatório em processamento para este canal
@@ -145,7 +146,8 @@ class ReportQueue:
             request_info = {
                 'channel_id': channel_id,
                 'requested_at': datetime.now(),
-                'status': 'queued'
+                'status': 'queued',
+                'hide_dashboard': hide_dashboard
             }
             
             self.report_queue.put(request_info)
@@ -194,6 +196,7 @@ class ReportQueue:
                     continue
                 
                 channel_id = request['channel_id']
+                hide_dashboard = request.get('hide_dashboard', False)
                 
                 # Obter nome do projeto logo no início para melhorar os logs
                 project_name = self.discord_bot.get_project_name(channel_id)
@@ -213,10 +216,10 @@ class ReportQueue:
                 message = f"🔄 Iniciando geração do relatório para {project_name}. Isso pode levar alguns minutos..."
                 self.send_message_with_rate_limit(channel_id, message)
                 
-                logger.info(f"Worker {worker_id} iniciando relatório para {project_name} (canal {channel_id})")
+                logger.info(f"Worker {worker_id} iniciando relatório para {project_name} (canal {channel_id}, sem-dashboard={hide_dashboard})")
                 
                 # Executar o processo de geração de relatório - CORREÇÃO: Não passar project_name como argumento
-                success = self._generate_report(channel_id, worker_id)
+                success = self._generate_report(channel_id, worker_id, hide_dashboard=hide_dashboard)
                 
                 # Marcar como concluído na fila
                 self.report_queue.task_done()
@@ -259,13 +262,14 @@ class ReportQueue:
                 self.worker_status[worker_id] = f"error: {str(e)[:50]}"
                 time.sleep(1) 
     
-    def _generate_report(self, channel_id, worker_id):
+    def _generate_report(self, channel_id, worker_id, hide_dashboard=False):
         """
         Gera um relatório para o canal específico, com monitoramento em tempo real.
         
         Args:
             channel_id: ID do canal
             worker_id: ID do worker processando esta solicitação
+            hide_dashboard: Se True, não exibe o botão do Dashboard no relatório
             
         Returns:
             bool: True se o relatório foi gerado com sucesso, False caso contrário
@@ -276,12 +280,14 @@ class ReportQueue:
         # Executar o script run.py com o parâmetro --channel
         script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "run.py")
         
-        logger.info(f"Worker {worker_id} executando relatório para {project_name} (canal {channel_id})")
+        logger.info(f"Worker {worker_id} executando relatório para {project_name} (canal {channel_id}, sem-dashboard={hide_dashboard})")
         
         try:
             # Executar o processo redirecionando saída para capturar o URL
             # Permitir notificações automáticas para erros (serão enviadas para canal admin/notificação)
             cmd = [sys.executable, script_path, "--channel", channel_id, "--quiet"]
+            if hide_dashboard:
+                cmd.append("--hide-dashboard")
             
             # Imprimir comando que será executado
             logger.info(f"Executando: {' '.join(cmd)}")

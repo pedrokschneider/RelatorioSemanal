@@ -624,9 +624,13 @@ class DiscordBotAutoChannels:
         command = command.strip().lower()
         
         try:
-            # Comando para gerar relatório
-            if command == "!relatorio":
-                logger.info(f"Processando comando !relatorio para canal {channel_id}")
+            # Comando para gerar relatório (com suporte a parâmetros)
+            if command.startswith("!relatorio"):
+                # Extrair parâmetros do comando
+                parts = command.split()
+                hide_dashboard = "sem-dashboard" in parts or "sem_dashboard" in parts
+                
+                logger.info(f"Processando comando !relatorio para canal {channel_id} (sem-dashboard={hide_dashboard})")
                 
                 # Validar se o canal está configurado corretamente
                 validation = self.validate_channel_for_reports(channel_id)
@@ -645,8 +649,8 @@ class DiscordBotAutoChannels:
 
                 # Adicionar à fila em vez de processar diretamente
                 try:
-                    self.queue_system.add_report_request(channel_id)
-                    logger.info(f"Relatório para canal {channel_id} adicionado à fila com sucesso")
+                    self.queue_system.add_report_request(channel_id, hide_dashboard=hide_dashboard)
+                    logger.info(f"Relatório para canal {channel_id} adicionado à fila com sucesso (sem-dashboard={hide_dashboard})")
                     return True
                 
                 except Exception as e:
@@ -1115,7 +1119,7 @@ class DiscordBotAutoChannels:
                                 
                             # Verificar se é um dos comandos que conhecemos
                             content = message.get('content', '').strip().lower()
-                            if content in ['!relatorio', '!fila', '!status', '!controle', '!notificar', '!notificar_coordenadores', '!topico', '!canais']:
+                            if content.startswith('!relatorio') or content in ['!fila', '!status', '!controle', '!notificar', '!notificar_coordenadores', '!topico', '!canais']:
                                 project_name = self.get_project_name(channel_id)
                                 print(f"\n\n📣 Comando {content} recebido para {project_name}!")
                                 print(f"De: {message.get('author', {}).get('username', 'Desconhecido')}")

@@ -604,7 +604,7 @@ class WeeklyReportSystem:
             logging.error(f"Erro ao registrar log de execução na planilha: {e}")
             return False
 
-    def run_for_project(self, project_id, quiet_mode=False, skip_cache_update=False, skip_notifications=False) -> Tuple[bool, str, Optional[str]]:
+    def run_for_project(self, project_id, quiet_mode=False, skip_cache_update=False, skip_notifications=False, hide_dashboard=False) -> Tuple[bool, str, Optional[str]]:
         """
         Executa o processo completo para um projeto, atualizando o cache primeiro.
         
@@ -613,6 +613,7 @@ class WeeklyReportSystem:
             quiet_mode: Se deve operar em modo silencioso
             skip_cache_update: Se True, pula a atualização do cache (use quando já foi atualizado)
             skip_notifications: Se True, não envia notificações para o Discord
+            hide_dashboard: Se True, não exibe o botão do Dashboard no relatório HTML
             
         Returns:
             Tupla com (sucesso, caminho_arquivo, id_drive)

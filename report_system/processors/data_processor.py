@@ -118,6 +118,12 @@ class DataProcessor:
             # Processar dados do Smartsheet
             tasks_df = self.smartsheet.get_recent_tasks(smartsheet_id)
             if not tasks_df.empty:
+                # Filtrar tarefas que devem ser removidas do relatório
+                # Excluir tarefas com "INT - Remover Relatório" na coluna "Caminho crítico - Marco"
+                if 'Caminho crítico - Marco' in tasks_df.columns:
+                    tasks_df = tasks_df[tasks_df['Caminho crítico - Marco'] != 'INT - Remover Relatório']
+                    logger.info(f"Filtradas tarefas com 'INT - Remover Relatório' do relatório")
+                
                 # Manter todas as tarefas para o gerador decidir o que é concluído
                 all_tasks = [row._asdict() if hasattr(row, '_asdict') else row.to_dict() for _, row in tasks_df.iterrows()]
 

@@ -6,6 +6,9 @@ import os
 import logging
 import pandas as pd
 import time
+import re
+import io
+import base64
 from typing import Dict, List, Optional, Any, Tuple
 
 from googleapiclient.discovery import build
@@ -13,6 +16,14 @@ from googleapiclient.http import MediaFileUpload
 from googleapiclient.errors import HttpError
 
 from ..config import ConfigManager
+
+# Tentar importar Pillow para processamento de imagens
+try:
+    from PIL import Image
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
+    logger.warning("Pillow não está instalado. Processamento de imagens não estará disponível.")
 
 logger = logging.getLogger("ReportSystem")
 
@@ -283,6 +294,142 @@ class GoogleDriveManager:
         
         ext = os.path.splitext(file_path)[1].lower()
         return mime_map.get(ext, 'application/octet-stream')  # Tipo genérico como fallback
+    
+    def extract_file_id_from_url(self, url: str) -> Optional[str]:
+        """
+        Extrai o ID do arquivo de um link do Google Drive.
+        
+        Suporta vários formatos:
+        - https://drive.google.com/file/d/FILE_ID/view
+        - https://drive.google.com/open?id=FILE_ID
+        - https://docs.google.com/document/d/FILE_ID/edit
+        - FILE_ID (se já for apenas o ID)
+        
+        Args:
+            url: URL do Google Drive ou ID do arquivo
+            
+        Returns:
+            ID do arquivo ou None se não encontrar
+        """
+        if not url or pd.isna(url):
+            return None
+        
+        url = str(url).strip()
+        
+        # Se já for apenas um ID (sem caracteres especiais de URL)
+        if re.match(r'^[a-zA-Z0-9_-]+$', url):
+            return url
+        
+        # Padrões comuns de URLs do Google Drive
+        patterns = [
+            r'/file/d/([a-zA-Z0-9_-]+)',  # /file/d/FILE_ID
+            r'[?&]id=([a-zA-Z0-9_-]+)',   # ?id=FILE_ID ou &id=FILE_ID
+            r'/d/([a-zA-Z0-9_-]+)',        # /d/FILE_ID
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, url)
+            if match:
+                return match.group(1)
+        
+        logger.warning(f"Não foi possível extrair ID do arquivo da URL: {url}")
+        return None
+
+    def download_file_as_base64(self, file_id: str, 
+                                max_width: int = 400, 
+                                max_height: int = 400,
+                                quality: int = 85) -> Optional[str]:
+        """
+        Baixa um arquivo do Google Drive, redimensiona e retorna como base64.
+        
+        Args:
+            file_id: ID do arquivo no Google Drive (ou URL completa)
+            max_width: Largura máxima da imagem (padrão: 400px)
+            max_height: Altura máxima da imagem (padrão: 400px)
+            quality: Qualidade JPEG (1-100, padrão: 85)
+            
+        Returns:
+            String base64 da imagem processada ou None se falhar
+        """
+        if not self.drive_service:
+            logger.error("Serviço do Google Drive não disponível")
+            return None
+        
+        # Se for uma URL, extrair o ID
+        if file_id.startswith('http'):
+            file_id = self.extract_file_id_from_url(file_id)
+            if not file_id:
+                return None
+        
+        try:
+            # Baixar o arquivo
+            request = self.drive_service.files().get_media(fileId=file_id)
+            file_content = request.execute()
+            
+            # Processar a imagem apenas se Pillow estiver disponível
+            if PIL_AVAILABLE:
+                try:
+                    # Abrir a imagem
+                    image = Image.open(io.BytesIO(file_content))
+                    
+                    # Converter para RGB se necessário (para JPEG)
+                    if image.mode in ('RGBA', 'LA', 'P'):
+                        # Criar fundo branco para imagens com transparência
+                        rgb_image = Image.new('RGB', image.size, (255, 255, 255))
+                        if image.mode == 'P':
+                            image = image.convert('RGBA')
+                        rgb_image.paste(image, mask=image.split()[-1] if image.mode == 'RGBA' else None)
+                        image = rgb_image
+                    elif image.mode != 'RGB':
+                        image = image.convert('RGB')
+                    
+                    # Redimensionar mantendo proporção
+                    image.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
+                    
+                    # Salvar em buffer como JPEG
+                    output_buffer = io.BytesIO()
+                    image.save(output_buffer, format='JPEG', quality=quality, optimize=True)
+                    output_buffer.seek(0)
+                    
+                    # Converter para base64
+                    base64_content = base64.b64encode(output_buffer.read()).decode('utf-8')
+                    
+                    # Retornar no formato data URI
+                    return f"data:image/jpeg;base64,{base64_content}"
+                    
+                except Exception as img_error:
+                    logger.error(f"Erro ao processar imagem {file_id}: {img_error}")
+                    # Se não for uma imagem, tentar retornar o arquivo original
+                    base64_content = base64.b64encode(file_content).decode('utf-8')
+                    
+                    # Determinar o tipo MIME
+                    file_metadata = self.drive_service.files().get(
+                        fileId=file_id,
+                        fields='mimeType'
+                    ).execute()
+                    
+                    mime_type = file_metadata.get('mimeType', 'application/octet-stream')
+                    return f"data:{mime_type};base64,{base64_content}"
+            else:
+                # Se Pillow não estiver disponível, retornar o arquivo original
+                logger.warning("Pillow não disponível, retornando imagem sem processamento")
+                base64_content = base64.b64encode(file_content).decode('utf-8')
+                
+                # Determinar o tipo MIME
+                file_metadata = self.drive_service.files().get(
+                    fileId=file_id,
+                    fields='mimeType'
+                ).execute()
+                
+                mime_type = file_metadata.get('mimeType', 'application/octet-stream')
+                return f"data:{mime_type};base64,{base64_content}"
+            
+        except HttpError as e:
+            logger.error(f"Erro ao baixar arquivo {file_id}: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Erro ao processar arquivo {file_id}: {e}")
+            return None
         
     def find_or_create_folder_path(self, folder_path: List[str], 
                                   parent_id: Optional[str] = None) -> Optional[str]:
@@ -371,9 +518,10 @@ class GoogleDriveManager:
         
         try:
             # Carregar planilha de configuração de projetos
+            # Range estendido para incluir colunas AD, AE, AF (email_url_capa, email_url_gant, email_url_disciplina)
             df = self.read_sheet(
                 spreadsheet_id=self.config.projects_sheet_id,
-                range_name=f"{self.config.projects_sheet_name}!A1:Z1000"
+                range_name=f"{self.config.projects_sheet_name}!A1:AF1000"
             )
             
             if df.empty:

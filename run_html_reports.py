@@ -105,6 +105,9 @@ def main():
             smartsheet_id = None
             discord_channel_id = None
             folder_id = None
+            email_url_capa = None  # Link da imagem do projeto
+            email_url_gant = None
+            email_url_disciplina = None
             
             if projects_df is not None and not projects_df.empty:
                 projects_df['construflow_id'] = projects_df['construflow_id'].astype(str)
@@ -134,11 +137,34 @@ def main():
                         folder_id = str(project_row['pastaemails_id'].values[0])
                         if folder_id == 'nan' or folder_id == '':
                             folder_id = None
+                    
+                    # Obter link da imagem do projeto (email_url_capa)
+                    if 'email_url_capa' in project_row.columns:
+                        email_url_capa = str(project_row['email_url_capa'].values[0])
+                        if email_url_capa == 'nan' or email_url_capa == '':
+                            email_url_capa = None
+                    
+                    # Obter links dos botões
+                    if 'email_url_gant' in project_row.columns:
+                        email_url_gant = str(project_row['email_url_gant'].values[0])
+                        if email_url_gant == 'nan' or email_url_gant == '':
+                            email_url_gant = None
+                    
+                    if 'email_url_disciplina' in project_row.columns:
+                        email_url_disciplina = str(project_row['email_url_disciplina'].values[0])
+                        if email_url_disciplina == 'nan' or email_url_disciplina == '':
+                            email_url_disciplina = None
             
             print(f"   Nome: {project_name}")
             print(f"   SmartSheet ID: {smartsheet_id}")
             print(f"   Discord Channel: {discord_channel_id}")
             print(f"   Pasta Drive: {folder_id}")
+            if email_url_capa:
+                print(f"   Imagem do Projeto: {email_url_capa[:50]}...")
+            if email_url_gant:
+                print(f"   Cronograma: {email_url_gant[:50]}...")
+            if email_url_disciplina:
+                print(f"   Relatório Disciplinas: {email_url_disciplina[:50]}...")
             
             # Processar dados do projeto
             project_data = processor.process_project_data(project_id, smartsheet_id)
@@ -160,11 +186,37 @@ def main():
             if client_name:
                 project_data['client_name'] = client_name
             
+            # Buscar e processar imagem do projeto se email_url_capa estiver disponível
+            project_image_base64 = None
+            if gdrive and email_url_capa:
+                try:
+                    print(f"   🖼️ Processando imagem do projeto...")
+                    # Extrair ID do arquivo do Google Drive da URL
+                    file_id = None
+                    if '/file/d/' in email_url_capa:
+                        file_id = email_url_capa.split('/file/d/')[1].split('/')[0]
+                    elif '/open?id=' in email_url_capa:
+                        file_id = email_url_capa.split('/open?id=')[1].split('&')[0]
+                    elif len(email_url_capa) == 33 and email_url_capa.isalnum():  # ID direto
+                        file_id = email_url_capa
+                    
+                    if file_id:
+                        project_image_base64 = gdrive.download_file_as_base64(file_id)
+                    if project_image_base64:
+                        print(f"   ✅ Imagem processada com sucesso")
+                    else:
+                        print(f"   ⚠️ Não foi possível processar a imagem")
+                except Exception as e:
+                    print(f"   ⚠️ Erro ao processar imagem: {e}")
+            
             # Gerar e salvar relatórios HTML
             paths = html_generator.save_reports(
                 data=project_data,
                 project_name=project_name,
-                project_id=project_id
+                project_id=project_id,
+                project_image_base64=project_image_base64,
+                email_url_gant=email_url_gant,
+                email_url_disciplina=email_url_disciplina
             )
             
             print(f"   ✅ Relatórios HTML gerados:")

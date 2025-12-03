@@ -24,6 +24,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from report_system.config import ConfigManager
 from report_system.processors.data_processor import DataProcessor
 from report_system.generators import SimpleReportGenerator
+from report_system.generators.html_report_generator import HTMLReportGenerator
 from report_system.storage import GoogleDriveManager
 from report_system.utils.logging_config import setup_logging
 from report_system.utils.simple_cache import SimpleCacheManager
@@ -141,6 +142,11 @@ class WeeklyReportSystem:
             self.generator = SimpleReportGenerator(self.config)
             if verbose_init:
                 logger.info("✅ SimpleReportGenerator inicializado")
+            
+            # Inicializar gerador de relatórios HTML
+            self.html_generator = HTMLReportGenerator(self.config)
+            if verbose_init:
+                logger.info("✅ HTMLReportGenerator inicializado")
                 
         except Exception as e:
             logger.error(f"❌ Erro ao inicializar processador e gerador: {e}")
@@ -752,14 +758,58 @@ class WeeklyReportSystem:
                 if not project_data or not isinstance(project_data, dict):
                     logger.error(f"project_data é inválido antes de gerar relatório para projeto {project_id}")
                     raise ValueError(f"Dados do projeto {project_id} são inválidos")
+                
+                # Gerar relatório HTML primeiro
+                if progress_reporter:
+                    progress_reporter.update("Geração de relatório HTML", "Criando relatórios HTML para e-mail...")
+                
+                # Obter URLs do cronograma e relatório de disciplinas da planilha
+                email_url_gant = None
+                email_url_disciplina = None
+                try:
+                    projects_df = self._load_project_config()
+                    if not projects_df.empty and 'construflow_id' in projects_df.columns:
+                        project_row = projects_df[projects_df['construflow_id'].astype(str) == str(project_id)]
+                        if not project_row.empty:
+                            if 'email_url_gant' in project_row.columns:
+                                email_url_gant = project_row['email_url_gant'].values[0] if pd.notna(project_row['email_url_gant'].values[0]) else None
+                            if 'email_url_disciplina' in project_row.columns:
+                                email_url_disciplina = project_row['email_url_disciplina'].values[0] if pd.notna(project_row['email_url_disciplina'].values[0]) else None
+                except Exception as e:
+                    logger.warning(f"Erro ao obter URLs do cronograma/disciplinas: {e}")
+                
+                # Obter imagem do projeto em base64 se disponível
+                project_image_base64 = None
+                try:
+                    if hasattr(self, 'gdrive') and self.gdrive:
+                        image_url = self.gdrive.get_project_image_url(project_id)
+                        if image_url:
+                            # A imagem será processada pelo HTMLReportGenerator
+                            project_image_base64 = None  # Será carregado pelo gerador
+                except Exception as e:
+                    logger.debug(f"Imagem do projeto não disponível: {e}")
+                
+                # Gerar e salvar relatórios HTML
+                html_paths = self.html_generator.save_reports(
+                    data=project_data,
+                    project_name=project_data['project_name'],
+                    project_id=project_id,
+                    project_image_base64=project_image_base64,
+                    email_url_gant=email_url_gant,
+                    email_url_disciplina=email_url_disciplina,
+                    show_dashboard_button=not hide_dashboard
+                )
+                
+                logger.info(f"Relatórios HTML gerados: {html_paths}")
                     
+                # Gerar relatório em Markdown/Google Docs (mantido para compatibilidade)
                 report_text = self.generator.generate_report(project_data)
                 
                 # Verificar se o projeto tem apontamentos e notificar se não tiver
                 if not skip_notifications:
                     self._check_and_notify_no_issues(project_data, project_id, project_name)
                 
-                # Salvar localmente primeiro
+                # Salvar localmente primeiro (Markdown)
                 file_path = self.generator.save_report(
                     report_text, 
                     project_data['project_name']

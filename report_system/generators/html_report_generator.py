@@ -5,6 +5,7 @@ Gera dois tipos de relatório: um para clientes e outro para projetistas/time.
 
 import os
 import logging
+import pandas as pd
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 import base64
@@ -480,12 +481,23 @@ class HTMLReportGenerator:
         # Filtrar apenas issues com status da disciplina = 'todo' (pendentes)
         # status_y = status da disciplina no Construflow
         todo_issues = []
+        deadline_count = 0
         for issue in client_issues:
             status_disciplina = issue.get('status_y', '')
             if status_disciplina == 'todo':
+                # Garantir que deadline seja preservado (pode vir como NaN do pandas)
+                if 'deadline' in issue:
+                    deadline_value = issue.get('deadline')
+                    # Converter NaN/None para string vazia
+                    if deadline_value is None or (isinstance(deadline_value, float) and pd.isna(deadline_value)):
+                        issue['deadline'] = ''
+                    else:
+                        deadline_count += 1
                 todo_issues.append(issue)
         
         logger.info(f"Issues do cliente com status 'todo': {len(todo_issues)} de {len(client_issues)}")
+        if deadline_count > 0:
+            logger.info(f"✅ {deadline_count} issues com deadline encontradas")
         return todo_issues
     
     def _get_completed_tasks(self, data: Dict[str, Any]) -> Dict[str, List[Dict]]:
@@ -661,7 +673,7 @@ class HTMLReportGenerator:
         if not isinstance(date_str, str):
             return None
         
-        formats = ["%d/%m/%Y", "%Y-%m-%d", "%d/%m/%y", "%d/%m"]
+        formats = ["%d/%m/%Y", "%Y-%m-%d", "%d/%m/%y", "%d/%m", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f"]
         for fmt in formats:
             try:
                 return datetime.strptime(date_str.strip(), fmt)
@@ -681,8 +693,45 @@ class HTMLReportGenerator:
         # Fallback
         return str(date_value)[:5]
     
+    def _format_deadline_date(self, deadline_value) -> str:
+        """Formata deadline (formato ISO) para dd/mm/yyyy."""
+        if not deadline_value:
+            return ""
+        
+        # Verificar se é NaN do pandas
+        try:
+            if pd.isna(deadline_value):
+                return ""
+        except (TypeError, ValueError):
+            pass
+        
+        # Tentar parsear formato ISO (2021-02-24T03:00:00.000Z)
+        try:
+            if isinstance(deadline_value, str):
+                deadline_str = str(deadline_value).strip()
+                if not deadline_str or deadline_str.lower() in ['nan', 'none', 'nat', '']:
+                    return ""
+                # Remover 'Z' e milissegundos se existirem
+                deadline_clean = deadline_str.replace('Z', '').split('.')[0]
+                # Tentar parsear formato ISO
+                dt = datetime.strptime(deadline_clean, "%Y-%m-%dT%H:%M:%S")
+                return dt.strftime("%d/%m/%Y")
+            elif hasattr(deadline_value, 'strftime'):
+                # Já é um objeto datetime
+                return deadline_value.strftime("%d/%m/%Y")
+        except (ValueError, AttributeError):
+            # Se falhar, tentar usar o parser genérico
+            dt = self._parse_date(deadline_value)
+            if dt:
+                return dt.strftime("%d/%m/%Y")
+        
+        # Fallback: retornar string original truncada
+        return str(deadline_value)[:10] if deadline_value else ""
+    
     def _generate_pendencias_section(self, issues: List[Dict], project_id: str) -> str:
-        """Gera HTML da seção de pendências do cliente - Design profissional Otus."""
+        """Gera HTML da seção de pendências do cliente - Design profissional Otus.
+        Agrupa por disciplina e, dentro de cada disciplina, por prioridade.
+        """
         # Paleta profissional minimalista
         color_high = "#1a1a1a"      # Preto Otus para alta prioridade
         color_medium = "#666666"    # Cinza médio para média prioridade  
@@ -692,57 +741,103 @@ class HTMLReportGenerator:
         if not issues:
             return '<p style="margin:0;font-family:\'Source Sans Pro\',sans-serif;font-size:14px;color:#1a1a1a;">✓ Sem pendências do cliente nesta semana.</p>'
         
-        # Agrupar por prioridade
-        alta = []
-        media = []
-        baixa = []
+        # Agrupar primeiro por disciplina, depois por prioridade
+        by_discipline = {}
         
         for issue in issues:
+            # Obter disciplina (campo 'name' da issue)
+            discipline = issue.get('name', 'Sem Disciplina') or 'Sem Disciplina'
+            
+            if discipline not in by_discipline:
+                by_discipline[discipline] = {
+                    'alta': [],
+                    'media': [],
+                    'baixa': []
+                }
+            
             priority = str(issue.get('priority', '')).lower()
             issue_data = {
                 'code': issue.get('code', ''),
                 'title': issue.get('title', 'Sem título'),
-                'id': issue.get('id', '')
+                'id': issue.get('id', ''),
+                'deadline': issue.get('deadline', '')  # Data limite da disciplina
             }
             
             if priority in ['high', 'alta', '3']:
-                alta.append(issue_data)
+                by_discipline[discipline]['alta'].append(issue_data)
             elif priority in ['medium', 'media', 'média', '2']:
-                media.append(issue_data)
+                by_discipline[discipline]['media'].append(issue_data)
             else:
-                baixa.append(issue_data)
+                by_discipline[discipline]['baixa'].append(issue_data)
         
         html = ""
         
-        # Prioridade Alta - destaque máximo
-        if alta:
-            html += '<div style="margin-bottom:24px;">'
-            html += f'<p style="margin:0 0 12px;font-family:\'Montserrat\',sans-serif;font-size:10px;font-weight:700;color:{color_high};text-transform:uppercase;letter-spacing:1.5px;border-bottom:2px solid {color_high};padding-bottom:6px;display:inline-block;">Prioridade Alta</p>'
-            html += '<div style="padding-left:0;">'
-            for i, item in enumerate(alta, 1):
-                url = f"https://app.construflow.com.br/workspace/project/{project_id}/issues?issueId={item['id']}"
-                html += f'<p style="margin:0 0 10px;font-family:\'Source Sans Pro\',sans-serif;font-size:14px;color:#1a1a1a;line-height:1.7;padding:8px 12px;background:#f8f8f8;border-radius:4px;border-left:3px solid {accent};"><a href="{url}" style="color:#1a1a1a;text-decoration:none;font-weight:500;">{item["title"]}</a></p>'
-            html += '</div></div>'
-        
-        # Prioridade Média
-        if media:
-            html += '<div style="margin-bottom:24px;">'
-            html += f'<p style="margin:0 0 12px;font-family:\'Montserrat\',sans-serif;font-size:10px;font-weight:700;color:{color_medium};text-transform:uppercase;letter-spacing:1.5px;border-bottom:1px solid #ddd;padding-bottom:6px;display:inline-block;">Prioridade Média</p>'
-            html += '<div style="padding-left:0;">'
-            for i, item in enumerate(media, 1):
-                url = f"https://app.construflow.com.br/workspace/project/{project_id}/issues?issueId={item['id']}"
-                html += f'<p style="margin:0 0 8px;font-family:\'Source Sans Pro\',sans-serif;font-size:14px;color:#444;line-height:1.7;padding:6px 12px;border-left:2px solid #ddd;"><a href="{url}" style="color:#444;text-decoration:none;">{item["title"]}</a></p>'
-            html += '</div></div>'
-        
-        # Prioridade Baixa
-        if baixa:
-            html += '<div style="margin-bottom:24px;">'
-            html += f'<p style="margin:0 0 12px;font-family:\'Montserrat\',sans-serif;font-size:10px;font-weight:700;color:{color_low};text-transform:uppercase;letter-spacing:1.5px;">Prioridade Baixa</p>'
-            html += '<div style="padding-left:0;">'
-            for i, item in enumerate(baixa, 1):
-                url = f"https://app.construflow.com.br/workspace/project/{project_id}/issues?issueId={item['id']}"
-                html += f'<p style="margin:0 0 6px;font-family:\'Source Sans Pro\',sans-serif;font-size:13px;color:#666;line-height:1.6;padding-left:12px;"><a href="{url}" style="color:#666;text-decoration:none;">{item["title"]}</a></p>'
-            html += '</div></div>'
+        # Iterar por disciplina
+        for discipline, priorities in by_discipline.items():
+            # Só criar seção da disciplina se houver issues
+            if not priorities['alta'] and not priorities['media'] and not priorities['baixa']:
+                continue
+            
+            html += f'<div style="margin-bottom:24px;"><p style="margin:0 0 12px;font-family:\'Montserrat\',sans-serif;font-size:10px;font-weight:700;color:#1a1a1a;text-transform:uppercase;letter-spacing:1.5px;border-bottom:1px solid #eee;padding-bottom:6px;">{discipline}</p>'
+            
+            # Prioridade Alta - destaque máximo
+            if priorities['alta']:
+                html += '<div style="margin-bottom:16px;padding-left:12px;">'
+                html += f'<p style="margin:0 0 8px;font-family:\'Montserrat\',sans-serif;font-size:9px;font-weight:700;color:{color_high};text-transform:uppercase;letter-spacing:1px;border-bottom:2px solid {color_high};padding-bottom:4px;display:inline-block;">Prioridade Alta</p>'
+                html += '<div style="padding-left:0;">'
+                for item in priorities['alta']:
+                    url = f"https://app.construflow.com.br/workspace/project/{project_id}/issues?issueId={item['id']}"
+                    deadline_html = ""
+                    deadline_value = item.get('deadline')
+                    # Verificar se deadline existe e não é None/NaN/vazio
+                    if deadline_value is not None:
+                        deadline_str = str(deadline_value).strip()
+                        if deadline_str and deadline_str.lower() not in ['nan', 'none', '', 'nat']:
+                            deadline_date = self._format_deadline_date(deadline_value)
+                            if deadline_date:
+                                deadline_html = f'<span style="margin-left:8px;font-family:\'Montserrat\',sans-serif;font-size:11px;color:#f5a623;font-weight:600;background:#fff3e0;padding:2px 8px;border-radius:3px;">⏰ {deadline_date}</span>'
+                    html += f'<p style="margin:0 0 8px;font-family:\'Source Sans Pro\',sans-serif;font-size:14px;color:#1a1a1a;line-height:1.7;padding:8px 12px;background:#f8f8f8;border-radius:4px;border-left:3px solid {accent};"><a href="{url}" style="color:#1a1a1a;text-decoration:none;font-weight:500;">{item["title"]}</a>{deadline_html}</p>'
+                html += '</div></div>'
+            
+            # Prioridade Média
+            if priorities['media']:
+                html += '<div style="margin-bottom:16px;padding-left:12px;">'
+                html += f'<p style="margin:0 0 8px;font-family:\'Montserrat\',sans-serif;font-size:9px;font-weight:700;color:{color_medium};text-transform:uppercase;letter-spacing:1px;border-bottom:1px solid #ddd;padding-bottom:4px;display:inline-block;">Prioridade Média</p>'
+                html += '<div style="padding-left:0;">'
+                for item in priorities['media']:
+                    url = f"https://app.construflow.com.br/workspace/project/{project_id}/issues?issueId={item['id']}"
+                    deadline_html = ""
+                    deadline_value = item.get('deadline')
+                    # Verificar se deadline existe e não é None/NaN/vazio
+                    if deadline_value is not None:
+                        deadline_str = str(deadline_value).strip()
+                        if deadline_str and deadline_str.lower() not in ['nan', 'none', '', 'nat']:
+                            deadline_date = self._format_deadline_date(deadline_value)
+                            if deadline_date:
+                                deadline_html = f'<span style="margin-left:8px;font-family:\'Montserrat\',sans-serif;font-size:11px;color:#f5a623;font-weight:600;background:#fff3e0;padding:2px 8px;border-radius:3px;">⏰ {deadline_date}</span>'
+                    html += f'<p style="margin:0 0 6px;font-family:\'Source Sans Pro\',sans-serif;font-size:14px;color:#444;line-height:1.7;padding:6px 12px;border-left:2px solid #ddd;"><a href="{url}" style="color:#444;text-decoration:none;">{item["title"]}</a>{deadline_html}</p>'
+                html += '</div></div>'
+            
+            # Prioridade Baixa
+            if priorities['baixa']:
+                html += '<div style="margin-bottom:16px;padding-left:12px;">'
+                html += f'<p style="margin:0 0 8px;font-family:\'Montserrat\',sans-serif;font-size:9px;font-weight:700;color:{color_low};text-transform:uppercase;letter-spacing:1px;">Prioridade Baixa</p>'
+                html += '<div style="padding-left:0;">'
+                for item in priorities['baixa']:
+                    url = f"https://app.construflow.com.br/workspace/project/{project_id}/issues?issueId={item['id']}"
+                    deadline_html = ""
+                    deadline_value = item.get('deadline')
+                    # Verificar se deadline existe e não é None/NaN/vazio
+                    if deadline_value is not None:
+                        deadline_str = str(deadline_value).strip()
+                        if deadline_str and deadline_str.lower() not in ['nan', 'none', '', 'nat']:
+                            deadline_date = self._format_deadline_date(deadline_value)
+                            if deadline_date:
+                                deadline_html = f'<span style="margin-left:8px;font-family:\'Montserrat\',sans-serif;font-size:10px;color:#f5a623;font-weight:600;background:#fff3e0;padding:2px 6px;border-radius:3px;">⏰ {deadline_date}</span>'
+                    html += f'<p style="margin:0 0 6px;font-family:\'Source Sans Pro\',sans-serif;font-size:13px;color:#666;line-height:1.6;padding-left:12px;"><a href="{url}" style="color:#666;text-decoration:none;">{item["title"]}</a>{deadline_html}</p>'
+                html += '</div></div>'
+            
+            html += '</div>'
         
         return html
     

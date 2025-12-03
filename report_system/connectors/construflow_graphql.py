@@ -344,14 +344,23 @@ class ConstruflowGraphQLConnector(APIConnector):
         """
         cache_file = os.path.join(self.cache_dir, f"issues_{project_id}_graphql.pkl")
         
-        # Verificar cache
-        if os.path.exists(cache_file):
+        # Verificar cache (mas não usar se precisamos do deadline)
+        # O deadline vem da API REST, então sempre precisamos fazer o merge
+        use_cache = False  # Desabilitar cache para garantir que deadline seja incluído
+        
+        if use_cache and os.path.exists(cache_file):
             cache_time = os.path.getmtime(cache_file)
             if time.time() - cache_time < 3600:  # 1 hora para issues
                 try:
                     with open(cache_file, 'rb') as f:
-                        logger.info(f"Usando cache para issues do projeto {project_id}")
-                        return pd.DataFrame(pickle.load(f))
+                        cached_data = pickle.load(f)
+                        cached_df = pd.DataFrame(cached_data)
+                        # Verificar se o cache já tem deadline
+                        if 'deadline' in cached_df.columns:
+                            logger.info(f"Usando cache com deadline para issues do projeto {project_id}")
+                            return cached_df
+                        else:
+                            logger.info(f"Cache sem deadline, buscando dados atualizados...")
                 except Exception as e:
                     logger.warning(f"Erro ao carregar cache: {e}")
         
@@ -428,6 +437,7 @@ class ConstruflowGraphQLConnector(APIConnector):
                             for discipline_data in issue['disciplines']:
                                 discipline_name = discipline_data['discipline'].get('name', '')
                                 discipline_status = discipline_data.get('status', '')
+                                discipline_id = discipline_data['discipline'].get('id', '')
                                 
                                 issues.append({
                                     'id': str(issue['id']),
@@ -439,7 +449,8 @@ class ConstruflowGraphQLConnector(APIConnector):
                                     'createdAt': issue.get('createdAt'),
                                     'updatedAt': issue.get('updatedAt'),
                                     'name': discipline_name,  # Nome da disciplina
-                                    'status_y': discipline_status  # Status da disciplina (todo, done, etc.)
+                                    'status_y': discipline_status,  # Status da disciplina (todo, done, etc.)
+                                    'disciplineId': str(discipline_id) if discipline_id else ''  # ID da disciplina para merge com deadline
                                 })
                         else:
                             # Se a issue não tem disciplinas, criar uma linha com valores vazios
@@ -471,16 +482,69 @@ class ConstruflowGraphQLConnector(APIConnector):
             
             logger.info(f"Total de {len(issues)} linhas de issues+disciplinas carregadas do projeto {project_id}")
             
-            # Salvar em cache
-            if issues:
-                try:
-                    with open(cache_file, 'wb') as f:
-                        pickle.dump(issues, f)
-                    logger.info(f"Cache atualizado para {len(issues)} linhas de issues+disciplinas do projeto {project_id}")
-                except Exception as e:
-                    logger.warning(f"Erro ao salvar cache: {e}")
+            issues_df = pd.DataFrame(issues)
             
-            return pd.DataFrame(issues)
+            # Adicionar deadline da API REST se disponível
+            if not issues_df.empty and self.rest_connector and 'disciplineId' in issues_df.columns:
+                try:
+                    logger.info("Buscando deadline das disciplinas via API REST...")
+                    df_issue_disciplines = self.rest_connector.get_issue_disciplines(force_refresh=False)
+                    
+                    if not df_issue_disciplines.empty and 'deadline' in df_issue_disciplines.columns:
+                        # Preparar dados para merge
+                        df_issue_disciplines['issueId'] = df_issue_disciplines['issueId'].astype(str)
+                        df_issue_disciplines['disciplineId'] = df_issue_disciplines['disciplineId'].astype(str)
+                        
+                        # Criar chave composta para merge
+                        issues_df['issueId'] = issues_df['id'].astype(str)
+                        # Garantir que disciplineId seja string
+                        if 'disciplineId' in issues_df.columns:
+                            issues_df['disciplineId'] = issues_df['disciplineId'].astype(str)
+                        else:
+                            logger.warning("Coluna 'disciplineId' não encontrada no DataFrame de issues")
+                            return issues_df
+                        
+                        # Verificar se há correspondências antes do merge
+                        merge_keys_issues = set(zip(issues_df['issueId'], issues_df['disciplineId']))
+                        merge_keys_rest = set(zip(df_issue_disciplines['issueId'], df_issue_disciplines['disciplineId']))
+                        matches = merge_keys_issues.intersection(merge_keys_rest)
+                        logger.info(f"Chaves correspondentes para merge: {len(matches)} de {len(merge_keys_issues)} issues")
+                        
+                        # Fazer merge para adicionar deadline
+                        issues_df = issues_df.merge(
+                            df_issue_disciplines[['issueId', 'disciplineId', 'deadline']],
+                            on=['issueId', 'disciplineId'],
+                            how='left'
+                        )
+                        
+                        # Remover coluna auxiliar
+                        if 'issueId' in issues_df.columns:
+                            issues_df.drop(columns=['issueId'], inplace=True)
+                        
+                        deadline_count = issues_df['deadline'].notna().sum()
+                        if deadline_count > 0:
+                            logger.info(f"✅ Deadline adicionado para {deadline_count} disciplinas de {len(issues_df)} issues")
+                            # Log de exemplo
+                            example = issues_df[issues_df['deadline'].notna()].iloc[0]
+                            logger.info(f"   Exemplo: Issue {example.get('code', 'N/A')} - Deadline: {example.get('deadline', 'N/A')}")
+                        else:
+                            logger.warning(f"⚠️ Nenhum deadline encontrado para as disciplinas deste projeto (total: {len(issues_df)} issues)")
+                            # Verificar se disciplineId está presente
+                            if 'disciplineId' in issues_df.columns:
+                                discipline_id_count = issues_df['disciplineId'].notna().sum()
+                                logger.info(f"   Issues com disciplineId: {discipline_id_count}")
+                            # Verificar se há dados na API REST
+                            if not df_issue_disciplines.empty:
+                                rest_deadline_count = df_issue_disciplines['deadline'].notna().sum()
+                                logger.info(f"   Deadlines disponíveis na API REST: {rest_deadline_count} de {len(df_issue_disciplines)}")
+                    else:
+                        logger.debug("Deadline não disponível na API REST")
+                except Exception as e:
+                    logger.warning(f"Erro ao buscar deadline via REST: {e}")
+            elif not issues_df.empty and 'disciplineId' not in issues_df.columns:
+                logger.debug("disciplineId não disponível para merge com deadline")
+            
+            return issues_df
             
         except Exception as e:
             logger.error(f"Erro ao buscar issues do projeto {project_id}: {e}")
@@ -703,6 +767,7 @@ class ConstruflowGraphQLConnector(APIConnector):
                         for discipline_data in issue['disciplines']:
                             discipline_name = discipline_data['discipline'].get('name', '')
                             discipline_status = discipline_data.get('status', '')
+                            discipline_id = discipline_data['discipline'].get('id', '')
                             
                             issue_data = {
                                 'id': issue['id'],
@@ -713,7 +778,8 @@ class ConstruflowGraphQLConnector(APIConnector):
                                 'createdAt': issue.get('createdAt', ''),
                                 'updatedAt': issue.get('updatedAt', ''),
                                 'name': discipline_name,  # Nome da disciplina
-                                'status_y': discipline_status  # Status da disciplina
+                                'status_y': discipline_status,  # Status da disciplina
+                                'disciplineId': str(discipline_id) if discipline_id else ''  # ID da disciplina para merge com deadline
                             }
                             issues_data.append(issue_data)
                     else:
@@ -847,6 +913,7 @@ class ConstruflowGraphQLConnector(APIConnector):
                                 for discipline_data in issue['disciplines']:
                                     discipline_name = discipline_data['discipline'].get('name', '')
                                     discipline_status = discipline_data.get('status', '')
+                                    discipline_id = discipline_data['discipline'].get('id', '')
                                     
                                     issue_data = {
                                         'id': issue['id'],
@@ -857,7 +924,8 @@ class ConstruflowGraphQLConnector(APIConnector):
                                         'createdAt': issue.get('createdAt', ''),
                                         'updatedAt': issue.get('updatedAt', ''),
                                         'name': discipline_name,  # Nome da disciplina
-                                        'status_y': discipline_status  # Status da disciplina
+                                        'status_y': discipline_status,  # Status da disciplina
+                                        'disciplineId': str(discipline_id) if discipline_id else ''  # ID da disciplina para merge com deadline
                                     }
                                     issues_data.append(issue_data)
                             else:

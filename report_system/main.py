@@ -763,9 +763,10 @@ class WeeklyReportSystem:
                 if progress_reporter:
                     progress_reporter.update("Geração de relatório HTML", "Criando relatórios HTML para e-mail...")
                 
-                # Obter URLs do cronograma e relatório de disciplinas da planilha
+                # Obter URLs do cronograma, relatório de disciplinas e imagem da planilha
                 email_url_gant = None
                 email_url_disciplina = None
+                project_image_base64 = None
                 try:
                     projects_df = self._load_project_config()
                     if not projects_df.empty and 'construflow_id' in projects_df.columns:
@@ -775,19 +776,20 @@ class WeeklyReportSystem:
                                 email_url_gant = project_row['email_url_gant'].values[0] if pd.notna(project_row['email_url_gant'].values[0]) else None
                             if 'email_url_disciplina' in project_row.columns:
                                 email_url_disciplina = project_row['email_url_disciplina'].values[0] if pd.notna(project_row['email_url_disciplina'].values[0]) else None
+                            # Obter URL da imagem do projeto (coluna email_url_capa)
+                            if 'email_url_capa' in project_row.columns:
+                                image_url = project_row['email_url_capa'].values[0] if pd.notna(project_row['email_url_capa'].values[0]) else None
+                                if image_url and hasattr(self, 'gdrive') and self.gdrive:
+                                    # Extrair file_id da URL e baixar como base64
+                                    file_id = self.gdrive.extract_file_id_from_url(str(image_url))
+                                    if file_id:
+                                        project_image_base64 = self.gdrive.download_file_as_base64(file_id)
+                                        if project_image_base64:
+                                            logger.info(f"Imagem do projeto carregada com sucesso")
+                                        else:
+                                            logger.warning(f"Não foi possível baixar a imagem do projeto")
                 except Exception as e:
-                    logger.warning(f"Erro ao obter URLs do cronograma/disciplinas: {e}")
-                
-                # Obter imagem do projeto em base64 se disponível
-                project_image_base64 = None
-                try:
-                    if hasattr(self, 'gdrive') and self.gdrive:
-                        image_url = self.gdrive.get_project_image_url(project_id)
-                        if image_url:
-                            # A imagem será processada pelo HTMLReportGenerator
-                            project_image_base64 = None  # Será carregado pelo gerador
-                except Exception as e:
-                    logger.debug(f"Imagem do projeto não disponível: {e}")
+                    logger.warning(f"Erro ao obter URLs e imagem do projeto: {e}")
                 
                 # Gerar e salvar relatórios HTML
                 html_paths = self.html_generator.save_reports(
@@ -802,230 +804,134 @@ class WeeklyReportSystem:
                 
                 logger.info(f"Relatórios HTML gerados: {html_paths}")
                     
-                # Gerar relatório em Markdown/Google Docs (mantido para compatibilidade)
-                report_text = self.generator.generate_report(project_data)
-                
-                # Verificar se o projeto tem apontamentos e notificar se não tiver
-                if not skip_notifications:
-                    self._check_and_notify_no_issues(project_data, project_id, project_name)
-                
-                # Salvar localmente primeiro (Markdown)
-                file_path = self.generator.save_report(
-                    report_text, 
-                    project_data['project_name']
-                )
-                
-                if not file_path:
-                    logger.error(f"Erro ao salvar relatório para projeto {project_id}")
+                # Verificar se os relatórios HTML foram gerados com sucesso
+                if not html_paths or not html_paths.get('client'):
+                    logger.error(f"Erro ao gerar relatórios HTML para projeto {project_id}")
                     
                     if progress_reporter:
                         progress_reporter.complete(
                             success=False, 
-                            final_message=f"❌ **Erro:** Falha ao salvar o relatório para {project_name}."
+                            final_message=f"❌ **Erro:** Falha ao gerar os relatórios HTML para {project_name}."
+                        )
+                    elif discord_channel_id and not skip_notifications:
+                        self.send_discord_notification(
+                            discord_channel_id,
+                            f"❌ **Erro:** Falha ao gerar os relatórios HTML para {project_name}."
                         )
                     # Log de falha
                     self.log_execution_to_sheet(
                         project_id=codigo_projeto or project_id,
                         project_name=project_name,
                         status="Falha",
-                        message="Falha ao salvar o relatório.",
+                        message="Falha ao gerar os relatórios HTML.",
                         doc_url=None
                     )
                     return False, "", None
                 
+                # Verificar se o projeto tem apontamentos e notificar se não tiver
+                if not skip_notifications:
+                    self._check_and_notify_no_issues(project_data, project_id, project_name)
+                
+                # Usar o caminho do relatório do cliente como file_path principal
+                file_path = html_paths.get('client', '')
+                
                 # Obter a pasta específica do projeto a partir da planilha de configuração
                 if progress_reporter:
-                    progress_reporter.update("Upload do relatório", "Preparando o upload para o Google Drive...")
+                    progress_reporter.update("Upload dos relatórios", "Enviando relatórios HTML para o Google Drive...")
                     
                 project_folder_id = self.gdrive.get_project_folder(
                     project_id, 
                     project_data['project_name']
                 )
                 
-                if not project_folder_id:
+                # Fazer upload dos arquivos HTML para o Google Drive
+                uploaded_files = {}
+                if project_folder_id:
+                    today_str = datetime.now().strftime("%Y-%m-%d")
+                    
+                    # Upload do relatório do cliente
+                    if html_paths.get('client'):
+                        try:
+                            client_result = self.gdrive.upload_file(
+                                file_path=html_paths['client'],
+                                name=f"Email_cliente_{project_data['project_name']}_{today_str}.html",
+                                parent_id=project_folder_id
+                            )
+                            if client_result:
+                                # Se retornou dicionário (com webViewLink), usar o link; senão usar o ID
+                                if isinstance(client_result, dict):
+                                    uploaded_files['client'] = client_result.get('webViewLink', f"https://drive.google.com/file/d/{client_result.get('id')}/view")
+                                    client_file_id = client_result.get('id')
+                                else:
+                                    uploaded_files['client'] = f"https://drive.google.com/file/d/{client_result}/view"
+                                    client_file_id = client_result
+                                logger.info(f"Relatório do cliente enviado para o Drive: {client_file_id}")
+                        except Exception as e:
+                            logger.error(f"Erro ao enviar relatório do cliente para o Drive: {e}")
+                    
+                    # Upload do relatório da equipe
+                    if html_paths.get('team'):
+                        try:
+                            team_result = self.gdrive.upload_file(
+                                file_path=html_paths['team'],
+                                name=f"Email_time_{project_data['project_name']}_{today_str}.html",
+                                parent_id=project_folder_id
+                            )
+                            if team_result:
+                                # Se retornou dicionário (com webViewLink), usar o link; senão usar o ID
+                                if isinstance(team_result, dict):
+                                    uploaded_files['team'] = team_result.get('webViewLink', f"https://drive.google.com/file/d/{team_result.get('id')}/view")
+                                    team_file_id = team_result.get('id')
+                                else:
+                                    uploaded_files['team'] = f"https://drive.google.com/file/d/{team_result}/view"
+                                    team_file_id = team_result
+                                logger.info(f"Relatório da equipe enviado para o Drive: {team_file_id}")
+                        except Exception as e:
+                            logger.error(f"Erro ao enviar relatório da equipe para o Drive: {e}")
+                else:
                     logger.warning(f"ID da pasta do Drive não encontrado para projeto {project_id}")
-                    logger.warning(f"Relatório salvo apenas localmente em {file_path}")
-                    
-                    if progress_reporter:
-                        progress_reporter.complete(
-                            success=True, 
-                            final_message=(
-                                f"⚠️ **Relatório parcialmente concluído para {project_name}**\n"
-                                f"O relatório foi gerado mas não foi possível encontrar a pasta do Google Drive.\n"
-                                f"O arquivo está disponível apenas localmente."
-                            )
-                        )
-                    # Log de sucesso parcial
-                    self.log_execution_to_sheet(
-                        project_id=codigo_projeto or project_id,
-                        project_name=project_name,
-                        status="Sucesso parcial",
-                        message="Relatório gerado, mas não foi possível encontrar a pasta do Google Drive.",
-                        doc_url=None
-                    )
-                    return True, file_path, None
                 
-                # Formatar data atual
-                today_str = datetime.now().strftime("%d/%m/%Y")
+                # Preparar mensagem final
+                folder_url = f"https://drive.google.com/drive/folders/{project_folder_id}" if project_folder_id else None
                 
-                # Inicializar serviços do Google
-                try:
-                    from googleapiclient.discovery import build
-                    
-                    # Obter credenciais do gerenciador de configuração
-                    creds = self.config.get_google_creds()
-                    
-                    if not creds:
-                        logger.error("Credenciais do Google não disponíveis")
-                        
-                        # Fazer upload do arquivo como fallback
-                        if progress_reporter:
-                            progress_reporter.update(
-                                "Upload alternativo", 
-                                "Tentando método alternativo de upload (sem credenciais)..."
-                            )
-                        
-                        file_name = f"Relatório Semanal - {project_data['project_name']} - {today_str}.md"
-                        file_id = self.gdrive.upload_file(
-                            file_path=file_path,
-                            name=file_name,
-                            parent_id=project_folder_id
-                        )
-                        
-                        if progress_reporter:
-                            if file_id:
-                                drive_url = f"https://drive.google.com/file/d/{file_id}/view"
-                                progress_reporter.complete(
-                                    success=True,
-                                    final_message=(
-                                        f"✅ **Relatório de {project_name} concluído!**\n"
-                                        f"O relatório foi enviado como arquivo markdown.\n"
-                                        f"📄 [Link para o relatório]({drive_url})"
-                                    )
-                                )
-                            else:
-                                progress_reporter.complete(
-                                    success=False,
-                                    final_message=(
-                                        f"⚠️ **Relatório parcialmente concluído para {project_name}**\n"
-                                        f"O relatório foi gerado mas não foi possível enviá-lo ao Google Drive.\n"
-                                        f"O arquivo está disponível apenas localmente."
-                                    )
-                                )
-                            # Log de sucesso parcial
-                            self.log_execution_to_sheet(
-                                project_id=codigo_projeto or project_id,
-                                project_name=project_name,
-                                status="Sucesso parcial",
-                                message="Relatório enviado como arquivo markdown, não foi possível criar Google Doc.",
-                                doc_url=drive_url if file_id else None
-                            )
-                            return True, file_path, file_id
-                        
-                    # Criar serviços do Google
-                    if progress_reporter:
-                        progress_reporter.update("Criação de documento", "Configurando serviços do Google Docs...")
-                        
-                    drive_service = build('drive', 'v3', credentials=creds)
-                    docs_service = build('docs', 'v1', credentials=creds)
-                    
-                    # Criar documento do Google Docs com links funcionais
-                    doc_title = f"Relatório Semanal - {project_data['project_name']} - {today_str}"
-                    
-                    if progress_reporter:
-                        progress_reporter.update("Finalização", "Gerando documento do Google Docs com links...")
-                        
-                    doc_id = self.create_google_doc_with_links(
-                        docs_service=docs_service,
-                        drive_service=drive_service,
-                        title=doc_title,
-                        project_data=project_data,
-                        parent_folder_id=project_folder_id
-                    )
-                    
-                    logger.info(f"Documento Google Docs criado com ID: {doc_id}")
-                    
-                    # Finalizar e enviar mensagem final
-                    if doc_id and progress_reporter:
-                        doc_url = f"https://docs.google.com/document/d/{doc_id}/edit"
-                        folder_url = f"https://drive.google.com/drive/folders/{project_folder_id}"
-                        
-                        final_message = (
-                            f"✅ **Relatório de {project_name} concluído com sucesso!**\n\n"
-                            f"📄 [Link para o relatório]({doc_url})\n"
-                            f"📁 [Link para a pasta do projeto]({folder_url})"
-                        )
-                        
-                        progress_reporter.complete(success=True, final_message=final_message)
-                        # Log de sucesso
-                        self.log_execution_to_sheet(
-                            project_id=codigo_projeto or project_id,
-                            project_name=project_name,
-                            status="Sucesso",
-                            message="Relatório gerado e Google Doc criado com sucesso.",
-                            doc_url=doc_url
-                        )
-                    elif progress_reporter:
-                        progress_reporter.complete(
-                            success=False, 
-                            final_message=f"❌ **Erro:** Falha ao criar documento no Google Docs para {project_name}."
-                        )
-                        # Log de falha
-                        self.log_execution_to_sheet(
-                            project_id=codigo_projeto or project_id,
-                            project_name=project_name,
-                            status="Falha",
-                            message="Falha ao criar documento no Google Docs.",
-                            doc_url=None
-                        )
-                    return True, file_path, doc_id
-                    
-                except Exception as e:
-                    logger.error(f"Erro ao criar documento no Google Docs: {e}")
-                    
-                    # Fazer upload do arquivo como fallback
-                    if progress_reporter:
-                        progress_reporter.update(
-                            "Upload alternativo", 
-                            "Tentando método alternativo de upload após erro..."
-                        )
-                    
-                    file_name = f"Relatório Semanal - {project_data['project_name']} - {today_str}.md"
-                    file_id = self.gdrive.upload_file(
-                        file_path=file_path,
-                        name=file_name,
-                        parent_id=project_folder_id
-                    )
-                    
-                    if progress_reporter:
-                        if file_id:
-                            drive_url = f"https://drive.google.com/file/d/{file_id}/view"
-                            progress_reporter.complete(
-                                success=True,
-                                final_message=(
-                                    f"✅ **Relatório de {project_name} concluído!**\n"
-                                    f"O relatório foi enviado como arquivo markdown.\n"
-                                    f"📄 [Link para o relatório]({drive_url})"
-                                )
-                            )
-                        else:
-                            progress_reporter.complete(
-                                success=False,
-                                final_message=(
-                                    f"⚠️ **Relatório parcialmente concluído para {project_name}**\n"
-                                    f"O relatório foi gerado mas não foi possível enviá-lo ao Google Drive.\n"
-                                    f"O arquivo está disponível apenas localmente."
-                                )
-                            )
-                        # Log de sucesso parcial ou falha
-                        self.log_execution_to_sheet(
-                            project_id=codigo_projeto or project_id,
-                            project_name=project_name,
-                            status="Sucesso parcial" if file_id else "Falha",
-                            message="Relatório enviado como arquivo markdown após erro no Google Docs." if file_id else "Falha ao criar documento no Google Docs e enviar markdown.",
-                            doc_url=drive_url if file_id else None
-                        )
-                        return True, file_path, file_id
+                final_message = (
+                    f"✅ **Relatórios HTML de {project_name} gerados com sucesso!**\n\n"
+                )
+                
+                # Priorizar links do Drive se disponíveis
+                if uploaded_files.get('client'):
+                    final_message += f"📄 **[Relatório do Cliente (HTML)]({uploaded_files['client']})**\n"
+                elif html_paths.get('client'):
+                    final_message += f"📄 Relatório do Cliente: `{html_paths.get('client', 'N/A')}`\n"
+                else:
+                    final_message += f"📄 Relatório do Cliente: Não gerado\n"
+                
+                if uploaded_files.get('team'):
+                    final_message += f"📄 [Relatório da Equipe (HTML)]({uploaded_files['team']})\n"
+                elif html_paths.get('team'):
+                    final_message += f"📄 Relatório da Equipe: `{html_paths.get('team', 'N/A')}`\n"
+                else:
+                    final_message += f"📄 Relatório da Equipe: Não gerado\n"
+                
+                if folder_url:
+                    final_message += f"\n📁 [Link para a pasta do projeto]({folder_url})"
+                
+                # Enviar notificação
+                if progress_reporter:
+                    progress_reporter.complete(success=True, final_message=final_message)
+                elif discord_channel_id and not skip_notifications:
+                    self.send_discord_notification(discord_channel_id, final_message)
+                
+                # Log de sucesso
+                self.log_execution_to_sheet(
+                    project_id=codigo_projeto or project_id,
+                    project_name=project_name,
+                    status="Sucesso",
+                    message="Relatórios HTML gerados e enviados para o Google Drive com sucesso.",
+                    doc_url=uploaded_files.get('client') if uploaded_files else None
+                )
+                
+                return True, file_path, None
                     
             except Exception as e:
                 logger.error(f"Erro ao processar projeto {project_id}: {str(e)}", exc_info=True)

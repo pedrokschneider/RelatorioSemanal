@@ -250,7 +250,12 @@ class GoogleDriveManager:
                 ).execute()
                 
                 file_id = file.get('id')
+                web_view_link = file.get('webViewLink')
                 logger.info(f"Arquivo '{file_name}' enviado com ID: {file_id}")
+                
+                # Retornar dicionário com id e webViewLink para arquivos HTML
+                if mime_type == 'text/html' and web_view_link:
+                    return {'id': file_id, 'webViewLink': web_view_link}
                 return file_id
                 
             except HttpError as e:
@@ -281,6 +286,8 @@ class GoogleDriveManager:
         """
         # Mapeamento básico de extensões para tipos MIME
         mime_map = {
+            '.html': 'text/html',
+            '.htm': 'text/html',
             '.txt': 'text/plain',
             '.pdf': 'application/pdf',
             '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',

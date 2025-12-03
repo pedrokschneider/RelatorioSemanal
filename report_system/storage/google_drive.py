@@ -17,6 +17,9 @@ from googleapiclient.errors import HttpError
 
 from ..config import ConfigManager
 
+# Configurar logger primeiro
+logger = logging.getLogger("ReportSystem")
+
 # Tentar importar Pillow para processamento de imagens
 try:
     from PIL import Image
@@ -24,8 +27,6 @@ try:
 except ImportError:
     PIL_AVAILABLE = False
     logger.warning("Pillow não está instalado. Processamento de imagens não estará disponível.")
-
-logger = logging.getLogger("ReportSystem")
 
 class GoogleDriveManager:
     """Gerencia operações com Google Drive."""

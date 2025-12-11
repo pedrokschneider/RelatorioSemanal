@@ -133,16 +133,19 @@ class HTMLReportGenerator:
         client_issues = self._get_client_issues(data)
         delays = self._get_delays_client(data)
         schedule = self._get_schedule_client(data)
+        completed = self._get_completed_tasks_client(data)
         
         # Gerar seções HTML
         pendencias_html = self._generate_pendencias_section(client_issues, project_id)
         atrasos_html = self._generate_atrasos_client_section(delays)
         cronograma_html, _ = self._generate_cronograma_client_section(schedule, email_url_gant, email_url_disciplina)
+        concluidas_html = self._generate_concluidas_section(completed)
         
         # Contagens para os badges
         count_pendencias = len(client_issues) if client_issues else 0
         count_atrasos = len(delays) if delays else 0
         count_cronograma = len(schedule) if schedule else 0
+        count_concluidas = sum(len(tasks) for tasks in completed.values()) if completed else 0
         
         html = self._generate_base_html(
             project_name=project_name,
@@ -156,6 +159,13 @@ class HTMLReportGenerator:
                     'color': '#dc2626' if count_pendencias > 0 else '#16a34a',
                     'content': pendencias_html,
                     'open': True
+                },
+                {
+                    'title': 'Atividades Concluídas',
+                    'count': count_concluidas,
+                    'color': '#16a34a',
+                    'content': concluidas_html,
+                    'open': False
                 },
                 {
                     'title': 'Atrasos e Desvios',
@@ -473,10 +483,12 @@ class HTMLReportGenerator:
         # Primeiro tentar usar client_issues já filtradas pelo DataProcessor
         client_issues = construflow_data.get('client_issues', [])
         
+        # CORREÇÃO: Não usar active_issues como fallback, pois pode incluir issues que não são do cliente
+        # Se client_issues estiver vazio, significa que não há issues do cliente ou o filtro não funcionou
+        # Nesse caso, retornar lista vazia para evitar mostrar issues incorretas
         if not client_issues:
-            # Se não tiver client_issues, usar active_issues como fallback
-            client_issues = construflow_data.get('active_issues', [])
-            logger.info(f"Usando active_issues como fallback: {len(client_issues)} issues")
+            logger.warning("⚠️ Nenhuma issue do cliente encontrada. Verifique se as disciplinas do cliente estão configuradas corretamente na planilha.")
+            return []
         
         # Filtrar apenas issues com status da disciplina = 'todo' (pendentes)
         # status_y = status da disciplina no Construflow
@@ -503,7 +515,7 @@ class HTMLReportGenerator:
     def _get_completed_tasks(self, data: Dict[str, Any]) -> Dict[str, List[Dict]]:
         """
         Obtém tarefas concluídas agrupadas por disciplina.
-        Para o relatório da equipe - mostra todas as disciplinas.
+        Para o relatório da equipe - mostra todas as disciplinas, EXCETO 'Otus'.
         """
         smartsheet_data = data.get('smartsheet_data', {})
         if not smartsheet_data:
@@ -533,6 +545,10 @@ class HTMLReportGenerator:
                     pass
             
             discipline = task.get('Disciplina', task.get('Discipline', 'Sem Disciplina')) or 'Sem Disciplina'
+            # Excluir 'Otus' do relatório da equipe (será mostrado no relatório do cliente)
+            if discipline.lower() == 'otus':
+                continue
+            
             if discipline not in completed_by_discipline:
                 completed_by_discipline[discipline] = []
             completed_by_discipline[discipline].append(task)
@@ -541,89 +557,217 @@ class HTMLReportGenerator:
         logger.info(f"Tarefas concluídas: {total_completed} em {len(completed_by_discipline)} disciplinas")
         return completed_by_discipline
     
-    def _get_delays_client(self, data: Dict[str, Any]) -> List[Dict]:
+    def _get_completed_tasks_client(self, data: Dict[str, Any]) -> Dict[str, List[Dict]]:
         """
-        Obtém atrasos para relatório do cliente.
-        Filtra tarefas atrasadas do SmartSheet onde Disciplina = 'Cliente'.
+        Obtém tarefas concluídas agrupadas por disciplina para o relatório do cliente.
+        Filtra apenas tarefas das disciplinas 'Cliente' e 'Otus'.
         """
         smartsheet_data = data.get('smartsheet_data', {})
         if not smartsheet_data:
+            logger.warning("⚠️ Dados do SmartSheet não encontrados para tarefas concluídas do cliente")
+            return {}
+        
+        all_tasks = smartsheet_data.get('all_tasks', [])
+        if not all_tasks:
+            logger.warning("⚠️ Nenhuma tarefa encontrada no SmartSheet para tarefas concluídas")
+            return {}
+        
+        today = datetime.now()
+        week_ago = today - timedelta(days=7)
+        
+        completed_by_discipline = {}
+        tasks_nao_concluidas = 0
+        tasks_fora_periodo = 0
+        tasks_outra_disciplina = 0
+        
+        for task in all_tasks:
+            if not isinstance(task, dict):
+                continue
+            
+            status = str(task.get('Status', '')).lower().strip()
+            if status != 'feito':
+                tasks_nao_concluidas += 1
+                continue
+            
+            # Verificar se foi concluída na última semana (se tiver data)
+            end_date_str = task.get('Data Término', task.get('Data de Término', task.get('End Date', '')))
+            if end_date_str:
+                try:
+                    end_date = self._parse_date(end_date_str)
+                    if end_date and end_date < week_ago:
+                        tasks_fora_periodo += 1
+                        continue  # Ignorar tarefas concluídas há mais de uma semana
+                except:
+                    pass
+            
+            discipline = task.get('Disciplina', task.get('Discipline', 'Sem Disciplina')) or 'Sem Disciplina'
+            # Filtrar apenas 'Cliente' e 'Otus'
+            if discipline.lower() not in ['cliente', 'otus']:
+                tasks_outra_disciplina += 1
+                continue
+            
+            if discipline not in completed_by_discipline:
+                completed_by_discipline[discipline] = []
+            completed_by_discipline[discipline].append(task)
+        
+        total_completed = sum(len(tasks) for tasks in completed_by_discipline.values())
+        logger.info(f"Tarefas concluídas do cliente: {total_completed} em {len(completed_by_discipline)} disciplinas de {len(all_tasks)} total")
+        if tasks_nao_concluidas > 0:
+            logger.info(f"  - {tasks_nao_concluidas} tarefas não concluídas")
+        if tasks_fora_periodo > 0:
+            logger.info(f"  - {tasks_fora_periodo} tarefas concluídas há mais de uma semana")
+        if tasks_outra_disciplina > 0:
+            logger.info(f"  - {tasks_outra_disciplina} tarefas de outras disciplinas (não 'Cliente' ou 'Otus')")
+        
+        return completed_by_discipline
+    
+    def _get_delays_client(self, data: Dict[str, Any]) -> List[Dict]:
+        """
+        Obtém atrasos para relatório do cliente.
+        Filtra tarefas atrasadas do SmartSheet onde Disciplina = 'Cliente' ou 'Otus'.
+        """
+        smartsheet_data = data.get('smartsheet_data', {})
+        if not smartsheet_data:
+            logger.warning("⚠️ Dados do SmartSheet não encontrados para atrasos do cliente")
             return []
         
         delayed_tasks = smartsheet_data.get('delayed_tasks', [])
+        if not delayed_tasks:
+            logger.info("Nenhuma tarefa atrasada encontrada no SmartSheet")
+            return []
         
-        # Filtrar por disciplina "Cliente" (case-insensitive)
+        # Log: mostrar disciplinas únicas nas tarefas atrasadas
+        disciplinas_atrasadas = set()
+        for task in delayed_tasks:
+            if isinstance(task, dict):
+                disciplina = str(task.get('Disciplina', task.get('Discipline', ''))).strip()
+                if disciplina:
+                    disciplinas_atrasadas.add(disciplina)
+        logger.info(f"Disciplinas nas tarefas atrasadas: {sorted(disciplinas_atrasadas)}")
+        
+        # Filtrar por disciplina "Cliente" ou "Otus" (case-insensitive)
         client_delays = []
+        tasks_outra_disciplina = 0
         for task in delayed_tasks:
             disciplina = str(task.get('Disciplina', task.get('Discipline', ''))).strip().lower()
-            if disciplina == 'cliente':
+            if disciplina in ['cliente', 'otus']:
                 client_delays.append(task)
+            else:
+                tasks_outra_disciplina += 1
         
         logger.info(f"Atrasos do cliente: {len(client_delays)} de {len(delayed_tasks)} atrasadas")
+        if tasks_outra_disciplina > 0:
+            logger.info(f"  - {tasks_outra_disciplina} tarefas atrasadas de outras disciplinas (não 'Cliente' ou 'Otus')")
+        
         return client_delays
     
     def _get_delays_team(self, data: Dict[str, Any]) -> List[Dict]:
         """
         Obtém atrasos para relatório da equipe.
-        Retorna TODAS as tarefas atrasadas (todas as disciplinas).
+        Retorna todas as tarefas atrasadas, EXCETO 'Otus' (que aparece no relatório do cliente).
         """
         smartsheet_data = data.get('smartsheet_data', {})
         if not smartsheet_data:
             return []
         
         delayed_tasks = smartsheet_data.get('delayed_tasks', [])
-        logger.info(f"Atrasos da equipe: {len(delayed_tasks)} tarefas atrasadas")
-        return delayed_tasks
+        
+        # Excluir 'Otus' do relatório da equipe
+        team_delays = []
+        for task in delayed_tasks:
+            disciplina = str(task.get('Disciplina', task.get('Discipline', ''))).strip().lower()
+            if disciplina != 'otus':
+                team_delays.append(task)
+        
+        logger.info(f"Atrasos da equipe: {len(team_delays)} tarefas atrasadas")
+        return team_delays
     
     def _get_schedule_client(self, data: Dict[str, Any]) -> List[Dict]:
         """
         Obtém cronograma para o cliente (entregas importantes).
-        Filtra tarefas do SmartSheet onde Disciplina = 'Cliente' e que estão programadas.
+        Filtra tarefas do SmartSheet onde Disciplina = 'Cliente' ou 'Otus' e que estão programadas.
         """
         smartsheet_data = data.get('smartsheet_data', {})
         if not smartsheet_data:
+            logger.warning("⚠️ Dados do SmartSheet não encontrados para cronograma do cliente")
             return []
         
         all_tasks = smartsheet_data.get('all_tasks', [])
+        if not all_tasks:
+            logger.warning("⚠️ Nenhuma tarefa encontrada no SmartSheet")
+            return []
+        
         today = datetime.now()
         future_cutoff = today + timedelta(days=30)
         
-        # Filtrar tarefas do cliente que estão programadas (não concluídas)
+        # Log: mostrar disciplinas únicas encontradas no SmartSheet
+        disciplinas_encontradas = set()
+        for task in all_tasks:
+            if isinstance(task, dict):
+                disciplina = str(task.get('Disciplina', task.get('Discipline', ''))).strip()
+                if disciplina:
+                    disciplinas_encontradas.add(disciplina)
+        logger.info(f"Disciplinas encontradas no SmartSheet: {sorted(disciplinas_encontradas)}")
+        
+        # Filtrar tarefas do cliente ou Otus que estão programadas (não concluídas)
         client_schedule = []
+        tasks_sem_data = 0
+        tasks_fora_periodo = 0
+        tasks_concluidas = 0
+        tasks_outra_disciplina = 0
+        
         for task in all_tasks:
             if not isinstance(task, dict):
                 continue
             
             # Verificar disciplina
             disciplina = str(task.get('Disciplina', task.get('Discipline', ''))).strip().lower()
-            if disciplina != 'cliente':
+            if disciplina not in ['cliente', 'otus']:
+                tasks_outra_disciplina += 1
                 continue
             
             # Verificar status (apenas tarefas não concluídas)
             status = str(task.get('Status', '')).lower().strip()
             if status == 'feito':
+                tasks_concluidas += 1
                 continue
             
             # Verificar data
             task_date_str = task.get('Data Término', task.get('Data de Término', task.get('End Date', '')))
             if not task_date_str:
+                tasks_sem_data += 1
                 continue
             
             try:
                 task_date = self._parse_date(task_date_str)
                 if task_date and task_date >= today and task_date <= future_cutoff:
                     client_schedule.append(task)
+                else:
+                    tasks_fora_periodo += 1
             except:
+                tasks_sem_data += 1
                 continue
         
         # Ordenar por data
         client_schedule.sort(key=lambda x: self._parse_date(x.get('Data Término', x.get('Data de Término', x.get('End Date', '')))) or datetime.max)
         
-        logger.info(f"Cronograma do cliente: {len(client_schedule)} tarefas programadas")
+        logger.info(f"Cronograma do cliente: {len(client_schedule)} tarefas programadas de {len(all_tasks)} total")
+        if tasks_outra_disciplina > 0:
+            logger.info(f"  - {tasks_outra_disciplina} tarefas de outras disciplinas (não 'Cliente' ou 'Otus')")
+        if tasks_concluidas > 0:
+            logger.info(f"  - {tasks_concluidas} tarefas já concluídas")
+        if tasks_sem_data > 0:
+            logger.info(f"  - {tasks_sem_data} tarefas sem data de término")
+        if tasks_fora_periodo > 0:
+            logger.info(f"  - {tasks_fora_periodo} tarefas fora do período (próximos 30 dias)")
+        
         return client_schedule
     
     def _get_schedule_team(self, data: Dict[str, Any]) -> Dict[str, Dict[str, List]]:
-        """Obtém cronograma detalhado para a equipe."""
+        """
+        Obtém cronograma detalhado para a equipe.
+        Exclui disciplinas 'Otus' (que aparecem no relatório do cliente).
+        """
         smartsheet_data = data.get('smartsheet_data', {})
         if not smartsheet_data:
             return {}
@@ -650,6 +794,10 @@ class HTMLReportGenerator:
                 continue
             
             discipline = task.get('Disciplina', 'Sem Disciplina') or 'Sem Disciplina'
+            # Excluir 'Otus' do relatório da equipe (será mostrado no relatório do cliente)
+            if discipline.lower() == 'otus':
+                continue
+            
             status = str(task.get('Status', '')).lower().strip()
             
             if discipline not in schedule:
@@ -739,7 +887,7 @@ class HTMLReportGenerator:
         accent = "#f5a623"          # Laranja Otus apenas para destaques sutis
         
         if not issues:
-            return '<p style="margin:0;font-family:\'Source Sans Pro\',sans-serif;font-size:14px;color:#1a1a1a;">✓ Sem pendências do cliente nesta semana.</p>'
+            return '<p style="margin:0;font-family:\'Source Sans Pro\',sans-serif;font-size:14px;color:#1a1a1a;">✓ Sem pendências das disciplinas <strong>Cliente</strong> e <strong>Otus</strong> nesta semana.</p>'
         
         # Agrupar primeiro por disciplina, depois por prioridade
         by_discipline = {}
@@ -787,6 +935,7 @@ class HTMLReportGenerator:
                 html += '<div style="padding-left:0;">'
                 for item in priorities['alta']:
                     url = f"https://app.construflow.com.br/workspace/project/{project_id}/issues?issueId={item['id']}"
+                    issue_code = item.get('code', item.get('id', ''))
                     deadline_html = ""
                     deadline_value = item.get('deadline')
                     # Verificar se deadline existe e não é None/NaN/vazio
@@ -796,7 +945,9 @@ class HTMLReportGenerator:
                             deadline_date = self._format_deadline_date(deadline_value)
                             if deadline_date:
                                 deadline_html = f'<span style="margin-left:8px;font-family:\'Montserrat\',sans-serif;font-size:11px;color:#f5a623;font-weight:600;background:#fff3e0;padding:2px 8px;border-radius:3px;">⏰ {deadline_date}</span>'
-                    html += f'<p style="margin:0 0 8px;font-family:\'Source Sans Pro\',sans-serif;font-size:14px;color:#1a1a1a;line-height:1.7;padding:8px 12px;background:#f8f8f8;border-radius:4px;border-left:3px solid {accent};"><a href="{url}" style="color:#1a1a1a;text-decoration:none;font-weight:500;">{item["title"]}</a>{deadline_html}</p>'
+                    # Destacar o link com ID do apontamento ANTES do título
+                    link_text = f'🔗 <span style="font-family:\'Montserrat\',sans-serif;font-size:11px;color:#f5a623;font-weight:600;background:#fff3e0;padding:2px 6px;border-radius:3px;margin-right:8px;">{issue_code}</span>{item["title"]}'
+                    html += f'<p style="margin:0 0 8px;font-family:\'Source Sans Pro\',sans-serif;font-size:14px;color:#1a1a1a;line-height:1.7;padding:8px 12px;background:#f8f8f8;border-radius:4px;border-left:3px solid {accent};"><a href="{url}" style="color:#1a1a1a;text-decoration:underline;font-weight:500;border-bottom:1px solid #f5a623;">{link_text}</a>{deadline_html}</p>'
                 html += '</div></div>'
             
             # Prioridade Média
@@ -806,6 +957,7 @@ class HTMLReportGenerator:
                 html += '<div style="padding-left:0;">'
                 for item in priorities['media']:
                     url = f"https://app.construflow.com.br/workspace/project/{project_id}/issues?issueId={item['id']}"
+                    issue_code = item.get('code', item.get('id', ''))
                     deadline_html = ""
                     deadline_value = item.get('deadline')
                     # Verificar se deadline existe e não é None/NaN/vazio
@@ -815,7 +967,9 @@ class HTMLReportGenerator:
                             deadline_date = self._format_deadline_date(deadline_value)
                             if deadline_date:
                                 deadline_html = f'<span style="margin-left:8px;font-family:\'Montserrat\',sans-serif;font-size:11px;color:#f5a623;font-weight:600;background:#fff3e0;padding:2px 8px;border-radius:3px;">⏰ {deadline_date}</span>'
-                    html += f'<p style="margin:0 0 6px;font-family:\'Source Sans Pro\',sans-serif;font-size:14px;color:#444;line-height:1.7;padding:6px 12px;border-left:2px solid #ddd;"><a href="{url}" style="color:#444;text-decoration:none;">{item["title"]}</a>{deadline_html}</p>'
+                    # Destacar o link com ID do apontamento ANTES do título
+                    link_text = f'🔗 <span style="font-family:\'Montserrat\',sans-serif;font-size:10px;color:#f5a623;font-weight:600;background:#fff3e0;padding:2px 6px;border-radius:3px;margin-right:8px;">{issue_code}</span>{item["title"]}'
+                    html += f'<p style="margin:0 0 6px;font-family:\'Source Sans Pro\',sans-serif;font-size:14px;color:#444;line-height:1.7;padding:6px 12px;border-left:2px solid #ddd;"><a href="{url}" style="color:#444;text-decoration:underline;border-bottom:1px solid #f5a623;">{link_text}</a>{deadline_html}</p>'
                 html += '</div></div>'
             
             # Prioridade Baixa
@@ -825,6 +979,7 @@ class HTMLReportGenerator:
                 html += '<div style="padding-left:0;">'
                 for item in priorities['baixa']:
                     url = f"https://app.construflow.com.br/workspace/project/{project_id}/issues?issueId={item['id']}"
+                    issue_code = item.get('code', item.get('id', ''))
                     deadline_html = ""
                     deadline_value = item.get('deadline')
                     # Verificar se deadline existe e não é None/NaN/vazio
@@ -834,7 +989,9 @@ class HTMLReportGenerator:
                             deadline_date = self._format_deadline_date(deadline_value)
                             if deadline_date:
                                 deadline_html = f'<span style="margin-left:8px;font-family:\'Montserrat\',sans-serif;font-size:10px;color:#f5a623;font-weight:600;background:#fff3e0;padding:2px 6px;border-radius:3px;">⏰ {deadline_date}</span>'
-                    html += f'<p style="margin:0 0 6px;font-family:\'Source Sans Pro\',sans-serif;font-size:13px;color:#666;line-height:1.6;padding-left:12px;"><a href="{url}" style="color:#666;text-decoration:none;">{item["title"]}</a>{deadline_html}</p>'
+                    # Destacar o link com ID do apontamento ANTES do título
+                    link_text = f'🔗 <span style="font-family:\'Montserrat\',sans-serif;font-size:10px;color:#f5a623;font-weight:600;background:#fff3e0;padding:2px 6px;border-radius:3px;margin-right:8px;">{issue_code}</span>{item["title"]}'
+                    html += f'<p style="margin:0 0 6px;font-family:\'Source Sans Pro\',sans-serif;font-size:13px;color:#666;line-height:1.6;padding-left:12px;"><a href="{url}" style="color:#666;text-decoration:underline;border-bottom:1px solid #f5a623;">{link_text}</a>{deadline_html}</p>'
                 html += '</div></div>'
             
             html += '</div>'
@@ -844,7 +1001,7 @@ class HTMLReportGenerator:
     def _generate_concluidas_section(self, completed: Dict[str, List[Dict]]) -> str:
         """Gera HTML da seção de atividades concluídas - Design profissional Otus."""
         if not completed:
-            return '<p style="margin:0;font-family:\'Source Sans Pro\',sans-serif;font-size:14px;color:#666;">Nenhuma atividade concluída no período.</p>'
+            return '<p style="margin:0;font-family:\'Source Sans Pro\',sans-serif;font-size:14px;color:#666;">✓ Nenhuma atividade concluída das disciplinas <strong>Cliente</strong> e <strong>Otus</strong> no período (últimos 7 dias).</p>'
         
         html = ""
         for discipline, tasks in completed.items():
@@ -871,7 +1028,7 @@ class HTMLReportGenerator:
     def _generate_atrasos_client_section(self, delays: List[Dict]) -> str:
         """Gera HTML da seção de atrasos para cliente - Design profissional Otus."""
         if not delays:
-            return '<p style="margin:0;font-family:\'Source Sans Pro\',sans-serif;font-size:14px;color:#1a1a1a;">✓ Nenhum atraso identificado no cronograma nesta semana.</p>'
+            return '<p style="margin:0;font-family:\'Source Sans Pro\',sans-serif;font-size:14px;color:#1a1a1a;">✓ Nenhum atraso identificado das disciplinas <strong>Cliente</strong> e <strong>Otus</strong> no período.</p>'
         
         html = ""
         for task in delays:
@@ -970,7 +1127,7 @@ class HTMLReportGenerator:
             Tupla (html_content, buttons_html) onde buttons_html pode ser vazio
         """
         if not schedule:
-            html = '<p style="margin:0;font-family:\'Source Sans Pro\',sans-serif;font-size:14px;color:#666;">Nenhuma atividade prevista para as próximas semanas.</p>'
+            html = '<p style="margin:0;font-family:\'Source Sans Pro\',sans-serif;font-size:14px;color:#666;">✓ Nenhuma atividade prevista das disciplinas <strong>Cliente</strong> e <strong>Otus</strong> para as próximas 4 semanas.</p>'
         else:
             # Agrupar por disciplina
             by_discipline = {}

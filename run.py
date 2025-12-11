@@ -149,12 +149,17 @@ def main():
                 doc_url=doc_url
             )
             status_str = "✅ Sucesso" if result[0] else "❌ Falha"
-            doc_id = result[2]
+            drive_file_id = result[2]
             logger.info(f"Projeto {project_id}: {status_str}")
             if result[0]:
                 logger.info(f"  - Arquivo local: {result[1]}")
-                if doc_id:
-                    doc_url = f"https://docs.google.com/document/d/{doc_id}/edit"
+                if drive_file_id:
+                    # Se já for um link completo, usar diretamente; senão construir o link
+                    if drive_file_id.startswith('http'):
+                        doc_url = drive_file_id
+                    else:
+                        # Construir link do Google Drive
+                        doc_url = f"https://drive.google.com/file/d/{drive_file_id}/view"
                     logger.info(f"  - Link do relatório: {doc_url}")
                     print(doc_url)
             # Enviar mensagem para o canal de notificação se solicitado

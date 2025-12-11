@@ -306,12 +306,13 @@ class ReportQueue:
             logger.info(f"Resultado do subprocess: returncode={result.returncode}, stdout_length={len(result.stdout) if result.stdout else 0}, stderr_length={len(result.stderr) if result.stderr else 0}")
             
             if result.returncode == 0:
-                # Procurar URL do documento na saída
+                # Procurar URL do documento na saída (pode ser Google Docs ou Google Drive)
                 doc_url = None
                 if result.stdout:
                     logger.info(f"Procurando URL na saída: {repr(result.stdout[:500])}...")
                     for line in result.stdout.split('\n'):
-                        if "docs.google.com/document" in line:
+                        # Procurar por links do Google Docs ou Google Drive
+                        if "docs.google.com/document" in line or "drive.google.com/file" in line:
                             doc_url = line.strip()
                             logger.info(f"URL encontrado: {doc_url}")
                             break

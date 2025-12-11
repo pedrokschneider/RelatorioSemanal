@@ -384,6 +384,23 @@ class WeeklyReportSystem:
         Returns:
             DataFrame com issues filtradas pelas disciplinas do cliente
         """
+        import re
+        import unicodedata
+        
+        def normalize_text(text):
+            """Normaliza texto removendo acentos, espaços extras e convertendo para lowercase."""
+            if not text or pd.isna(text):
+                return ""
+            # Converter para string e remover espaços extras
+            text = str(text).strip()
+            # Normalizar unicode (NFD = decomposed form)
+            text = unicodedata.normalize('NFD', text)
+            # Remover acentos
+            text = ''.join(c for c in text if unicodedata.category(c) != 'Mn')
+            # Converter para lowercase e remover espaços múltiplos
+            text = re.sub(r'\s+', ' ', text.lower().strip())
+            return text
+        
         # Obter disciplinas relacionadas ao cliente
         disciplinas_cliente = self.get_client_disciplines(project_id)
         
@@ -391,20 +408,54 @@ class WeeklyReportSystem:
             logger.warning(f"Não foi possível filtrar issues para o cliente. Disciplinas: {disciplinas_cliente}")
             return df_issues
         
-        # Normalizar disciplinas do cliente para comparação case-insensitive
-        disciplinas_cliente_normalized = [d.strip().lower() for d in disciplinas_cliente if d.strip()]
+        # Normalizar disciplinas do cliente (remover acentos, espaços, case-insensitive)
+        disciplinas_cliente_normalized = [normalize_text(d) for d in disciplinas_cliente if d and str(d).strip()]
+        logger.info(f"Filtrando por disciplinas do cliente (originais): {disciplinas_cliente}")
         logger.info(f"Filtrando por disciplinas do cliente (normalizadas): {disciplinas_cliente_normalized}")
         
-        # Filtrar pelas disciplinas do cliente (comparação case-insensitive)
+        # Verificar quais disciplinas únicas existem nas issues
+        if not df_issues.empty and 'name' in df_issues.columns:
+            disciplinas_issues = df_issues['name'].dropna().unique()
+            disciplinas_issues_normalized = [normalize_text(d) for d in disciplinas_issues]
+            logger.info(f"Disciplinas encontradas nas issues (originais): {list(disciplinas_issues)}")
+            logger.info(f"Disciplinas encontradas nas issues (normalizadas): {disciplinas_issues_normalized}")
+        
+        # Filtrar pelas disciplinas do cliente (comparação normalizada com correspondência parcial)
         if df_issues['name'].dtype == 'object':
             # Normalizar nomes das issues para comparação
-            mask = df_issues['name'].astype(str).str.strip().str.lower().isin(disciplinas_cliente_normalized)
+            df_issues_normalized = df_issues['name'].astype(str).apply(normalize_text)
+            
+            # Primeiro tentar correspondência exata
+            mask = df_issues_normalized.isin(disciplinas_cliente_normalized)
+            
+            # Se não encontrou correspondência exata, tentar correspondência parcial (contém)
+            if not mask.any() and disciplinas_cliente_normalized:
+                logger.info(f"Tentando correspondência parcial para disciplinas do cliente...")
+                # Criar máscara para cada disciplina do cliente
+                partial_masks = []
+                for disc_cliente in disciplinas_cliente_normalized:
+                    if disc_cliente:  # Ignorar strings vazias
+                        partial_mask = df_issues_normalized.str.contains(disc_cliente, case=False, na=False, regex=False)
+                        partial_masks.append(partial_mask)
+                        if partial_mask.any():
+                            logger.info(f"  ✅ Encontrada correspondência parcial: '{disc_cliente}' em {partial_mask.sum()} issues")
+                
+                # Combinar todas as máscaras parciais
+                if partial_masks:
+                    mask = pd.concat(partial_masks, axis=1).any(axis=1)
         else:
             mask = df_issues['name'].isin(disciplinas_cliente)
         
         filtered_df = df_issues[mask]
         
         logger.info(f"Filtradas {len(filtered_df)} issues de cliente de um total de {len(df_issues)}")
+        if len(filtered_df) == 0 and len(df_issues) > 0:
+            logger.warning(f"⚠️ NENHUMA ISSUE FILTRADA! Verifique se os nomes das disciplinas na planilha correspondem aos nomes no Construflow")
+            logger.warning(f"   Disciplinas configuradas: {disciplinas_cliente}")
+            if 'name' in df_issues.columns:
+                disciplinas_disponiveis = df_issues['name'].dropna().unique().tolist()
+                logger.warning(f"   Disciplinas disponíveis nas issues: {disciplinas_disponiveis}")
+        
         return filtered_df
     
     def get_project_discord_channel(self, project_id: str) -> Optional[str]:
@@ -490,10 +541,11 @@ class WeeklyReportSystem:
         """
         Atualiza o cache para um projeto específico usando queries GraphQL otimizadas.
         Atualiza apenas o projeto solicitado, sem atualizar todos os projetos ativos.
+        Também atualiza o cache do SmartSheet para garantir dados mais recentes.
         
         Args:
             project_id: ID do projeto
-        
+            
         Returns:
             True se a atualização foi bem-sucedida, False caso contrário
         """
@@ -534,6 +586,19 @@ class WeeklyReportSystem:
                         issue_disciplines_data = consolidated_data['issue_disciplines'].to_dict('records')
                         cache.save_construflow_data("issues-disciplines", issue_disciplines_data)
                         logger.info(f"✅ {len(issue_disciplines_data)} relacionamentos issue-discipline salvos via GraphQL consolidado")
+                    
+                    # Atualizar também o cache do SmartSheet para garantir dados mais recentes
+                    smartsheet_id = self.get_project_smartsheet_id(project_id)
+                    if smartsheet_id:
+                        logger.info(f"Atualizando cache do SmartSheet {smartsheet_id} para projeto {project_id}")
+                        try:
+                            sheet_data = self.processor.smartsheet.get_sheet(smartsheet_id, force_refresh=True)
+                            if sheet_data and hasattr(cache, 'save_smartsheet_data'):
+                                cache.save_smartsheet_data(smartsheet_id, project_id, sheet_data)
+                                logger.info(f"✅ Cache do SmartSheet atualizado para projeto {project_id}")
+                        except Exception as e:
+                            logger.warning(f"Erro ao atualizar cache do SmartSheet para projeto {project_id}: {e}")
+                    
                     logger.info(f"🚀 Cache otimizado concluído para projeto {project_id} - 1 query GraphQL")
                     return True
                 else:
@@ -629,15 +694,19 @@ class WeeklyReportSystem:
         mensagem = None
         doc_url = None
         try:
-            # Verificar se o projeto está ativo
+            # Verificar se o projeto está ativo (mas permitir forçar execução se necessário)
             projects_df = self._load_project_config()
             if 'relatoriosemanal_status' in projects_df.columns:
-                project_row = projects_df[projects_df['construflow_id'] == project_id]
+                project_row = projects_df[projects_df['construflow_id'].astype(str) == str(project_id)]
                 if not project_row.empty and 'relatoriosemanal_status' in project_row.columns:
                     ativo = str(project_row['relatoriosemanal_status'].values[0]).lower()
                     if ativo != 'sim':
                         logger.warning(f"Projeto {project_id} não está ativo (relatoriosemanal_status={ativo}). Pulando.")
-                        return False, "", None
+                        # Se estiver em modo quiet ou forçado, ainda assim executar
+                        if not quiet_mode:
+                            return False, "", None
+                        else:
+                            logger.info(f"Executando mesmo com status '{ativo}' (modo forçado)")
 
             # Obter canal Discord e nome do projeto
             discord_channel_id = self.get_project_discord_channel(project_id)
@@ -673,12 +742,26 @@ class WeeklyReportSystem:
                 smartsheet_id = self.get_project_smartsheet_id(project_id)
                 
                 if not skip_cache_update:
-                    # Atualizar o cache para este projeto específico
-                    logger.info(f"Atualizando cache para o projeto {project_id} antes de gerar relatório")
-    
-                    if progress_reporter:
-                        progress_reporter.update("Atualização de cache", "Obtendo dados mais recentes...")      
-                    self._update_project_cache(project_id)
+                    # Verificar se o cache é recente antes de atualizar (otimização de performance)
+                    cache_valid = False
+                    if self.cache_manager:
+                        # Verificar se o cache de issues é válido (menos de 1 hora)
+                        cache_valid = self.cache_manager.is_cache_valid("issues", max_age_hours=1, data_type='construflow')
+                        if cache_valid:
+                            logger.info(f"✅ Cache válido encontrado para o projeto {project_id} (menos de 1 hora). Usando cache existente.")
+                        else:
+                            logger.info(f"⏳ Cache expirado ou não encontrado para o projeto {project_id}. Atualizando...")
+                    
+                    if not cache_valid:
+                        # Atualizar o cache para este projeto específico apenas se necessário
+                        logger.info(f"Atualizando cache para o projeto {project_id} antes de gerar relatório")
+        
+                        if progress_reporter:
+                            progress_reporter.update("Atualização de cache", "Obtendo dados mais recentes...")      
+                        self._update_project_cache(project_id)
+                    else:
+                        if progress_reporter:
+                            progress_reporter.update("Carregando dados", "Usando cache recente...")
                 else:
                     logger.info(f"Pulando atualização de cache para o projeto {project_id} (já atualizado)")
                 
@@ -780,14 +863,32 @@ class WeeklyReportSystem:
                             if 'email_url_capa' in project_row.columns:
                                 image_url = project_row['email_url_capa'].values[0] if pd.notna(project_row['email_url_capa'].values[0]) else None
                                 if image_url and hasattr(self, 'gdrive') and self.gdrive:
-                                    # Extrair file_id da URL e baixar como base64
-                                    file_id = self.gdrive.extract_file_id_from_url(str(image_url))
-                                    if file_id:
-                                        project_image_base64 = self.gdrive.download_file_as_base64(file_id)
-                                        if project_image_base64:
-                                            logger.info(f"Imagem do projeto carregada com sucesso")
+                                    try:
+                                        logger.info(f"📷 URL da imagem de capa: {str(image_url)[:100]}...")
+                                        # Extrair file_id da URL e baixar como base64
+                                        file_id = self.gdrive.extract_file_id_from_url(str(image_url))
+                                        if file_id:
+                                            logger.info(f"🔑 File ID extraído: {file_id}")
+                                            logger.info(f"📥 Tentando baixar imagem do projeto...")
+                                            project_image_base64 = self.gdrive.download_file_as_base64(file_id)
+                                            if project_image_base64:
+                                                logger.info(f"✅ Imagem do projeto carregada com sucesso")
+                                            else:
+                                                logger.warning(f"⚠️ Não foi possível baixar a imagem do projeto.")
+                                                logger.warning(f"   Verifique se o arquivo existe no Google Drive e se as credenciais têm permissão para acessá-lo.")
+                                                logger.warning(f"   File ID: {file_id}")
+                                                logger.warning(f"   URL original: {str(image_url)[:150]}")
                                         else:
-                                            logger.warning(f"Não foi possível baixar a imagem do projeto")
+                                            logger.warning(f"⚠️ Não foi possível extrair o File ID da URL.")
+                                            logger.warning(f"   URL fornecida: {str(image_url)[:150]}")
+                                            logger.warning(f"   Verifique se a URL está no formato correto do Google Drive.")
+                                    except Exception as img_error:
+                                        logger.error(f"❌ Erro ao processar imagem do projeto: {img_error}")
+                                        logger.error(f"   URL da imagem: {str(image_url)[:150] if image_url else 'N/A'}")
+                                        import traceback
+                                        logger.error(f"   Traceback: {traceback.format_exc()}")
+                                elif not image_url:
+                                    logger.debug(f"URL da imagem de capa não configurada para o projeto {project_id}")
                 except Exception as e:
                     logger.warning(f"Erro ao obter URLs e imagem do projeto: {e}")
                 
@@ -846,6 +947,7 @@ class WeeklyReportSystem:
                 
                 # Fazer upload dos arquivos HTML para o Google Drive
                 uploaded_files = {}
+                client_file_id = None  # Inicializar variável
                 if project_folder_id:
                     today_str = datetime.now().strftime("%Y-%m-%d")
                     
@@ -931,7 +1033,17 @@ class WeeklyReportSystem:
                     doc_url=uploaded_files.get('client') if uploaded_files else None
                 )
                 
-                return True, file_path, None
+                # Retornar o link completo do arquivo HTML do cliente no terceiro elemento
+                # para que o report_queue possa capturar o URL
+                drive_file_url = None
+                if uploaded_files.get('client'):
+                    # Usar o link completo do arquivo no Drive
+                    drive_file_url = uploaded_files['client']
+                elif client_file_id:
+                    # Se não temos o link completo mas temos o ID, construir o link
+                    drive_file_url = f"https://drive.google.com/file/d/{client_file_id}/view"
+                
+                return True, file_path, drive_file_url
                     
             except Exception as e:
                 logger.error(f"Erro ao processar projeto {project_id}: {str(e)}", exc_info=True)

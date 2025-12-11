@@ -78,9 +78,9 @@ class DiscordBotAutoChannels:
             # Lista de bots autorizados para executar comandos
             self.authorized_bots = self._load_authorized_bots()
             
-            # Inicializar o sistema de filas com 2 workers por padrão
+            # Inicializar o sistema de filas com 3 workers por padrão (aumentado para melhor performance)
             from report_queue import ReportQueue  # Importação explícita
-            self.queue_system = ReportQueue(self, max_workers=2)
+            self.queue_system = ReportQueue(self, max_workers=3)
             logger.info("Sistema de filas inicializado com sucesso")
             
             # Verificar se a inicialização foi bem sucedida

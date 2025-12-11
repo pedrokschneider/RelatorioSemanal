@@ -97,8 +97,25 @@ class DataProcessor:
                 logger.error(projects_df['id'].tolist())
             return result
         
-        # Obter nome do projeto
-        project_name = project_row['name'].values[0]
+        # Obter nome do projeto - PRIORIDADE: usar nome da planilha, não do Construflow
+        project_name = None
+        try:
+            # Primeiro tentar obter da planilha de configuração
+            projects_df = self.gdrive.load_project_config_from_sheet()
+            if not projects_df.empty and 'construflow_id' in projects_df.columns:
+                projects_df['construflow_id'] = projects_df['construflow_id'].astype(str)
+                planilha_row = projects_df[projects_df['construflow_id'] == str(project_id)]
+                if not planilha_row.empty and 'Projeto - PR' in planilha_row.columns:
+                    project_name = planilha_row['Projeto - PR'].values[0]
+                    logger.info(f"Usando nome da planilha para projeto {project_id}: {project_name}")
+        except Exception as e:
+            logger.warning(f"Erro ao obter nome da planilha: {e}")
+        
+        # Se não encontrou na planilha, usar o nome do Construflow como fallback
+        if not project_name:
+            project_name = project_row['name'].values[0]
+            logger.info(f"Usando nome do Construflow para projeto {project_id}: {project_name}")
+        
         result['project_name'] = project_name
     
         
@@ -116,13 +133,110 @@ class DataProcessor:
             
         if smartsheet_id:
             # Processar dados do Smartsheet
-            tasks_df = self.smartsheet.get_recent_tasks(smartsheet_id)
+            # Forçar atualização do cache para garantir dados mais recentes
+            tasks_df = self.smartsheet.get_recent_tasks(smartsheet_id, force_refresh=True)
             if not tasks_df.empty:
                 # Filtrar tarefas que devem ser removidas do relatório
-                # Excluir tarefas com "INT - Remover Relatório" na coluna "Caminho crítico - Marco"
-                if 'Caminho crítico - Marco' in tasks_df.columns:
-                    tasks_df = tasks_df[tasks_df['Caminho crítico - Marco'] != 'INT - Remover Relatório']
-                    logger.info(f"Filtradas tarefas com 'INT - Remover Relatório' do relatório")
+                # Procurar por coluna "Caminho crítico - Marco" (com variações possíveis)
+                # Excluir tarefas com "INT - Remover Relatório" ou variações similares
+                
+                # Função para normalizar valores (remover espaços extras, converter para lowercase, remover acentos)
+                def normalize_remove_value(val):
+                    if pd.isna(val):
+                        return None
+                    import unicodedata
+                    import re
+                    text = str(val).strip()
+                    # Normalizar unicode (remover acentos)
+                    text = unicodedata.normalize('NFD', text)
+                    text = ''.join(c for c in text if unicodedata.category(c) != 'Mn')
+                    # Converter para lowercase e remover espaços múltiplos
+                    text = re.sub(r'\s+', ' ', text.lower().strip())
+                    return text
+                
+                # Procurar coluna com nome similar (case-insensitive, tolerante a espaços)
+                critical_path_column = None
+                possible_names = [
+                    'Caminho crítico - Marco',
+                    'Caminho Critico - Marco',
+                    'Caminho crítico-Marco',
+                    'Caminho Critico-Marco',
+                    'Caminho crítico Marco',
+                    'Caminho Critico Marco'
+                ]
+                
+                # Normalizar nomes de colunas para comparação
+                def normalize_column_name(name):
+                    import unicodedata
+                    import re
+                    text = str(name).strip()
+                    text = unicodedata.normalize('NFD', text)
+                    text = ''.join(c for c in text if unicodedata.category(c) != 'Mn')
+                    text = re.sub(r'\s+', ' ', text.lower().strip())
+                    return text
+                
+                # Procurar coluna correspondente
+                for col in tasks_df.columns:
+                    normalized_col = normalize_column_name(col)
+                    for possible_name in possible_names:
+                        if normalized_col == normalize_column_name(possible_name):
+                            critical_path_column = col
+                            break
+                    if critical_path_column:
+                        break
+                
+                # Se não encontrou exata, procurar por coluna que contenha "caminho" e "critico" ou "critico" e "marco"
+                if not critical_path_column:
+                    for col in tasks_df.columns:
+                        normalized_col = normalize_column_name(col)
+                        if 'caminho' in normalized_col and ('critico' in normalized_col or 'critico' in normalized_col) and 'marco' in normalized_col:
+                            critical_path_column = col
+                            logger.info(f"Coluna encontrada por busca parcial: '{col}' (normalizada: '{normalized_col}')")
+                            break
+                
+                if critical_path_column:
+                    logger.info(f"Usando coluna '{critical_path_column}' para filtrar tarefas a remover")
+                    
+                    # Valores possíveis para remoção (case-insensitive, com/sem acentos)
+                    remove_values = [
+                        'int - remover relatório',
+                        'int - remover relatorio',
+                        'int-remover relatório',
+                        'int-remover relatorio',
+                        'remover relatório',
+                        'remover relatorio',
+                        'remover relatorios',
+                        'remover relatórios'
+                    ]
+                    
+                    # Contar tarefas antes do filtro
+                    total_before = len(tasks_df)
+                    
+                    # Filtrar tarefas que NÃO têm nenhum dos valores de remoção
+                    def should_keep_task(val):
+                        normalized = normalize_remove_value(val)
+                        if normalized is None:
+                            return True  # Manter tarefas sem valor
+                        # Verificar se corresponde a algum valor de remoção
+                        for remove_val in remove_values:
+                            if normalized == remove_val or normalized.startswith(remove_val) or remove_val in normalized:
+                                return False  # Remover esta tarefa
+                        return True  # Manter esta tarefa
+                    
+                    mask = tasks_df[critical_path_column].apply(should_keep_task)
+                    tasks_df = tasks_df[mask]
+                    
+                    removed_count = total_before - len(tasks_df)
+                    logger.info(f"Filtradas {removed_count} tarefas com tag de remoção. Tarefas restantes: {len(tasks_df)} de {total_before}")
+                    
+                    # Log de debug: mostrar alguns valores únicos encontrados na coluna (após filtro)
+                    if len(tasks_df) > 0 and critical_path_column in tasks_df.columns:
+                        sample_values = tasks_df[critical_path_column].dropna().unique()[:5]
+                        if len(sample_values) > 0:
+                            logger.debug(f"Valores de exemplo na coluna '{critical_path_column}' (após filtro): {list(sample_values)}")
+                else:
+                    logger.warning(f"Coluna 'Caminho crítico - Marco' não encontrada. Colunas disponíveis: {', '.join(tasks_df.columns.tolist()[:10])}")
+                    logger.warning("Tarefas não serão filtradas por tag de remoção.")
                 
                 # Manter todas as tarefas para o gerador decidir o que é concluído
                 all_tasks = [row._asdict() if hasattr(row, '_asdict') else row.to_dict() for _, row in tasks_df.iterrows()]
@@ -288,24 +402,75 @@ class DataProcessor:
             except Exception as e:
                 logger.warning(f"Erro ao obter disciplinas do cliente da planilha: {e}")
         
+        import re
+        import unicodedata
+        
+        def normalize_text(text):
+            """Normaliza texto removendo acentos, espaços extras e convertendo para lowercase."""
+            if not text or pd.isna(text):
+                return ""
+            # Converter para string e remover espaços extras
+            text = str(text).strip()
+            # Normalizar unicode (NFD = decomposed form)
+            text = unicodedata.normalize('NFD', text)
+            # Remover acentos
+            text = ''.join(c for c in text if unicodedata.category(c) != 'Mn')
+            # Converter para lowercase e remover espaços múltiplos
+            text = re.sub(r'\s+', ' ', text.lower().strip())
+            return text
+        
         if not disciplinas_cliente or 'name' not in df_issues.columns:
             logger.warning(f"Não foi possível filtrar issues para o cliente. Disciplinas: {disciplinas_cliente}")
             return df_issues
         
-        # Normalizar disciplinas do cliente para comparação case-insensitive
-        disciplinas_cliente_normalized = [d.strip().lower() for d in disciplinas_cliente if d.strip()]
+        # Normalizar disciplinas do cliente (remover acentos, espaços, case-insensitive)
+        disciplinas_cliente_normalized = [normalize_text(d) for d in disciplinas_cliente if d and str(d).strip()]
+        logger.info(f"Filtrando por disciplinas do cliente (originais): {disciplinas_cliente}")
         logger.info(f"Filtrando por disciplinas do cliente (normalizadas): {disciplinas_cliente_normalized}")
         
-        # Filtrar pelas disciplinas do cliente (comparação case-insensitive)
+        # Verificar quais disciplinas únicas existem nas issues
+        if not df_issues.empty and 'name' in df_issues.columns:
+            disciplinas_issues = df_issues['name'].dropna().unique()
+            disciplinas_issues_normalized = [normalize_text(d) for d in disciplinas_issues]
+            logger.info(f"Disciplinas encontradas nas issues (originais): {list(disciplinas_issues)}")
+            logger.info(f"Disciplinas encontradas nas issues (normalizadas): {disciplinas_issues_normalized}")
+        
+        # Filtrar pelas disciplinas do cliente (comparação normalizada com correspondência parcial)
         if df_issues['name'].dtype == 'object':
             # Normalizar nomes das issues para comparação
-            mask = df_issues['name'].astype(str).str.strip().str.lower().isin(disciplinas_cliente_normalized)
+            df_issues_normalized = df_issues['name'].astype(str).apply(normalize_text)
+            
+            # Primeiro tentar correspondência exata
+            mask = df_issues_normalized.isin(disciplinas_cliente_normalized)
+            
+            # Se não encontrou correspondência exata, tentar correspondência parcial (contém)
+            if not mask.any() and disciplinas_cliente_normalized:
+                logger.info(f"Tentando correspondência parcial para disciplinas do cliente...")
+                # Criar máscara para cada disciplina do cliente
+                partial_masks = []
+                for disc_cliente in disciplinas_cliente_normalized:
+                    if disc_cliente:  # Ignorar strings vazias
+                        partial_mask = df_issues_normalized.str.contains(disc_cliente, case=False, na=False, regex=False)
+                        partial_masks.append(partial_mask)
+                        if partial_mask.any():
+                            logger.info(f"  ✅ Encontrada correspondência parcial: '{disc_cliente}' em {partial_mask.sum()} issues")
+                
+                # Combinar todas as máscaras parciais
+                if partial_masks:
+                    mask = pd.concat(partial_masks, axis=1).any(axis=1)
         else:
             mask = df_issues['name'].isin(disciplinas_cliente)
         
         filtered_df = df_issues[mask]
         
         logger.info(f"Filtradas {len(filtered_df)} issues de cliente de um total de {len(df_issues)}")
+        if len(filtered_df) == 0 and len(df_issues) > 0:
+            logger.warning(f"⚠️ NENHUMA ISSUE FILTRADA! Verifique se os nomes das disciplinas na planilha correspondem aos nomes no Construflow")
+            logger.warning(f"   Disciplinas configuradas: {disciplinas_cliente}")
+            if 'name' in df_issues.columns:
+                disciplinas_disponiveis = df_issues['name'].dropna().unique().tolist()
+                logger.warning(f"   Disciplinas disponíveis nas issues: {disciplinas_disponiveis}")
+        
         return filtered_df
     
     def _get_system_instance(self):

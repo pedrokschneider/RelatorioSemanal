@@ -370,9 +370,65 @@ class GoogleDriveManager:
                 return None
         
         try:
-            # Baixar o arquivo
-            request = self.drive_service.files().get_media(fileId=file_id)
-            file_content = request.execute()
+            # Primeiro, verificar se o arquivo existe e obter metadados
+            file_metadata = None
+            try:
+                file_metadata = self.drive_service.files().get(
+                    fileId=file_id,
+                    fields='id,name,mimeType,thumbnailLink,webContentLink',
+                    supportsAllDrives=True  # Importante para arquivos em pastas compartilhadas
+                ).execute()
+                logger.info(f"Arquivo encontrado: {file_metadata.get('name', 'sem nome')} (tipo: {file_metadata.get('mimeType', 'desconhecido')})")
+            except HttpError as meta_error:
+                error_details = meta_error.error_details if hasattr(meta_error, 'error_details') else []
+                error_reason = error_details[0].get('reason', 'unknown') if error_details else 'unknown'
+                
+                if meta_error.resp.status == 404:
+                    logger.error(f"❌ Arquivo não encontrado no Google Drive")
+                    logger.error(f"   File ID: {file_id}")
+                    logger.error(f"   Motivo: {error_reason}")
+                    logger.error(f"   Possíveis causas:")
+                    logger.error(f"   1. O arquivo foi deletado ou movido")
+                    logger.error(f"   2. O ID do arquivo está incorreto na planilha")
+                    logger.error(f"   3. As credenciais não têm permissão para acessar o arquivo")
+                    logger.error(f"   4. O arquivo está em uma pasta compartilhada sem permissões adequadas")
+                    logger.error(f"   Ação sugerida: Verifique a URL na planilha e certifique-se de que o arquivo existe e está acessível")
+                    logger.error(f"   IMPORTANTE: Compartilhe o arquivo com a conta de serviço:")
+                    logger.error(f"   📧 powerbi@e-caldron-447117-q8.iam.gserviceaccount.com")
+                    logger.error(f"   Como fazer: Abra o arquivo no Google Drive > Compartilhar > Adicione o email acima")
+                    return None
+                elif meta_error.resp.status == 403:
+                    logger.error(f"❌ Sem permissão para acessar o arquivo")
+                    logger.error(f"   File ID: {file_id}")
+                    logger.error(f"   Motivo: {error_reason}")
+                    logger.error(f"   Verifique se as credenciais têm permissão para acessar este arquivo")
+                    logger.error(f"   Ação sugerida: Compartilhe o arquivo com a conta de serviço:")
+                    logger.error(f"   📧 powerbi@e-caldron-447117-q8.iam.gserviceaccount.com")
+                    logger.error(f"   Como fazer: Abra o arquivo no Google Drive > Compartilhar > Adicione o email acima")
+                    logger.error(f"   Permissão necessária: 'Visualizador' ou superior")
+                    return None
+                else:
+                    logger.warning(f"⚠️ Erro ao obter metadados do arquivo {file_id}: {meta_error}")
+                    logger.warning(f"   Status: {meta_error.resp.status}, Motivo: {error_reason}")
+                    # Continuar tentando baixar mesmo assim
+            
+            # Baixar o arquivo (usar supportsAllDrives para arquivos compartilhados)
+            try:
+                request = self.drive_service.files().get_media(fileId=file_id)
+                file_content = request.execute()
+            except HttpError as download_error:
+                if download_error.resp.status == 404:
+                    logger.error(f"❌ Erro ao baixar arquivo: Arquivo não encontrado (404)")
+                    logger.error(f"   File ID: {file_id}")
+                    logger.error(f"   Verifique se o arquivo existe e está compartilhado com a conta de serviço")
+                    return None
+                elif download_error.resp.status == 403:
+                    logger.error(f"❌ Erro ao baixar arquivo: Sem permissão (403)")
+                    logger.error(f"   File ID: {file_id}")
+                    logger.error(f"   Compartilhe o arquivo com a conta de serviço do Google")
+                    return None
+                else:
+                    raise  # Re-raise se for outro tipo de erro
             
             # Processar a imagem apenas se Pillow estiver disponível
             if PIL_AVAILABLE:
@@ -410,26 +466,34 @@ class GoogleDriveManager:
                     # Se não for uma imagem, tentar retornar o arquivo original
                     base64_content = base64.b64encode(file_content).decode('utf-8')
                     
-                    # Determinar o tipo MIME
-                    file_metadata = self.drive_service.files().get(
-                        fileId=file_id,
-                        fields='mimeType'
-                    ).execute()
+                    # Usar metadados já obtidos ou tentar obter novamente
+                    try:
+                        if 'file_metadata' not in locals():
+                            file_metadata = self.drive_service.files().get(
+                                fileId=file_id,
+                                fields='mimeType'
+                            ).execute()
+                        mime_type = file_metadata.get('mimeType', 'application/octet-stream')
+                    except:
+                        mime_type = 'image/jpeg'  # Fallback para JPEG
                     
-                    mime_type = file_metadata.get('mimeType', 'application/octet-stream')
                     return f"data:{mime_type};base64,{base64_content}"
             else:
                 # Se Pillow não estiver disponível, retornar o arquivo original
                 logger.warning("Pillow não disponível, retornando imagem sem processamento")
                 base64_content = base64.b64encode(file_content).decode('utf-8')
                 
-                # Determinar o tipo MIME
-                file_metadata = self.drive_service.files().get(
-                    fileId=file_id,
-                    fields='mimeType'
-                ).execute()
+                # Usar metadados já obtidos ou tentar obter novamente
+                try:
+                    if 'file_metadata' not in locals():
+                        file_metadata = self.drive_service.files().get(
+                            fileId=file_id,
+                            fields='mimeType'
+                        ).execute()
+                    mime_type = file_metadata.get('mimeType', 'application/octet-stream')
+                except:
+                    mime_type = 'image/jpeg'  # Fallback para JPEG
                 
-                mime_type = file_metadata.get('mimeType', 'application/octet-stream')
                 return f"data:{mime_type};base64,{base64_content}"
             
         except HttpError as e:

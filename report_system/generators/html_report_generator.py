@@ -106,7 +106,8 @@ class HTMLReportGenerator:
                                project_image_base64: Optional[str] = None,
                                email_url_gant: Optional[str] = None,
                                email_url_disciplina: Optional[str] = None,
-                               show_dashboard_button: bool = True) -> str:
+                               show_dashboard_button: bool = True,
+                               schedule_days: Optional[int] = None) -> str:
         """
         Gera relatório HTML para o cliente.
         
@@ -117,6 +118,7 @@ class HTMLReportGenerator:
             email_url_gant: URL do cronograma Gantt (opcional)
             email_url_disciplina: URL do relatório de disciplinas (opcional)
             show_dashboard_button: Se True, exibe o botão do Dashboard de Indicadores
+            schedule_days: Número de dias para o cronograma (None = padrão de 15 dias)
             
         Returns:
             HTML do relatório
@@ -132,14 +134,14 @@ class HTMLReportGenerator:
         # Obter dados
         client_issues = self._get_client_issues(data)
         delays = self._get_delays_client(data)
-        schedule = self._get_schedule_client(data)
+        schedule = self._get_schedule_client(data, schedule_days=schedule_days)
         completed = self._get_completed_tasks_client(data)
         
         # Gerar seções HTML
         pendencias_html = self._generate_pendencias_section(client_issues, project_id)
         atrasos_html = self._generate_atrasos_client_section(delays)
-        cronograma_html, _ = self._generate_cronograma_client_section(schedule, email_url_gant, email_url_disciplina)
-        concluidas_html = self._generate_concluidas_section(completed)
+        cronograma_html, _ = self._generate_cronograma_client_section(schedule, email_url_gant, email_url_disciplina, schedule_days=schedule_days)
+        concluidas_html = self._generate_concluidas_section(completed, is_client_report=True)
         
         # Contagens para os badges
         count_pendencias = len(client_issues) if client_issues else 0
@@ -196,7 +198,8 @@ class HTMLReportGenerator:
     def generate_team_report(self, data: Dict[str, Any], project_id: str = None,
                              project_image_base64: Optional[str] = None,
                              email_url_gant: Optional[str] = None,
-                             email_url_disciplina: Optional[str] = None) -> str:
+                             email_url_disciplina: Optional[str] = None,
+                             schedule_days: Optional[int] = None) -> str:
         """
         Gera relatório HTML para a equipe/projetistas.
         
@@ -204,6 +207,7 @@ class HTMLReportGenerator:
             data: Dados processados do projeto
             project_id: ID do projeto (opcional)
             project_image_base64: Imagem do projeto em base64 (opcional)
+            schedule_days: Número de dias para o cronograma (None = padrão de 15 dias)
             
         Returns:
             HTML do relatório
@@ -219,10 +223,10 @@ class HTMLReportGenerator:
         # Obter dados
         completed = self._get_completed_tasks(data)
         delays = self._get_delays_team(data)
-        schedule = self._get_schedule_team(data)
+        schedule = self._get_schedule_team(data, schedule_days=schedule_days)
         
         # Gerar seções HTML
-        concluidas_html = self._generate_concluidas_section(completed)
+        concluidas_html = self._generate_concluidas_section(completed, is_client_report=False)
         atrasos_html = self._generate_atrasos_team_section(delays)
         cronograma_html, _ = self._generate_cronograma_team_section(schedule, email_url_gant, email_url_disciplina)
         
@@ -515,7 +519,7 @@ class HTMLReportGenerator:
     def _get_completed_tasks(self, data: Dict[str, Any]) -> Dict[str, List[Dict]]:
         """
         Obtém tarefas concluídas agrupadas por disciplina.
-        Para o relatório da equipe - mostra todas as disciplinas, EXCETO 'Otus'.
+        Para o relatório da equipe - mostra todas as disciplinas, EXCETO 'Cliente' e 'Otus' (que aparecem no relatório do cliente).
         """
         smartsheet_data = data.get('smartsheet_data', {})
         if not smartsheet_data:
@@ -526,6 +530,7 @@ class HTMLReportGenerator:
         week_ago = today - timedelta(days=7)
         
         completed_by_discipline = {}
+        tasks_cliente_otus = 0
         for task in all_tasks:
             if not isinstance(task, dict):
                 continue
@@ -545,8 +550,9 @@ class HTMLReportGenerator:
                     pass
             
             discipline = task.get('Disciplina', task.get('Discipline', 'Sem Disciplina')) or 'Sem Disciplina'
-            # Excluir 'Otus' do relatório da equipe (será mostrado no relatório do cliente)
-            if discipline.lower() == 'otus':
+            # Excluir 'Cliente' e 'Otus' do relatório da equipe (serão mostrados no relatório do cliente)
+            if discipline.lower() in ['cliente', 'otus']:
+                tasks_cliente_otus += 1
                 continue
             
             if discipline not in completed_by_discipline:
@@ -554,7 +560,9 @@ class HTMLReportGenerator:
             completed_by_discipline[discipline].append(task)
         
         total_completed = sum(len(tasks) for tasks in completed_by_discipline.values())
-        logger.info(f"Tarefas concluídas: {total_completed} em {len(completed_by_discipline)} disciplinas")
+        logger.info(f"Tarefas concluídas da equipe: {total_completed} em {len(completed_by_discipline)} disciplinas")
+        if tasks_cliente_otus > 0:
+            logger.info(f"  - {tasks_cliente_otus} tarefas concluídas de 'Cliente' e 'Otus' excluídas (aparecem no relatório do cliente)")
         return completed_by_discipline
     
     def _get_completed_tasks_client(self, data: Dict[str, Any]) -> Dict[str, List[Dict]]:
@@ -572,13 +580,17 @@ class HTMLReportGenerator:
             logger.warning("⚠️ Nenhuma tarefa encontrada no SmartSheet para tarefas concluídas")
             return {}
         
-        today = datetime.now()
+        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
         week_ago = today - timedelta(days=7)
         
         completed_by_discipline = {}
         tasks_nao_concluidas = 0
         tasks_fora_periodo = 0
         tasks_outra_disciplina = 0
+        tasks_sem_data = 0
+        tasks_hoje = 0
+        
+        logger.info(f"Filtrando tarefas concluídas: período de {week_ago.strftime('%d/%m/%Y')} até {today.strftime('%d/%m/%Y')} (inclusive)")
         
         for task in all_tasks:
             if not isinstance(task, dict):
@@ -591,14 +603,25 @@ class HTMLReportGenerator:
             
             # Verificar se foi concluída na última semana (se tiver data)
             end_date_str = task.get('Data Término', task.get('Data de Término', task.get('End Date', '')))
+            task_name = task.get('Nome da Tarefa', task.get('Task Name', 'Sem nome'))
+            
             if end_date_str:
                 try:
                     end_date = self._parse_date(end_date_str)
-                    if end_date and end_date < week_ago:
-                        tasks_fora_periodo += 1
-                        continue  # Ignorar tarefas concluídas há mais de uma semana
-                except:
-                    pass
+                    if end_date:
+                        # Normalizar para comparar apenas a data (sem hora)
+                        end_date_normalized = end_date.replace(hour=0, minute=0, second=0, microsecond=0)
+                        # Incluir tarefas concluídas desde week_ago até hoje (inclusive)
+                        if end_date_normalized < week_ago:
+                            tasks_fora_periodo += 1
+                            continue  # Ignorar tarefas concluídas há mais de uma semana
+                        elif end_date_normalized == today:
+                            tasks_hoje += 1
+                except Exception as e:
+                    logger.debug(f"Erro ao parsear data '{end_date_str}' da tarefa '{task_name}': {e}")
+            else:
+                tasks_sem_data += 1
+                # Tarefas sem data são incluídas se estiverem com status "feito"
             
             discipline = task.get('Disciplina', task.get('Discipline', 'Sem Disciplina')) or 'Sem Disciplina'
             # Filtrar apenas 'Cliente' e 'Otus'
@@ -616,6 +639,10 @@ class HTMLReportGenerator:
             logger.info(f"  - {tasks_nao_concluidas} tarefas não concluídas")
         if tasks_fora_periodo > 0:
             logger.info(f"  - {tasks_fora_periodo} tarefas concluídas há mais de uma semana")
+        if tasks_sem_data > 0:
+            logger.info(f"  - {tasks_sem_data} tarefas sem data (incluídas)")
+        if tasks_hoje > 0:
+            logger.info(f"  - {tasks_hoje} tarefas concluídas hoje")
         if tasks_outra_disciplina > 0:
             logger.info(f"  - {tasks_outra_disciplina} tarefas de outras disciplinas (não 'Cliente' ou 'Otus')")
         
@@ -664,7 +691,7 @@ class HTMLReportGenerator:
     def _get_delays_team(self, data: Dict[str, Any]) -> List[Dict]:
         """
         Obtém atrasos para relatório da equipe.
-        Retorna todas as tarefas atrasadas, EXCETO 'Otus' (que aparece no relatório do cliente).
+        Retorna todas as tarefas atrasadas, EXCETO 'Cliente' e 'Otus' (que aparecem no relatório do cliente).
         """
         smartsheet_data = data.get('smartsheet_data', {})
         if not smartsheet_data:
@@ -672,20 +699,29 @@ class HTMLReportGenerator:
         
         delayed_tasks = smartsheet_data.get('delayed_tasks', [])
         
-        # Excluir 'Otus' do relatório da equipe
+        # Excluir 'Cliente' e 'Otus' do relatório da equipe
         team_delays = []
+        tasks_cliente_otus = 0
         for task in delayed_tasks:
             disciplina = str(task.get('Disciplina', task.get('Discipline', ''))).strip().lower()
-            if disciplina != 'otus':
+            if disciplina not in ['cliente', 'otus']:
                 team_delays.append(task)
+            else:
+                tasks_cliente_otus += 1
         
         logger.info(f"Atrasos da equipe: {len(team_delays)} tarefas atrasadas")
+        if tasks_cliente_otus > 0:
+            logger.info(f"  - {tasks_cliente_otus} tarefas atrasadas de 'Cliente' e 'Otus' excluídas (aparecem no relatório do cliente)")
         return team_delays
     
-    def _get_schedule_client(self, data: Dict[str, Any]) -> List[Dict]:
+    def _get_schedule_client(self, data: Dict[str, Any], schedule_days: Optional[int] = None) -> List[Dict]:
         """
         Obtém cronograma para o cliente (entregas importantes).
         Filtra tarefas do SmartSheet onde Disciplina = 'Cliente' ou 'Otus' e que estão programadas.
+        
+        Args:
+            data: Dados processados do projeto
+            schedule_days: Número de dias para o cronograma (None = padrão de 15 dias)
         """
         smartsheet_data = data.get('smartsheet_data', {})
         if not smartsheet_data:
@@ -697,8 +733,11 @@ class HTMLReportGenerator:
             logger.warning("⚠️ Nenhuma tarefa encontrada no SmartSheet")
             return []
         
-        today = datetime.now()
-        future_cutoff = today + timedelta(days=30)
+        # Usar schedule_days se fornecido, senão usar padrão de 15 dias
+        days = schedule_days if schedule_days is not None and schedule_days > 0 else 15
+        
+        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        future_cutoff = today + timedelta(days=days)
         
         # Log: mostrar disciplinas únicas encontradas no SmartSheet
         disciplinas_encontradas = set()
@@ -732,21 +771,45 @@ class HTMLReportGenerator:
                 tasks_concluidas += 1
                 continue
             
-            # Verificar data
-            task_date_str = task.get('Data Término', task.get('Data de Término', task.get('End Date', '')))
-            if not task_date_str:
+            # Verificar datas: incluir tarefas que INICIAM ou TERMINAM no período
+            task_start_str = task.get('Data Inicio', task.get('Data de Início', task.get('Start Date', '')))
+            task_end_str = task.get('Data Término', task.get('Data de Término', task.get('End Date', '')))
+            
+            if not task_start_str and not task_end_str:
                 tasks_sem_data += 1
                 continue
             
-            try:
-                task_date = self._parse_date(task_date_str)
-                if task_date and task_date >= today and task_date <= future_cutoff:
-                    client_schedule.append(task)
-                else:
-                    tasks_fora_periodo += 1
-            except:
-                tasks_sem_data += 1
-                continue
+            # Verificar se a tarefa inicia ou termina no período
+            task_in_period = False
+            start_date = None
+            end_date = None
+            
+            if task_start_str:
+                try:
+                    start_date = self._parse_date(task_start_str)
+                    if start_date:
+                        # Normalizar para comparar apenas a data (sem hora)
+                        start_date_normalized = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
+                        if start_date_normalized >= today and start_date_normalized <= future_cutoff:
+                            task_in_period = True
+                except:
+                    pass
+            
+            if task_end_str:
+                try:
+                    end_date = self._parse_date(task_end_str)
+                    if end_date:
+                        # Normalizar para comparar apenas a data (sem hora)
+                        end_date_normalized = end_date.replace(hour=0, minute=0, second=0, microsecond=0)
+                        if end_date_normalized >= today and end_date_normalized <= future_cutoff:
+                            task_in_period = True
+                except:
+                    pass
+            
+            if task_in_period:
+                client_schedule.append(task)
+            else:
+                tasks_fora_periodo += 1
         
         # Ordenar por data
         client_schedule.sort(key=lambda x: self._parse_date(x.get('Data Término', x.get('Data de Término', x.get('End Date', '')))) or datetime.max)
@@ -759,43 +822,76 @@ class HTMLReportGenerator:
         if tasks_sem_data > 0:
             logger.info(f"  - {tasks_sem_data} tarefas sem data de término")
         if tasks_fora_periodo > 0:
-            logger.info(f"  - {tasks_fora_periodo} tarefas fora do período (próximos 30 dias)")
+            logger.info(f"  - {tasks_fora_periodo} tarefas fora do período (próximos {days} dias)")
         
         return client_schedule
     
-    def _get_schedule_team(self, data: Dict[str, Any]) -> Dict[str, Dict[str, List]]:
+    def _get_schedule_team(self, data: Dict[str, Any], schedule_days: Optional[int] = None) -> Dict[str, Dict[str, List]]:
         """
         Obtém cronograma detalhado para a equipe.
-        Exclui disciplinas 'Otus' (que aparecem no relatório do cliente).
+        Exclui disciplinas 'Cliente' e 'Otus' (que aparecem no relatório do cliente).
+        
+        Args:
+            data: Dados processados do projeto
+            schedule_days: Número de dias para o cronograma (None = padrão de 15 dias)
         """
         smartsheet_data = data.get('smartsheet_data', {})
         if not smartsheet_data:
             return {}
         
         all_tasks = smartsheet_data.get('all_tasks', [])
-        today = datetime.now()
-        future_cutoff = today + timedelta(days=30)
+        
+        # Usar schedule_days se fornecido, senão usar padrão de 15 dias
+        days = schedule_days if schedule_days is not None and schedule_days > 0 else 15
+        
+        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        future_cutoff = today + timedelta(days=days)
         
         schedule = {}
+        tasks_cliente_otus = 0
         for task in all_tasks:
             if not isinstance(task, dict):
                 continue
             
-            # Verificar data
-            task_date_str = task.get('Data Término', task.get('Data de Término', ''))
-            if not task_date_str:
-                continue
-            
-            try:
-                task_date = self._parse_date(task_date_str)
-                if not task_date or task_date < today or task_date > future_cutoff:
-                    continue
-            except:
-                continue
-            
             discipline = task.get('Disciplina', 'Sem Disciplina') or 'Sem Disciplina'
-            # Excluir 'Otus' do relatório da equipe (será mostrado no relatório do cliente)
-            if discipline.lower() == 'otus':
+            # Excluir 'Cliente' e 'Otus' do relatório da equipe (serão mostrados no relatório do cliente)
+            if discipline.lower() in ['cliente', 'otus']:
+                tasks_cliente_otus += 1
+                continue
+            
+            # Verificar datas: incluir tarefas que INICIAM ou TERMINAM no período
+            task_start_str = task.get('Data Inicio', task.get('Data de Início', task.get('Start Date', '')))
+            task_end_str = task.get('Data Término', task.get('Data de Término', task.get('End Date', '')))
+            
+            if not task_start_str and not task_end_str:
+                continue
+            
+            # Verificar se a tarefa inicia ou termina no período
+            task_in_period = False
+            
+            if task_start_str:
+                try:
+                    start_date = self._parse_date(task_start_str)
+                    if start_date:
+                        # Normalizar para comparar apenas a data (sem hora)
+                        start_date_normalized = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
+                        if start_date_normalized >= today and start_date_normalized <= future_cutoff:
+                            task_in_period = True
+                except:
+                    pass
+            
+            if task_end_str:
+                try:
+                    end_date = self._parse_date(task_end_str)
+                    if end_date:
+                        # Normalizar para comparar apenas a data (sem hora)
+                        end_date_normalized = end_date.replace(hour=0, minute=0, second=0, microsecond=0)
+                        if end_date_normalized >= today and end_date_normalized <= future_cutoff:
+                            task_in_period = True
+                except:
+                    pass
+            
+            if not task_in_period:
                 continue
             
             status = str(task.get('Status', '')).lower().strip()
@@ -807,6 +903,11 @@ class HTMLReportGenerator:
                 schedule[discipline]['a_iniciar'].append(task)
             else:
                 schedule[discipline]['programadas'].append(task)
+        
+        total_tasks = sum(len(tasks) for disc in schedule.values() for tasks in disc.values())
+        logger.info(f"Cronograma da equipe: {total_tasks} tarefas programadas em {len(schedule)} disciplinas")
+        if tasks_cliente_otus > 0:
+            logger.info(f"  - {tasks_cliente_otus} tarefas de 'Cliente' e 'Otus' excluídas (aparecem no relatório do cliente)")
         
         return schedule
     
@@ -998,10 +1099,18 @@ class HTMLReportGenerator:
         
         return html
     
-    def _generate_concluidas_section(self, completed: Dict[str, List[Dict]]) -> str:
-        """Gera HTML da seção de atividades concluídas - Design profissional Otus."""
+    def _generate_concluidas_section(self, completed: Dict[str, List[Dict]], is_client_report: bool = True) -> str:
+        """Gera HTML da seção de atividades concluídas - Design profissional Otus.
+        
+        Args:
+            completed: Dicionário com tarefas concluídas agrupadas por disciplina
+            is_client_report: Se True, é relatório do cliente (menciona Cliente e Otus). Se False, é relatório da equipe.
+        """
         if not completed:
-            return '<p style="margin:0;font-family:\'Source Sans Pro\',sans-serif;font-size:14px;color:#666;">✓ Nenhuma atividade concluída das disciplinas <strong>Cliente</strong> e <strong>Otus</strong> no período (últimos 7 dias).</p>'
+            if is_client_report:
+                return '<p style="margin:0;font-family:\'Source Sans Pro\',sans-serif;font-size:14px;color:#666;">✓ Nenhuma atividade concluída das disciplinas <strong>Cliente</strong> e <strong>Otus</strong> no período (últimos 7 dias).</p>'
+            else:
+                return '<p style="margin:0;font-family:\'Source Sans Pro\',sans-serif;font-size:14px;color:#666;">✓ Nenhuma atividade concluída no período (últimos 7 dias).</p>'
         
         html = ""
         for discipline, tasks in completed.items():
@@ -1120,14 +1229,22 @@ class HTMLReportGenerator:
     
     def _generate_cronograma_client_section(self, schedule: List[Dict], 
                                             email_url_gant: Optional[str] = None,
-                                            email_url_disciplina: Optional[str] = None) -> tuple:
+                                            email_url_disciplina: Optional[str] = None,
+                                            schedule_days: Optional[int] = None) -> tuple:
         """Gera HTML da seção de cronograma para cliente - Design profissional Otus.
+        
+        Args:
+            schedule: Lista de tarefas do cronograma
+            email_url_gant: URL do cronograma Gantt (opcional)
+            email_url_disciplina: URL do relatório de disciplinas (opcional)
+            schedule_days: Número de dias para o cronograma (None = padrão de 15 dias)
         
         Returns:
             Tupla (html_content, buttons_html) onde buttons_html pode ser vazio
         """
+        days = schedule_days if schedule_days is not None and schedule_days > 0 else 15
         if not schedule:
-            html = '<p style="margin:0;font-family:\'Source Sans Pro\',sans-serif;font-size:14px;color:#666;">✓ Nenhuma atividade prevista das disciplinas <strong>Cliente</strong> e <strong>Otus</strong> para as próximas 4 semanas.</p>'
+            html = f'<p style="margin:0;font-family:\'Source Sans Pro\',sans-serif;font-size:14px;color:#666;">✓ Nenhuma atividade prevista das disciplinas <strong>Cliente</strong> e <strong>Otus</strong> para os próximos {days} dias.</p>'
         else:
             # Agrupar por disciplina
             by_discipline = {}
@@ -1240,7 +1357,8 @@ class HTMLReportGenerator:
                     project_id: str = None, project_image_base64: Optional[str] = None,
                     email_url_gant: Optional[str] = None,
                     email_url_disciplina: Optional[str] = None,
-                    show_dashboard_button: bool = True) -> Dict[str, str]:
+                    show_dashboard_button: bool = True,
+                    schedule_days: Optional[int] = None) -> Dict[str, str]:
         """
         Salva os dois relatórios HTML (cliente e equipe).
         
@@ -1252,6 +1370,7 @@ class HTMLReportGenerator:
             email_url_gant: URL do cronograma Gantt (opcional)
             email_url_disciplina: URL do relatório de disciplinas (opcional)
             show_dashboard_button: Se True, exibe o botão do Dashboard de Indicadores no relatório do cliente
+            schedule_days: Número de dias para o cronograma (None = padrão de 15 dias)
             
         Returns:
             Dicionário com caminhos dos arquivos salvos
@@ -1263,7 +1382,7 @@ class HTMLReportGenerator:
         paths = {}
         
         # Gerar e salvar relatório do cliente
-        client_html = self.generate_client_report(data, project_id, project_image_base64, email_url_gant, email_url_disciplina, show_dashboard_button)
+        client_html = self.generate_client_report(data, project_id, project_image_base64, email_url_gant, email_url_disciplina, show_dashboard_button, schedule_days=schedule_days)
         client_filename = f"Email_cliente_{safe_name}_{today_str}.html"
         client_path = os.path.join(self.reports_dir, client_filename)
         
@@ -1276,7 +1395,7 @@ class HTMLReportGenerator:
             logger.error(f"Erro ao salvar relatório do cliente: {e}")
         
         # Gerar e salvar relatório da equipe
-        team_html = self.generate_team_report(data, project_id, project_image_base64, email_url_gant, email_url_disciplina)
+        team_html = self.generate_team_report(data, project_id, project_image_base64, email_url_gant, email_url_disciplina, schedule_days=schedule_days)
         team_filename = f"Email_time_{safe_name}_{today_str}.html"
         team_path = os.path.join(self.reports_dir, team_filename)
         

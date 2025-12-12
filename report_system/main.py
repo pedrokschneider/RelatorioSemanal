@@ -675,7 +675,7 @@ class WeeklyReportSystem:
             logging.error(f"Erro ao registrar log de execução na planilha: {e}")
             return False
 
-    def run_for_project(self, project_id, quiet_mode=False, skip_cache_update=False, skip_notifications=False, hide_dashboard=False) -> Tuple[bool, str, Optional[str]]:
+    def run_for_project(self, project_id, quiet_mode=False, skip_cache_update=False, skip_notifications=False, hide_dashboard=False, schedule_days=None) -> Tuple[bool, str, Optional[str]]:
         """
         Executa o processo completo para um projeto, atualizando o cache primeiro.
         
@@ -685,6 +685,7 @@ class WeeklyReportSystem:
             skip_cache_update: Se True, pula a atualização do cache (use quando já foi atualizado)
             skip_notifications: Se True, não envia notificações para o Discord
             hide_dashboard: Se True, não exibe o botão do Dashboard no relatório HTML
+            schedule_days: Número de dias para o cronograma (None = padrão de 15 dias)
             
         Returns:
             Tupla com (sucesso, caminho_arquivo, id_drive)
@@ -900,7 +901,8 @@ class WeeklyReportSystem:
                     project_image_base64=project_image_base64,
                     email_url_gant=email_url_gant,
                     email_url_disciplina=email_url_disciplina,
-                    show_dashboard_button=not hide_dashboard
+                    show_dashboard_button=not hide_dashboard,
+                    schedule_days=schedule_days
                 )
                 
                 logger.info(f"Relatórios HTML gerados: {html_paths}")

@@ -374,7 +374,31 @@ class DiscordBotAutoChannels:
                 parts = command.split()
                 hide_dashboard = "sem-dashboard" in parts or "sem_dashboard" in parts
                 
-                logger.info(f"Processando comando !relatorio para canal {channel_id} (sem-dashboard={hide_dashboard})")
+                # Extrair parâmetro de dias (ex: !relatorio 30dias ou !relatorio dias=30)
+                schedule_days = None
+                for part in parts:
+                    # Formato: 30dias, 30d, 15dias, etc
+                    if part.endswith('dias') or part.endswith('d'):
+                        try:
+                            # Remover 'dias' ou 'd' e converter para int
+                            num_str = part.rstrip('dias').rstrip('d')
+                            schedule_days = int(num_str)
+                            if schedule_days <= 0:
+                                schedule_days = None
+                            break
+                        except ValueError:
+                            pass
+                    # Formato: dias=30
+                    elif '=' in part and part.startswith('dias'):
+                        try:
+                            schedule_days = int(part.split('=')[1])
+                            if schedule_days <= 0:
+                                schedule_days = None
+                            break
+                        except (ValueError, IndexError):
+                            pass
+                
+                logger.info(f"Processando comando !relatorio para canal {channel_id} (sem-dashboard={hide_dashboard}, schedule_days={schedule_days})")
                 
                 # Verificar se a fila está inicializada corretamente
                 if not hasattr(self, 'queue_system') or not self.queue_system:
@@ -384,8 +408,12 @@ class DiscordBotAutoChannels:
 
                 # Adicionar à fila em vez de processar diretamente
                 try:
-                    self.queue_system.add_report_request(channel_id, hide_dashboard=hide_dashboard)
-                    logger.info(f"Relatório para canal {channel_id} adicionado à fila com sucesso (sem-dashboard={hide_dashboard})")
+                    self.queue_system.add_report_request(channel_id, hide_dashboard=hide_dashboard, schedule_days=schedule_days)
+                    if schedule_days:
+                        logger.info(f"Relatório para canal {channel_id} adicionado à fila com sucesso (sem-dashboard={hide_dashboard}, schedule_days={schedule_days})")
+                        self.send_message(channel_id, f"✅ Relatório adicionado à fila com cronograma de **{schedule_days} dias**.")
+                    else:
+                        logger.info(f"Relatório para canal {channel_id} adicionado à fila com sucesso (sem-dashboard={hide_dashboard})")
                     return True
                 
                 except Exception as e:

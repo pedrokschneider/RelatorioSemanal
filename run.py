@@ -45,6 +45,7 @@ def main():
     parser.add_argument('--no-notifications', action='store_true', help='Não enviar notificações para o Discord')
     parser.add_argument('--no-admin-notification', action='store_true', help='Não enviar notificação de resumo para o administrador')
     parser.add_argument('--hide-dashboard', action='store_true', help='Não exibir o botão do Dashboard de Indicadores no relatório')
+    parser.add_argument('--schedule-days', type=int, help='Número de dias para o cronograma (padrão: 15 dias)')
     args = parser.parse_args()
     
     try:
@@ -123,8 +124,9 @@ def main():
         
         # Executar o sistema
         if project_id:
-            logger.info(f"Executando apenas para o projeto {project_id} (sem-dashboard={args.hide_dashboard})")
-            result = system.run_for_project(project_id, quiet_mode=True, skip_notifications=args.no_notifications, hide_dashboard=args.hide_dashboard) 
+            schedule_days = args.schedule_days if hasattr(args, 'schedule_days') and args.schedule_days else None
+            logger.info(f"Executando apenas para o projeto {project_id} (sem-dashboard={args.hide_dashboard}, schedule_days={schedule_days})")
+            result = system.run_for_project(project_id, quiet_mode=True, skip_notifications=args.no_notifications, hide_dashboard=args.hide_dashboard, schedule_days=schedule_days) 
             status = "Sucesso" if result[0] else "Falha"
             mensagem = "Relatório gerado com sucesso" if result[0] else (result[3] if len(result) > 3 and result[3] else "Falha ao gerar relatório")
             doc_url = f"https://docs.google.com/document/d/{result[2]}/edit" if result[2] else None

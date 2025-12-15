@@ -577,13 +577,158 @@ class GoogleDriveManager:
             logger.error(f"Erro ao buscar pasta '{name}': {e}")
             return None
     
-    def load_project_config_from_sheet(self) -> pd.DataFrame:
+    def load_project_config_from_bigquery(self) -> pd.DataFrame:
         """
-        Carrega a configuração de projetos da planilha Google Sheets.
+        Carrega a configuração de projetos do BigQuery.
         
         Returns:
             DataFrame com configurações de projetos
         """
+        try:
+            from google.cloud import bigquery
+            
+            # Usar as mesmas credenciais do Google Drive
+            if not self.credentials:
+                logger.error("Credenciais do Google não disponíveis para BigQuery")
+                return pd.DataFrame()
+            
+            # Criar cliente BigQuery
+            client = bigquery.Client(
+                credentials=self.credentials,
+                project=self.config.bigquery_project
+            )
+            
+            # Query para buscar dados da tabela
+            table_id = self.config.bigquery_table
+            query = f"""
+                SELECT *
+                FROM `{table_id}`
+            """
+            
+            logger.info(f"Buscando dados do BigQuery: {table_id}")
+            df = client.query(query).to_dataframe()
+            
+            if df.empty:
+                logger.warning("Tabela BigQuery vazia")
+                return pd.DataFrame()
+            
+            # Normalizar nomes de colunas (BigQuery pode ter nomes diferentes)
+            # Mapear colunas do BigQuery para nomes esperados pelo sistema
+            # Baseado na análise do código: analyze_used_columns.py
+            # Colunas confirmadas no BigQuery: relatoriosemanal_status, status, smartsheet_id,
+            # construflow_id, discord_id, pastaemails_id, email_url_capa, email_url_gant, email_url_disciplina
+            column_mapping = {
+                # Construflow ID (usado em 29 locais) - EXISTE NO BIGQUERY
+                'id_construflow': 'construflow_id',
+                'construflow_id': 'construflow_id',  # ✅ Existe no BigQuery
+                'ID_Construflow': 'construflow_id',
+                'flow_id': 'construflow_id',
+                'construflowid': 'construflow_id',
+                
+                # Smartsheet ID (usado em 7 locais) - EXISTE NO BIGQUERY
+                'id_smartsheet': 'smartsheet_id',
+                'smartsheet_id': 'smartsheet_id',  # ✅ Existe no BigQuery
+                'ID_Smartsheet': 'smartsheet_id',
+                
+                # Discord ID (usado em 12 locais) - EXISTE NO BIGQUERY
+                'id_discord': 'discord_id',
+                'discord_id': 'discord_id',  # ✅ Existe no BigQuery
+                'Discord_ID': 'discord_id',
+                
+                # Nome do Projeto (usado em 18 locais) - EXISTE NO BIGQUERY
+                'project_name': 'Projeto - PR',  # ✅ Existe no BigQuery
+                'nome_projeto': 'Projeto - PR',
+                'projeto_pr': 'Projeto - PR',
+                'Projeto - PR': 'Projeto - PR',
+                'projeto': 'Projeto - PR',
+                
+                # Código do Projeto (usado em 6 locais) - EXISTE NO BIGQUERY
+                'project_code_norm': 'Código Projeto',  # ✅ Existe no BigQuery
+                'codigo_projeto': 'Código Projeto',
+                'Código Projeto': 'Código Projeto',
+                
+                # Status do Relatório (usado em 18 locais) - EXISTE NO BIGQUERY
+                'status_relatorio': 'relatoriosemanal_status',
+                'relatoriosemanal_status': 'relatoriosemanal_status',  # ✅ Existe no BigQuery
+                'Relatorio_Semanal': 'relatoriosemanal_status',
+                # NOTA: 'status' no BigQuery é a Fase do projeto, NÃO o relatoriosemanal_status
+                
+                # URLs de Email (usado em 7 locais cada) - EXISTEM NO BIGQUERY
+                'email_url_gant': 'email_url_gant',  # ✅ Existe no BigQuery
+                'email_url_disciplina': 'email_url_disciplina',  # ✅ Existe no BigQuery
+                'email_url_capa': 'email_url_capa',  # ✅ Existe no BigQuery
+                
+                # Pasta de Emails (usado em 5 locais) - EXISTE NO BIGQUERY
+                'pastaemails_id': 'pastaemails_id',  # ✅ Existe no BigQuery
+                
+                # Disciplinas do Cliente (usado em 9 locais)
+                'disciplinas_clientes': 'construflow_disciplinasclientes',
+                'construflow_disciplinasclientes': 'construflow_disciplinasclientes',
+            }
+            
+            # Renomear colunas se necessário (apenas colunas que existem no DataFrame)
+            # Criar mapeamento apenas com colunas que existem
+            existing_mapping = {k: v for k, v in column_mapping.items() if k in df.columns}
+            
+            if existing_mapping:
+                df = df.rename(columns=existing_mapping)
+                logger.info(f"Colunas renomeadas: {len(existing_mapping)}")
+                logger.debug(f"Mapeamento aplicado: {existing_mapping}")
+            
+            # Verificar se todas as colunas essenciais estão presentes
+            # Colunas confirmadas no BigQuery: relatoriosemanal_status, status, smartsheet_id,
+            # construflow_id, discord_id, pastaemails_id, email_url_capa, email_url_gant, email_url_disciplina
+            essential_columns = ['construflow_id', 'smartsheet_id', 'discord_id', 'relatoriosemanal_status']
+            optional_columns = ['Projeto - PR', 'Código Projeto', 'email_url_gant', 'email_url_disciplina', 
+                              'email_url_capa', 'pastaemails_id', 'construflow_disciplinasclientes']
+            
+            missing_essential = [col for col in essential_columns if col not in df.columns]
+            missing_optional = [col for col in optional_columns if col not in df.columns]
+            
+            if missing_essential:
+                logger.warning(f"⚠️ Colunas essenciais não encontradas no BigQuery: {missing_essential}")
+                logger.error("❌ Sistema pode não funcionar corretamente sem essas colunas!")
+            
+            if missing_optional:
+                logger.info(f"ℹ️ Colunas opcionais não encontradas no BigQuery: {missing_optional}")
+                logger.info("   Algumas funcionalidades podem não estar disponíveis.")
+            
+            if not missing_essential:
+                logger.info(f"✅ Todas as colunas essenciais encontradas no BigQuery!")
+                logger.debug(f"Colunas disponíveis: {', '.join(df.columns.tolist()[:30])}")
+            
+            # Garantir que o ID do Construflow seja string
+            if 'construflow_id' in df.columns:
+                df['construflow_id'] = df['construflow_id'].astype(str)
+            
+            logger.info(f"Carregados {len(df)} projetos do BigQuery")
+            logger.debug(f"Colunas disponíveis: {', '.join(df.columns.tolist())}")
+            return df
+            
+        except ImportError:
+            logger.error("Biblioteca google-cloud-bigquery não instalada. Execute: pip install google-cloud-bigquery")
+            return pd.DataFrame()
+        except Exception as e:
+            logger.error(f"Erro ao carregar dados do BigQuery: {e}", exc_info=True)
+            return pd.DataFrame()
+    
+    def load_project_config_from_sheet(self) -> pd.DataFrame:
+        """
+        Carrega a configuração de projetos da planilha Google Sheets ou BigQuery.
+        Se USE_BIGQUERY=true, usa BigQuery. Caso contrário, usa Google Sheets.
+        
+        Returns:
+            DataFrame com configurações de projetos
+        """
+        # Se configurado para usar BigQuery, tentar primeiro
+        if self.config.use_bigquery:
+            logger.info("Usando BigQuery como fonte de dados de projetos")
+            df = self.load_project_config_from_bigquery()
+            if not df.empty:
+                return df
+            logger.warning("BigQuery retornou vazio, tentando fallback para Google Sheets")
+        
+        # Fallback para Google Sheets
         if not self.sheets_service or not self.config.projects_sheet_id:
             logger.warning("Serviço do Sheets não disponível ou ID da planilha não configurado")
             return pd.DataFrame()

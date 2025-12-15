@@ -59,6 +59,11 @@ class ConfigManager:
         self.projects_sheet_id = self.get_env_var("PROJECTS_SHEET_ID")
         self.projects_sheet_name = self.get_env_var("PROJECTS_SHEET_NAME", "Projetos")
         
+        # BigQuery para configuração de projetos (substitui planilha)
+        self.use_bigquery = self.get_env_var("USE_BIGQUERY", "false").lower() == "true"
+        self.bigquery_table = self.get_env_var("BIGQUERY_TABLE", "dadosindicadores.portifolio.portifolio_plataforma_enriched")
+        self.bigquery_project = self.get_env_var("BIGQUERY_PROJECT", None)
+        
         # Caminho para templates de prompt
         self.prompt_template_path = self.get_env_var("PROMPT_TEMPLATE_PATH", "templates/prompt_template.txt")
         

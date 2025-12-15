@@ -102,6 +102,27 @@ class HTMLReportGenerator:
         self.reports_dir = os.path.join(os.getcwd(), "reports")
         os.makedirs(self.reports_dir, exist_ok=True)
     
+    def _is_client_discipline(self, discipline: str) -> bool:
+        """
+        Verifica se a disciplina é do cliente ou Otus.
+        Usa correspondência parcial para capturar variações como "Cliente da Coordenação" e "Coordenação".
+        
+        Args:
+            discipline: Nome da disciplina
+            
+        Returns:
+            True se a disciplina contém "cliente", "otus" ou "coordenação" (case-insensitive)
+        """
+        if not discipline:
+            return False
+        discipline_lower = str(discipline).strip().lower()
+        # Normalizar "coordenação" removendo acentos para comparação
+        discipline_normalized = discipline_lower.replace('ç', 'c').replace('ã', 'a')
+        return ('cliente' in discipline_lower or 
+                'otus' in discipline_lower or 
+                'coordenacao' in discipline_normalized or
+                'coordenação' in discipline_lower)
+    
     def generate_client_report(self, data: Dict[str, Any], project_id: str = None,
                                project_image_base64: Optional[str] = None,
                                email_url_gant: Optional[str] = None,
@@ -551,7 +572,7 @@ class HTMLReportGenerator:
             
             discipline = task.get('Disciplina', task.get('Discipline', 'Sem Disciplina')) or 'Sem Disciplina'
             # Excluir 'Cliente' e 'Otus' do relatório da equipe (serão mostrados no relatório do cliente)
-            if discipline.lower() in ['cliente', 'otus']:
+            if self._is_client_discipline(discipline):
                 tasks_cliente_otus += 1
                 continue
             
@@ -624,8 +645,8 @@ class HTMLReportGenerator:
                 # Tarefas sem data são incluídas se estiverem com status "feito"
             
             discipline = task.get('Disciplina', task.get('Discipline', 'Sem Disciplina')) or 'Sem Disciplina'
-            # Filtrar apenas 'Cliente' e 'Otus'
-            if discipline.lower() not in ['cliente', 'otus']:
+            # Filtrar apenas disciplinas do cliente (correspondência parcial)
+            if not self._is_client_discipline(discipline):
                 tasks_outra_disciplina += 1
                 continue
             
@@ -652,6 +673,7 @@ class HTMLReportGenerator:
         """
         Obtém atrasos para relatório do cliente.
         Filtra tarefas atrasadas do SmartSheet onde Disciplina = 'Cliente' ou 'Otus'.
+        Mostra apenas atrasos das últimas 2 semanas (relatório semanal).
         """
         smartsheet_data = data.get('smartsheet_data', {})
         if not smartsheet_data:
@@ -663,6 +685,10 @@ class HTMLReportGenerator:
             logger.info("Nenhuma tarefa atrasada encontrada no SmartSheet")
             return []
         
+        # Filtrar atrasos das últimas 2 semanas (relatório semanal)
+        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        two_weeks_ago = today - timedelta(days=14)
+        
         # Log: mostrar disciplinas únicas nas tarefas atrasadas
         disciplinas_atrasadas = set()
         for task in delayed_tasks:
@@ -672,19 +698,55 @@ class HTMLReportGenerator:
                     disciplinas_atrasadas.add(disciplina)
         logger.info(f"Disciplinas nas tarefas atrasadas: {sorted(disciplinas_atrasadas)}")
         
-        # Filtrar por disciplina "Cliente" ou "Otus" (case-insensitive)
+        # Filtrar por disciplina "Cliente" ou "Otus" e por período (últimas 2 semanas)
         client_delays = []
         tasks_outra_disciplina = 0
-        for task in delayed_tasks:
-            disciplina = str(task.get('Disciplina', task.get('Discipline', ''))).strip().lower()
-            if disciplina in ['cliente', 'otus']:
-                client_delays.append(task)
-            else:
-                tasks_outra_disciplina += 1
+        tasks_fora_periodo = 0
         
-        logger.info(f"Atrasos do cliente: {len(client_delays)} de {len(delayed_tasks)} atrasadas")
+        for task in delayed_tasks:
+            disciplina = task.get('Disciplina', task.get('Discipline', ''))
+            
+            # Filtrar por disciplina
+            if not self._is_client_discipline(disciplina):
+                tasks_outra_disciplina += 1
+                continue
+            
+            # Verificar se o atraso está nas últimas 2 semanas
+            # Usar data de término (ou baseline se disponível) para verificar se está atrasado nas últimas 2 semanas
+            task_date = None
+            end_date_str = task.get('Data Término', task.get('Data de Término', task.get('End Date', '')))
+            baseline_date_str = task.get('Data de Fim - Baseline Otus', '')
+            
+            # Priorizar baseline, senão usar data de término
+            if baseline_date_str:
+                try:
+                    task_date = self._parse_date(baseline_date_str)
+                except:
+                    pass
+            
+            if not task_date and end_date_str:
+                try:
+                    task_date = self._parse_date(end_date_str)
+                except:
+                    pass
+            
+            # Se tem data, verificar se está nas últimas 2 semanas
+            if task_date:
+                task_date_normalized = task_date.replace(hour=0, minute=0, second=0, microsecond=0)
+                # Incluir atrasos que deveriam ter sido concluídos nas últimas 2 semanas
+                if task_date_normalized >= two_weeks_ago and task_date_normalized <= today:
+                    client_delays.append(task)
+                else:
+                    tasks_fora_periodo += 1
+            else:
+                # Se não tem data, incluir (pode ser tarefa sem data definida mas marcada como atrasada)
+                client_delays.append(task)
+        
+        logger.info(f"Atrasos do cliente: {len(client_delays)} de {len(delayed_tasks)} atrasadas (últimas 2 semanas)")
         if tasks_outra_disciplina > 0:
             logger.info(f"  - {tasks_outra_disciplina} tarefas atrasadas de outras disciplinas (não 'Cliente' ou 'Otus')")
+        if tasks_fora_periodo > 0:
+            logger.info(f"  - {tasks_fora_periodo} tarefas atrasadas fora do período (mais de 2 semanas)")
         
         return client_delays
     
@@ -692,6 +754,7 @@ class HTMLReportGenerator:
         """
         Obtém atrasos para relatório da equipe.
         Retorna todas as tarefas atrasadas, EXCETO 'Cliente' e 'Otus' (que aparecem no relatório do cliente).
+        Mostra apenas atrasos das últimas 2 semanas (relatório semanal).
         """
         smartsheet_data = data.get('smartsheet_data', {})
         if not smartsheet_data:
@@ -699,19 +762,58 @@ class HTMLReportGenerator:
         
         delayed_tasks = smartsheet_data.get('delayed_tasks', [])
         
-        # Excluir 'Cliente' e 'Otus' do relatório da equipe
+        # Filtrar atrasos das últimas 2 semanas (relatório semanal)
+        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        two_weeks_ago = today - timedelta(days=14)
+        
+        # Excluir 'Cliente' e 'Otus' do relatório da equipe e filtrar por período
         team_delays = []
         tasks_cliente_otus = 0
-        for task in delayed_tasks:
-            disciplina = str(task.get('Disciplina', task.get('Discipline', ''))).strip().lower()
-            if disciplina not in ['cliente', 'otus']:
-                team_delays.append(task)
-            else:
-                tasks_cliente_otus += 1
+        tasks_fora_periodo = 0
         
-        logger.info(f"Atrasos da equipe: {len(team_delays)} tarefas atrasadas")
+        for task in delayed_tasks:
+            disciplina = task.get('Disciplina', task.get('Discipline', ''))
+            
+            # Excluir disciplinas do cliente
+            if self._is_client_discipline(disciplina):
+                tasks_cliente_otus += 1
+                continue
+            
+            # Verificar se o atraso está nas últimas 2 semanas
+            task_date = None
+            end_date_str = task.get('Data Término', task.get('Data de Término', task.get('End Date', '')))
+            baseline_date_str = task.get('Data de Fim - Baseline Otus', '')
+            
+            # Priorizar baseline, senão usar data de término
+            if baseline_date_str:
+                try:
+                    task_date = self._parse_date(baseline_date_str)
+                except:
+                    pass
+            
+            if not task_date and end_date_str:
+                try:
+                    task_date = self._parse_date(end_date_str)
+                except:
+                    pass
+            
+            # Se tem data, verificar se está nas últimas 2 semanas
+            if task_date:
+                task_date_normalized = task_date.replace(hour=0, minute=0, second=0, microsecond=0)
+                # Incluir atrasos que deveriam ter sido concluídos nas últimas 2 semanas
+                if task_date_normalized >= two_weeks_ago and task_date_normalized <= today:
+                    team_delays.append(task)
+                else:
+                    tasks_fora_periodo += 1
+            else:
+                # Se não tem data, incluir (pode ser tarefa sem data definida mas marcada como atrasada)
+                team_delays.append(task)
+        
+        logger.info(f"Atrasos da equipe: {len(team_delays)} tarefas atrasadas (últimas 2 semanas)")
         if tasks_cliente_otus > 0:
             logger.info(f"  - {tasks_cliente_otus} tarefas atrasadas de 'Cliente' e 'Otus' excluídas (aparecem no relatório do cliente)")
+        if tasks_fora_periodo > 0:
+            logger.info(f"  - {tasks_fora_periodo} tarefas atrasadas fora do período (mais de 2 semanas)")
         return team_delays
     
     def _get_schedule_client(self, data: Dict[str, Any], schedule_days: Optional[int] = None) -> List[Dict]:
@@ -741,12 +843,20 @@ class HTMLReportGenerator:
         
         # Log: mostrar disciplinas únicas encontradas no SmartSheet
         disciplinas_encontradas = set()
+        disciplinas_com_cliente = []
         for task in all_tasks:
             if isinstance(task, dict):
                 disciplina = str(task.get('Disciplina', task.get('Discipline', ''))).strip()
                 if disciplina:
                     disciplinas_encontradas.add(disciplina)
+                    # Verificar se esta disciplina seria considerada do cliente
+                    if self._is_client_discipline(disciplina):
+                        disciplinas_com_cliente.append(disciplina)
         logger.info(f"Disciplinas encontradas no SmartSheet: {sorted(disciplinas_encontradas)}")
+        if disciplinas_com_cliente:
+            logger.info(f"⚠️ Disciplinas identificadas como do cliente/Otus: {sorted(set(disciplinas_com_cliente))}")
+        else:
+            logger.warning(f"⚠️ NENHUMA disciplina foi identificada como do cliente/Otus! Verifique se há disciplinas com 'Cliente', 'Otus' ou 'Coordenação'")
         
         # Filtrar tarefas do cliente ou Otus que estão programadas (não concluídas)
         client_schedule = []
@@ -754,14 +864,16 @@ class HTMLReportGenerator:
         tasks_fora_periodo = 0
         tasks_concluidas = 0
         tasks_outra_disciplina = 0
+        tasks_iniciando = 0
+        tasks_terminando = 0
         
         for task in all_tasks:
             if not isinstance(task, dict):
                 continue
             
-            # Verificar disciplina
-            disciplina = str(task.get('Disciplina', task.get('Discipline', ''))).strip().lower()
-            if disciplina not in ['cliente', 'otus']:
+            # Verificar disciplina (correspondência parcial para capturar "Cliente da Coordenação", etc.)
+            disciplina = task.get('Disciplina', task.get('Discipline', ''))
+            if not self._is_client_discipline(disciplina):
                 tasks_outra_disciplina += 1
                 continue
             
@@ -781,6 +893,8 @@ class HTMLReportGenerator:
             
             # Verificar se a tarefa inicia ou termina no período
             task_in_period = False
+            starts_in_period = False
+            ends_in_period = False
             start_date = None
             end_date = None
             
@@ -792,6 +906,7 @@ class HTMLReportGenerator:
                         start_date_normalized = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
                         if start_date_normalized >= today and start_date_normalized <= future_cutoff:
                             task_in_period = True
+                            starts_in_period = True
                 except:
                     pass
             
@@ -803,24 +918,33 @@ class HTMLReportGenerator:
                         end_date_normalized = end_date.replace(hour=0, minute=0, second=0, microsecond=0)
                         if end_date_normalized >= today and end_date_normalized <= future_cutoff:
                             task_in_period = True
+                            ends_in_period = True
                 except:
                     pass
             
             if task_in_period:
                 client_schedule.append(task)
+                if starts_in_period:
+                    tasks_iniciando += 1
+                if ends_in_period:
+                    tasks_terminando += 1
             else:
                 tasks_fora_periodo += 1
         
         # Ordenar por data
         client_schedule.sort(key=lambda x: self._parse_date(x.get('Data Término', x.get('Data de Término', x.get('End Date', '')))) or datetime.max)
         
-        logger.info(f"Cronograma do cliente: {len(client_schedule)} tarefas programadas de {len(all_tasks)} total")
+        logger.info(f"Cronograma do cliente: {len(client_schedule)} tarefas programadas de {len(all_tasks)} total (período: {days} dias)")
+        if tasks_iniciando > 0:
+            logger.info(f"  - {tasks_iniciando} tarefas que INICIAM no período")
+        if tasks_terminando > 0:
+            logger.info(f"  - {tasks_terminando} tarefas que TERMINAM no período")
         if tasks_outra_disciplina > 0:
             logger.info(f"  - {tasks_outra_disciplina} tarefas de outras disciplinas (não 'Cliente' ou 'Otus')")
         if tasks_concluidas > 0:
             logger.info(f"  - {tasks_concluidas} tarefas já concluídas")
         if tasks_sem_data > 0:
-            logger.info(f"  - {tasks_sem_data} tarefas sem data de término")
+            logger.info(f"  - {tasks_sem_data} tarefas sem data de início/término")
         if tasks_fora_periodo > 0:
             logger.info(f"  - {tasks_fora_periodo} tarefas fora do período (próximos {days} dias)")
         
@@ -849,13 +973,17 @@ class HTMLReportGenerator:
         
         schedule = {}
         tasks_cliente_otus = 0
+        tasks_iniciando = 0
+        tasks_terminando = 0
+        tasks_fora_periodo = 0
+        
         for task in all_tasks:
             if not isinstance(task, dict):
                 continue
             
             discipline = task.get('Disciplina', 'Sem Disciplina') or 'Sem Disciplina'
             # Excluir 'Cliente' e 'Otus' do relatório da equipe (serão mostrados no relatório do cliente)
-            if discipline.lower() in ['cliente', 'otus']:
+            if self._is_client_discipline(discipline):
                 tasks_cliente_otus += 1
                 continue
             
@@ -868,6 +996,8 @@ class HTMLReportGenerator:
             
             # Verificar se a tarefa inicia ou termina no período
             task_in_period = False
+            starts_in_period = False
+            ends_in_period = False
             
             if task_start_str:
                 try:
@@ -877,6 +1007,7 @@ class HTMLReportGenerator:
                         start_date_normalized = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
                         if start_date_normalized >= today and start_date_normalized <= future_cutoff:
                             task_in_period = True
+                            starts_in_period = True
                 except:
                     pass
             
@@ -888,10 +1019,12 @@ class HTMLReportGenerator:
                         end_date_normalized = end_date.replace(hour=0, minute=0, second=0, microsecond=0)
                         if end_date_normalized >= today and end_date_normalized <= future_cutoff:
                             task_in_period = True
+                            ends_in_period = True
                 except:
                     pass
             
             if not task_in_period:
+                tasks_fora_periodo += 1
                 continue
             
             status = str(task.get('Status', '')).lower().strip()
@@ -903,11 +1036,22 @@ class HTMLReportGenerator:
                 schedule[discipline]['a_iniciar'].append(task)
             else:
                 schedule[discipline]['programadas'].append(task)
+            
+            if starts_in_period:
+                tasks_iniciando += 1
+            if ends_in_period:
+                tasks_terminando += 1
         
         total_tasks = sum(len(tasks) for disc in schedule.values() for tasks in disc.values())
-        logger.info(f"Cronograma da equipe: {total_tasks} tarefas programadas em {len(schedule)} disciplinas")
+        logger.info(f"Cronograma da equipe: {total_tasks} tarefas programadas em {len(schedule)} disciplinas (período: {days} dias)")
+        if tasks_iniciando > 0:
+            logger.info(f"  - {tasks_iniciando} tarefas que INICIAM no período")
+        if tasks_terminando > 0:
+            logger.info(f"  - {tasks_terminando} tarefas que TERMINAM no período")
         if tasks_cliente_otus > 0:
             logger.info(f"  - {tasks_cliente_otus} tarefas de 'Cliente' e 'Otus' excluídas (aparecem no relatório do cliente)")
+        if tasks_fora_periodo > 0:
+            logger.info(f"  - {tasks_fora_periodo} tarefas fora do período (próximos {days} dias)")
         
         return schedule
     
@@ -1246,33 +1390,66 @@ class HTMLReportGenerator:
         if not schedule:
             html = f'<p style="margin:0;font-family:\'Source Sans Pro\',sans-serif;font-size:14px;color:#666;">✓ Nenhuma atividade prevista das disciplinas <strong>Cliente</strong> e <strong>Otus</strong> para os próximos {days} dias.</p>'
         else:
-            # Agrupar por disciplina
+            # Agrupar por disciplina e separar por status (a iniciar vs programadas)
             by_discipline = {}
             for task in schedule:
                 if not isinstance(task, dict):
                     continue
                 discipline = task.get('Disciplina', 'Sem Disciplina')
                 if discipline not in by_discipline:
-                    by_discipline[discipline] = []
-                by_discipline[discipline].append(task)
+                    by_discipline[discipline] = {'a_iniciar': [], 'programadas': []}
+                
+                # Verificar status para separar "a iniciar" de "programadas"
+                status = str(task.get('Status', '')).lower().strip()
+                if status == 'a fazer':
+                    by_discipline[discipline]['a_iniciar'].append(task)
+                else:
+                    by_discipline[discipline]['programadas'].append(task)
             
             html = ""
-            for discipline, tasks in by_discipline.items():
-                html += f'<div style="margin-bottom:20px;"><p style="margin:0 0 12px;font-family:\'Montserrat\',sans-serif;font-size:10px;font-weight:700;color:#1a1a1a;text-transform:uppercase;letter-spacing:1.5px;border-bottom:1px solid #eee;padding-bottom:6px;">{discipline}</p>'
+            for discipline, categories in by_discipline.items():
+                # Só criar seção da disciplina se houver tarefas
+                if not categories['a_iniciar'] and not categories['programadas']:
+                    continue
                 
-                for task in tasks:
-                    date = self._format_date(task.get('Data Término', task.get('Data de Término', '')))
-                    name = task.get('Nome da Tarefa', task.get('Task Name', ''))
-                    # Observação Otus
-                    observacao_otus = task.get('Observação Otus', task.get('Observacao Otus', ''))
-                    
-                    html += f'<div style="margin-bottom:8px;padding-left:12px;">'
-                    html += f'<p style="margin:0 0 4px;font-family:\'Source Sans Pro\',sans-serif;font-size:13px;color:#444;line-height:1.6;"><span style="font-family:\'Montserrat\',sans-serif;font-size:11px;color:#1a1a1a;font-weight:600;background:#f5f5f5;padding:2px 6px;border-radius:3px;margin-right:8px;">{date}</span>{name}</p>'
-                    
-                    if observacao_otus and str(observacao_otus).strip() and str(observacao_otus).lower() not in ['nan', 'none', '']:
-                        html += f'<p style="margin:4px 0 0;font-family:\'Source Sans Pro\',sans-serif;font-size:12px;color:#f5a623;font-style:italic;padding-left:20px;"><span style="font-weight:600;color:#f5a623;">Observação Otus:</span> {observacao_otus}</p>'
-                    
-                    html += '</div>'
+                html += f'<div style="margin-bottom:24px;"><p style="margin:0 0 14px;font-family:\'Montserrat\',sans-serif;font-size:10px;font-weight:700;color:#1a1a1a;text-transform:uppercase;letter-spacing:1.5px;border-bottom:1px solid #eee;padding-bottom:6px;">{discipline}</p>'
+                
+                # A Iniciar
+                if categories['a_iniciar']:
+                    html += '<p style="margin:0 0 8px;font-family:\'Montserrat\',sans-serif;font-size:9px;font-weight:600;color:#f5a623;text-transform:uppercase;letter-spacing:1px;">● A Iniciar</p>'
+                    for task in categories['a_iniciar']:
+                        # Mostrar data de início se disponível, senão data de término
+                        start_date = task.get('Data Inicio', task.get('Data de Início', task.get('Start Date', '')))
+                        end_date = task.get('Data Término', task.get('Data de Término', task.get('End Date', '')))
+                        date = self._format_date(start_date) if start_date else self._format_date(end_date)
+                        name = task.get('Nome da Tarefa', task.get('Task Name', ''))
+                        # Observação Otus
+                        observacao_otus = task.get('Observação Otus', task.get('Observacao Otus', ''))
+                        
+                        html += f'<div style="margin-bottom:6px;padding-left:16px;">'
+                        html += f'<p style="margin:0 0 4px;font-family:\'Source Sans Pro\',sans-serif;font-size:13px;color:#444;line-height:1.6;"><span style="font-family:\'Montserrat\',sans-serif;font-size:11px;color:#1a1a1a;font-weight:600;background:#f5f5f5;padding:2px 6px;border-radius:3px;margin-right:8px;">{date}</span>{name}</p>'
+                        
+                        if observacao_otus and str(observacao_otus).strip() and str(observacao_otus).lower() not in ['nan', 'none', '']:
+                            html += f'<p style="margin:4px 0 0;font-family:\'Source Sans Pro\',sans-serif;font-size:12px;color:#f5a623;font-style:italic;padding-left:20px;"><span style="font-weight:600;color:#f5a623;">Observação Otus:</span> {observacao_otus}</p>'
+                        
+                        html += '</div>'
+                
+                # Entregas Programadas
+                if categories['programadas']:
+                    html += '<p style="margin:14px 0 8px;font-family:\'Montserrat\',sans-serif;font-size:9px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:1px;">● Entregas Programadas</p>'
+                    for task in categories['programadas']:
+                        date = self._format_date(task.get('Data Término', task.get('Data de Término', task.get('End Date', ''))))
+                        name = task.get('Nome da Tarefa', task.get('Task Name', ''))
+                        # Observação Otus
+                        observacao_otus = task.get('Observação Otus', task.get('Observacao Otus', ''))
+                        
+                        html += f'<div style="margin-bottom:6px;padding-left:16px;">'
+                        html += f'<p style="margin:0 0 4px;font-family:\'Source Sans Pro\',sans-serif;font-size:13px;color:#666;line-height:1.6;"><span style="font-family:\'Montserrat\',sans-serif;font-size:11px;color:#666;font-weight:500;background:#f5f5f5;padding:2px 6px;border-radius:3px;margin-right:8px;">{date}</span>{name}</p>'
+                        
+                        if observacao_otus and str(observacao_otus).strip() and str(observacao_otus).lower() not in ['nan', 'none', '']:
+                            html += f'<p style="margin:4px 0 0;font-family:\'Source Sans Pro\',sans-serif;font-size:12px;color:#f5a623;font-style:italic;padding-left:20px;"><span style="font-weight:600;color:#f5a623;">Observação Otus:</span> {observacao_otus}</p>'
+                        
+                        html += '</div>'
                 
                 html += '</div>'
         

@@ -108,12 +108,17 @@ class SmartsheetConnector:
         
         return rows_data
     
-    def get_recent_tasks(self, sheet_id: str, weeks_range: float = 1.5, 
+    def get_recent_tasks(self, sheet_id: str, weeks_range: float = None, 
                         use_cache: bool = True, force_refresh: bool = False) -> pd.DataFrame:
         """
         Obtém tarefas recentes de uma planilha Smartsheet.
         Inclui tarefas que iniciam OU terminam no período especificado.
+        Por padrão, usa 60 dias (aproximadamente 8.5 semanas) para garantir que tarefas futuras sejam carregadas.
         """
+        # Se weeks_range não for especificado, usar padrão de 60 dias (~8.5 semanas)
+        if weeks_range is None:
+            weeks_range = 60 / 7  # 60 dias em semanas
+        
         sheet_data = self.get_sheet(sheet_id, use_cache=use_cache, force_refresh=force_refresh)
         df = pd.DataFrame(sheet_data)
         if df.empty:
@@ -138,7 +143,7 @@ class SmartsheetConnector:
         # Combinar as máscaras (OU lógico)
         filtered_df = df[mask_inicio | mask_termino]
         
-        # Filtrar por Level se existir
+        # Filtrar por Level 5 (apenas tarefas de nível 5)
         if 'Level' in filtered_df.columns:
             filtered_df = filtered_df[filtered_df['Level'] == 5]
         

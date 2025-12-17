@@ -1060,7 +1060,20 @@ class HTMLReportGenerator:
         if not date_str:
             return None
         
+        # Verificar se é NaT (Not a Time) do pandas
+        try:
+            if pd.isna(date_str):
+                return None
+        except (TypeError, ValueError):
+            pass
+        
         if hasattr(date_str, 'strftime'):
+            # Verificar se o objeto datetime não é NaT
+            try:
+                if pd.isna(date_str):
+                    return None
+            except (TypeError, ValueError):
+                pass
             return date_str
         
         if not isinstance(date_str, str):
@@ -1079,11 +1092,30 @@ class HTMLReportGenerator:
         if not date_value:
             return ""
         
+        # Verificar se é NaT (Not a Time) do pandas
+        try:
+            if pd.isna(date_value):
+                return ""
+        except (TypeError, ValueError):
+            pass
+        
         dt = self._parse_date(date_value)
         if dt:
+            # Verificar se dt não é NaT antes de formatar
+            try:
+                if pd.isna(dt):
+                    return ""
+            except (TypeError, ValueError):
+                pass
             return dt.strftime("%d/%m")
         
-        # Fallback
+        # Fallback - verificar se é NaT antes de converter para string
+        try:
+            if pd.isna(date_value):
+                return ""
+        except (TypeError, ValueError):
+            pass
+        
         return str(date_value)[:5]
     
     def _format_deadline_date(self, deadline_value) -> str:

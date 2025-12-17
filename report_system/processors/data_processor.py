@@ -241,16 +241,43 @@ class DataProcessor:
                 # Manter todas as tarefas para o gerador decidir o que é concluído
                 all_tasks = [row._asdict() if hasattr(row, '_asdict') else row.to_dict() for _, row in tasks_df.iterrows()]
 
-                # Construir apenas a lista de atrasadas conforme regra: Status = 'não feito' OU Categoria de atraso preenchida
+                # Construir lista de atrasadas:
+                # - Status = 'não feito' OU Categoria de atraso preenchida
+                # - OU data de término anterior a hoje e status != 'feito'
                 delayed_tasks = []
+                today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+                
                 for _, task in tasks_df.iterrows():
                     task_dict = task.to_dict()
                     status = str(task.get('Status', '')).lower().strip()
                     categoria_atraso = task.get('Categoria de atraso') or task.get('Delay Category')
                     tem_categoria_atraso = categoria_atraso and str(categoria_atraso).strip() not in ['', 'nan', 'None']
 
+                    # Verificar se está atrasada pela data (término antes de hoje e não concluída)
+                    atrasada_por_data = False
+                    if status != 'feito':
+                        end_date = task.get('Data Término') or task.get('Data de Término') or task.get('End Date')
+                        if end_date and not pd.isna(end_date):
+                            try:
+                                if isinstance(end_date, str):
+                                    for fmt in ['%Y-%m-%d', '%d/%m/%Y', '%d-%m-%Y']:
+                                        try:
+                                            end_dt = datetime.strptime(end_date.split('T')[0], fmt)
+                                            break
+                                        except:
+                                            continue
+                                    else:
+                                        end_dt = None
+                                else:
+                                    end_dt = pd.to_datetime(end_date).to_pydatetime()
+                                
+                                if end_dt and end_dt.replace(hour=0, minute=0, second=0, microsecond=0) < today:
+                                    atrasada_por_data = True
+                            except:
+                                pass
+
                     # Status padronizados do Smartsheet: 'a fazer', 'em progresso', 'feito', 'não feito'
-                    if status == 'não feito' or tem_categoria_atraso:
+                    if status == 'não feito' or tem_categoria_atraso or atrasada_por_data:
                         delayed_tasks.append(task_dict)
 
                 # Organizar dados (sem completed_tasks/scheduled_tasks para evitar sobrepor lógica do gerador)

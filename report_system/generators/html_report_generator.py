@@ -992,7 +992,7 @@ class HTMLReportGenerator:
             task_end_str = task.get('Data Término', task.get('Data de Término', task.get('End Date', '')))
             
             if not task_start_str and not task_end_str:
-                continue
+                    continue
             
             # Verificar se a tarefa inicia ou termina no período
             task_in_period = False

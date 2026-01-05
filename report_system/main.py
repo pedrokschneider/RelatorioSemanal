@@ -545,7 +545,7 @@ class WeeklyReportSystem:
         
         Args:
             project_id: ID do projeto
-            
+        
         Returns:
             True se a atualização foi bem-sucedida, False caso contrário
         """

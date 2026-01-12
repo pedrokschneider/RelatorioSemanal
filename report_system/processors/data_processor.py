@@ -42,7 +42,7 @@ class DataProcessor:
         
         self.gdrive = GoogleDriveManager(config)
     
-    def process_project_data(self, project_id: str, smartsheet_id: Optional[str] = None) -> Dict[str, Any]:
+    def process_project_data(self, project_id: str, smartsheet_id: Optional[str] = None, reference_date: Optional[datetime] = None) -> Dict[str, Any]:
         """
         Processa todos os dados para um projeto específico.
         
@@ -57,10 +57,11 @@ class DataProcessor:
         project_id = str(project_id)
         result = {
         'project_id': project_id,
-        'timestamp': datetime.now().isoformat(),
+        'timestamp': (reference_date if reference_date else datetime.now()).isoformat(),
         'smartsheet_data': None,
         'construflow_data': None,
-        'summary': {}
+        'summary': {},
+        'reference_date': reference_date  # Armazenar data de referência para uso nos geradores
         }
         
         # Obter nome do projeto
@@ -245,7 +246,8 @@ class DataProcessor:
                 # - Status = 'não feito' OU Categoria de atraso preenchida
                 # - OU data de término anterior a hoje e status != 'feito'
                 delayed_tasks = []
-                today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+                # Usar data de referência se fornecida, senão usar data atual
+                today = (reference_date if reference_date else datetime.now()).replace(hour=0, minute=0, second=0, microsecond=0)
                 
                 for _, task in tasks_df.iterrows():
                     task_dict = task.to_dict()

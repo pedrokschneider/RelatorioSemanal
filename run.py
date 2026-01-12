@@ -46,6 +46,7 @@ def main():
     parser.add_argument('--no-admin-notification', action='store_true', help='Não enviar notificação de resumo para o administrador')
     parser.add_argument('--hide-dashboard', action='store_true', help='Não exibir o botão do Dashboard de Indicadores no relatório')
     parser.add_argument('--schedule-days', type=int, help='Número de dias para o cronograma (padrão: 15 dias)')
+    parser.add_argument('--reference-date', type=str, help='Data de referência para o relatório no formato DD/MM/YYYY (ex: 16/12/2024)')
     args = parser.parse_args()
     
     try:
@@ -125,8 +126,20 @@ def main():
         # Executar o sistema
         if project_id:
             schedule_days = args.schedule_days if hasattr(args, 'schedule_days') and args.schedule_days else None
-            logger.info(f"Executando apenas para o projeto {project_id} (sem-dashboard={args.hide_dashboard}, schedule_days={schedule_days})")
-            result = system.run_for_project(project_id, quiet_mode=True, skip_notifications=args.no_notifications, hide_dashboard=args.hide_dashboard, schedule_days=schedule_days) 
+            
+            # Processar data de referência se fornecida
+            reference_date = None
+            if args.reference_date:
+                try:
+                    from datetime import datetime
+                    reference_date = datetime.strptime(args.reference_date, "%d/%m/%Y")
+                    logger.info(f"Data de referência configurada: {reference_date.strftime('%d/%m/%Y')}")
+                except ValueError:
+                    logger.error(f"Formato de data inválido: {args.reference_date}. Use DD/MM/YYYY")
+                    return 1
+            
+            logger.info(f"Executando apenas para o projeto {project_id} (sem-dashboard={args.hide_dashboard}, schedule_days={schedule_days}, reference_date={reference_date.strftime('%d/%m/%Y') if reference_date else None})")
+            result = system.run_for_project(project_id, quiet_mode=True, skip_notifications=args.no_notifications, hide_dashboard=args.hide_dashboard, schedule_days=schedule_days, reference_date=reference_date) 
             status = "Sucesso" if result[0] else "Falha"
             mensagem = "Relatório gerado com sucesso" if result[0] else (result[3] if len(result) > 3 and result[3] else "Falha ao gerar relatório")
             doc_url = f"https://docs.google.com/document/d/{result[2]}/edit" if result[2] else None

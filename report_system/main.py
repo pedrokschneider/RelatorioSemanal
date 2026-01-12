@@ -675,7 +675,7 @@ class WeeklyReportSystem:
             logging.error(f"Erro ao registrar log de execução na planilha: {e}")
             return False
 
-    def run_for_project(self, project_id, quiet_mode=False, skip_cache_update=False, skip_notifications=False, hide_dashboard=False, schedule_days=None) -> Tuple[bool, str, Optional[str]]:
+    def run_for_project(self, project_id, quiet_mode=False, skip_cache_update=False, skip_notifications=False, hide_dashboard=False, schedule_days=None, reference_date=None) -> Tuple[bool, str, Optional[str]]:
         """
         Executa o processo completo para um projeto, atualizando o cache primeiro.
         
@@ -777,7 +777,7 @@ class WeeklyReportSystem:
                 # Chamar process_project_data com proteção adicional
                 project_data = None
                 try:
-                    project_data = self.processor.process_project_data(project_id, smartsheet_id)
+                    project_data = self.processor.process_project_data(project_id, smartsheet_id, reference_date=reference_date)
                 except Exception as e:
                     logger.error(f"Erro ao processar dados do projeto {project_id}: {e}")
                     
@@ -785,7 +785,7 @@ class WeeklyReportSystem:
                     if smartsheet_id is not None:
                         logger.info(f"Tentando processar projeto {project_id} novamente sem usar dados do Smartsheet")
                         try:
-                            project_data = self.processor.process_project_data(project_id, None)
+                            project_data = self.processor.process_project_data(project_id, None, reference_date=reference_date)
                         except Exception as e2:
                             logger.error(f"Erro ao processar projeto {project_id} sem Smartsheet: {e2}")
                             project_data = None

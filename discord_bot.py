@@ -624,8 +624,112 @@ class DiscordBotAutoChannels:
         command = command.strip().lower()
         
         try:
+            # Comando para gerar relatório de semana específica (ex: !relatorio-semana 16/12/2024)
+            if command.startswith("!relatorio-semana"):
+                from datetime import datetime
+                parts = command.split()
+                reference_date = None
+                hide_dashboard = "sem-dashboard" in parts or "sem_dashboard" in parts
+                
+                # Tentar extrair data do comando
+                for part in parts:
+                    # Formato: DD/MM/YYYY ou DD-MM-YYYY
+                    if '/' in part or '-' in part:
+                        try:
+                            if '/' in part:
+                                reference_date = datetime.strptime(part, "%d/%m/%Y")
+                            elif '-' in part:
+                                reference_date = datetime.strptime(part, "%d-%m-%Y")
+                            break
+                        except ValueError:
+                            pass
+                
+                if not reference_date:
+                    self.send_message(channel_id, "❌ **Formato inválido!**\n\nUse: `!relatorio-semana DD/MM/YYYY`\nExemplo: `!relatorio-semana 16/12/2024`")
+                    return True
+                
+                logger.info(f"Processando comando !relatorio-semana para canal {channel_id} (data={reference_date.strftime('%d/%m/%Y')}, sem-dashboard={hide_dashboard})")
+                
+                # Validar se o canal está configurado corretamente
+                validation = self.validate_channel_for_reports(channel_id)
+                
+                if not validation['valid']:
+                    self.send_message(channel_id, validation['message'])
+                    logger.info(f"Canal {channel_id} não validado: {validation['reason']}")
+                    return True
+                
+                # Verificar se a fila está inicializada corretamente
+                if not hasattr(self, 'queue_system') or not self.queue_system:
+                    logger.error("Sistema de filas não inicializado corretamente")
+                    self.send_message(channel_id, "❌ Erro interno: Sistema de filas não inicializado. Contate o administrador.")
+                    return False
+
+                # Adicionar à fila com data de referência
+                try:
+                    self.queue_system.add_report_request(channel_id, hide_dashboard=hide_dashboard, reference_date=reference_date)
+                    logger.info(f"Relatório para semana específica adicionado à fila: {reference_date.strftime('%d/%m/%Y')}")
+                    self.send_message(channel_id, f"✅ Relatório para a semana de **{reference_date.strftime('%d/%m/%Y')}** adicionado à fila.")
+                    return True
+                
+                except Exception as e:
+                    logger.error(f"Erro ao adicionar relatório à fila: {e}", exc_info=True)
+                    self.send_message(channel_id, f"❌ Erro ao processar comando: {str(e)}")
+                    return False
+            
+            # Comando para gerar relatório da última semana antes das férias
+            elif command == "!relatorio-ultima-semana":
+                from datetime import datetime, timedelta
+                
+                # Calcular a última semana antes das férias (última semana antes do Natal)
+                today = datetime.now()
+                current_year = today.year
+                
+                # Natal é 25/12
+                christmas = datetime(current_year, 12, 25)
+                
+                # Se já passou do Natal, usar o Natal do ano atual
+                # Se ainda não chegou no Natal, usar o Natal do ano anterior
+                if today > christmas:
+                    # Já passou do Natal, usar a semana antes do Natal deste ano
+                    reference_date = christmas - timedelta(days=7)
+                else:
+                    # Ainda não chegou no Natal, usar a semana antes do Natal do ano anterior
+                    reference_date = datetime(current_year - 1, 12, 25) - timedelta(days=7)
+                
+                # Ajustar para a segunda-feira daquela semana
+                days_since_monday = reference_date.weekday()
+                reference_date = reference_date - timedelta(days=days_since_monday)
+                
+                logger.info(f"Processando comando !relatorio-ultima-semana para canal {channel_id} (data calculada={reference_date.strftime('%d/%m/%Y')})")
+                
+                # Validar se o canal está configurado corretamente
+                validation = self.validate_channel_for_reports(channel_id)
+                
+                if not validation['valid']:
+                    self.send_message(channel_id, validation['message'])
+                    logger.info(f"Canal {channel_id} não validado: {validation['reason']}")
+                    return True
+                
+                # Verificar se a fila está inicializada corretamente
+                if not hasattr(self, 'queue_system') or not self.queue_system:
+                    logger.error("Sistema de filas não inicializado corretamente")
+                    self.send_message(channel_id, "❌ Erro interno: Sistema de filas não inicializado. Contate o administrador.")
+                    return False
+
+                # Adicionar à fila com data de referência
+                try:
+                    self.queue_system.add_report_request(channel_id, hide_dashboard=False, reference_date=reference_date)
+                    logger.info(f"Relatório da última semana antes das férias adicionado à fila: {reference_date.strftime('%d/%m/%Y')}")
+                    self.send_message(channel_id, f"✅ Relatório da **última semana antes das férias** ({reference_date.strftime('%d/%m/%Y')}) adicionado à fila.")
+                    return True
+                
+                except Exception as e:
+                    logger.error(f"Erro ao adicionar relatório à fila: {e}", exc_info=True)
+                    self.send_message(channel_id, f"❌ Erro ao processar comando: {str(e)}")
+                    return False
+            
             # Comando para gerar relatório (com suporte a parâmetros)
-            if command.startswith("!relatorio"):
+            elif command.startswith("!relatorio"):
                 # Extrair parâmetros do comando
                 parts = command.split()
                 hide_dashboard = "sem-dashboard" in parts or "sem_dashboard" in parts
@@ -1015,6 +1119,8 @@ class DiscordBotAutoChannels:
         print("\n✅ Bot inicializado e monitorando!")
         print("Aguardando comandos:")
         print("• !relatorio - Gerar relatório semanal")
+        print("• !relatorio-semana DD/MM/YYYY - Gerar relatório para semana específica")
+        print("• !relatorio-ultima-semana - Gerar relatório da última semana antes das férias")
         print("• !fila / !status - Verificar status da fila")
         print("• !controle - Verificar controle de relatórios")
         print("• !notificar - Enviar notificação de relatórios em falta (só no canal admin)")
@@ -1072,9 +1178,16 @@ class DiscordBotAutoChannels:
                             # Gradualmente voltar ao intervalo normal após sucesso
                             if channel_check_interval[channel_id] > polling_interval:
                                 channel_check_interval[channel_id] = max(polling_interval, channel_check_interval[channel_id] * 0.8)
+                            
+                            # Log de debug: verificar se há mensagens novas
+                            new_messages_count = sum(1 for msg in messages if channel_id not in last_message_ids or msg['id'] > last_message_ids.get(channel_id, 0))
+                            if new_messages_count > 0:
+                                logger.debug(f"Canal {channel_id}: {new_messages_count} mensagens novas de {len(messages)} total")
                         else:
                             # Incrementar contador de erros e ajustar intervalo
                             error_counters[channel_id] += 1
+                            if error_counters[channel_id] % 10 == 1:  # Log a cada 10 tentativas falhas
+                                logger.warning(f"Não foi possível obter mensagens do canal {channel_id} (tentativa {error_counters[channel_id]})")
                             continue  # Pular este canal se não conseguir mensagens
                         
                         # Processar as mensagens em ordem cronológica inversa (mais recentes primeiro)
@@ -1090,6 +1203,11 @@ class DiscordBotAutoChannels:
                             message_author = message.get('author', {})
                             is_bot_message = message_author.get('bot', False)
                             author_username = message_author.get('username', '')
+                            
+                            # Log de debug para mensagens que contêm comandos
+                            message_content = message.get('content', '').strip()
+                            if message_content and ('!relatorio' in message_content.lower() or any(cmd in message_content.lower() for cmd in ['!fila', '!status', '!controle'])):
+                                logger.debug(f"Mensagem detectada no canal {channel_id}: autor={author_username}, bot={is_bot_message}, conteúdo={message_content[:50]}")
                             
                             # Se for mensagem de bot, verificar se é autorizada
                             if is_bot_message:
@@ -1145,12 +1263,14 @@ class DiscordBotAutoChannels:
                                         self.send_message(channel_id, f"❌ Erro ao processar comando: {str(cmd_error)}")
                                 continue
                                 
-                            # Verificar se é um dos comandos que conhecemos
+                            # Verificar se é um dos comandos que conhecemos (apenas para mensagens de usuários, não bots)
                             content = message.get('content', '').strip().lower()
-                            if content.startswith('!relatorio') or content in ['!fila', '!status', '!controle', '!notificar', '!notificar_coordenadores', '!topico', '!canais']:
+                            if content.startswith('!relatorio') or content == '!relatorio-ultima-semana' or content in ['!fila', '!status', '!controle', '!notificar', '!notificar_coordenadores', '!topico', '!canais']:
                                 project_name = self.get_project_name(channel_id)
+                                author_username = message.get('author', {}).get('username', 'Desconhecido')
+                                logger.info(f"📣 Comando {content} recebido para {project_name} de {author_username} no canal {channel_id}")
                                 print(f"\n\n📣 Comando {content} recebido para {project_name}!")
-                                print(f"De: {message.get('author', {}).get('username', 'Desconhecido')}")
+                                print(f"De: {author_username}")
                                 print(f"Em: {message.get('timestamp', 'tempo desconhecido')}")
                                 
                                 # Processar o comando

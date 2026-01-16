@@ -862,27 +862,44 @@ class WeeklyReportSystem:
                                 email_url_disciplina = project_row['email_url_disciplina'].values[0] if pd.notna(project_row['email_url_disciplina'].values[0]) else None
                             # Obter URL da imagem do projeto (coluna email_url_capa)
                             if 'email_url_capa' in project_row.columns:
-                                image_url = project_row['email_url_capa'].values[0] if pd.notna(project_row['email_url_capa'].values[0]) else None
+                                image_url_raw = project_row['email_url_capa'].values[0]
+                                # Converter para string e verificar se é válido
+                                image_url = None
+                                if pd.notna(image_url_raw):
+                                    image_url_str = str(image_url_raw).strip()
+                                    # Verificar se não é NaN, None, ou string vazia após conversão
+                                    if image_url_str.lower() not in ['nan', 'none', 'null', '']:
+                                        image_url = image_url_str
                                 if image_url and hasattr(self, 'gdrive') and self.gdrive:
                                     try:
-                                        logger.info(f"📷 URL da imagem de capa: {str(image_url)[:100]}...")
+                                        logger.info(f"📷 Processando imagem do projeto {project_id} ({project_name})")
+                                        logger.info(f"   URL da imagem de capa: {str(image_url)[:150]}...")
                                         # Extrair file_id da URL e baixar como base64
                                         file_id = self.gdrive.extract_file_id_from_url(str(image_url))
                                         if file_id:
-                                            logger.info(f"🔑 File ID extraído: {file_id}")
-                                            logger.info(f"📥 Tentando baixar imagem do projeto...")
+                                            logger.info(f"   🔑 File ID extraído: {file_id}")
+                                            logger.info(f"   📥 Tentando baixar imagem do projeto...")
                                             project_image_base64 = self.gdrive.download_file_as_base64(file_id)
                                             if project_image_base64:
-                                                logger.info(f"✅ Imagem do projeto carregada com sucesso")
+                                                logger.info(f"   ✅ Imagem do projeto carregada com sucesso (tamanho: {len(project_image_base64)} caracteres)")
                                             else:
-                                                logger.warning(f"⚠️ Não foi possível baixar a imagem do projeto.")
-                                                logger.warning(f"   Verifique se o arquivo existe no Google Drive e se as credenciais têm permissão para acessá-lo.")
-                                                logger.warning(f"   File ID: {file_id}")
-                                                logger.warning(f"   URL original: {str(image_url)[:150]}")
+                                                logger.warning(f"   ⚠️ Não foi possível baixar a imagem do projeto.")
+                                                logger.warning(f"      Verifique se o arquivo existe no Google Drive e se as credenciais têm permissão para acessá-lo.")
+                                                logger.warning(f"      File ID: {file_id}")
+                                                logger.warning(f"      URL original: {str(image_url)[:150]}")
+                                                logger.warning(f"      Possíveis causas:")
+                                                logger.warning(f"      1. O arquivo foi deletado ou movido")
+                                                logger.warning(f"      2. O arquivo não está compartilhado com a conta de serviço")
+                                                logger.warning(f"      3. O formato da URL não é reconhecido")
                                         else:
-                                            logger.warning(f"⚠️ Não foi possível extrair o File ID da URL.")
-                                            logger.warning(f"   URL fornecida: {str(image_url)[:150]}")
-                                            logger.warning(f"   Verifique se a URL está no formato correto do Google Drive.")
+                                            logger.warning(f"   ⚠️ Não foi possível extrair o File ID da URL.")
+                                            logger.warning(f"      URL fornecida: {str(image_url)[:150]}")
+                                            logger.warning(f"      Verifique se a URL está no formato correto do Google Drive.")
+                                            logger.warning(f"      Formatos suportados:")
+                                            logger.warning(f"      - https://drive.google.com/file/d/FILE_ID/view")
+                                            logger.warning(f"      - https://drive.google.com/open?id=FILE_ID")
+                                            logger.warning(f"      - https://drive.google.com/uc?id=FILE_ID")
+                                            logger.warning(f"      - FILE_ID (apenas o ID)")
                                     except Exception as img_error:
                                         logger.error(f"❌ Erro ao processar imagem do projeto: {img_error}")
                                         logger.error(f"   URL da imagem: {str(image_url)[:150] if image_url else 'N/A'}")

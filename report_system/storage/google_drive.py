@@ -311,6 +311,8 @@ class GoogleDriveManager:
         - https://drive.google.com/file/d/FILE_ID/view
         - https://drive.google.com/open?id=FILE_ID
         - https://docs.google.com/document/d/FILE_ID/edit
+        - https://drive.google.com/uc?id=FILE_ID
+        - https://drive.google.com/thumbnail?id=FILE_ID
         - FILE_ID (se já for apenas o ID)
         
         Args:
@@ -319,28 +321,52 @@ class GoogleDriveManager:
         Returns:
             ID do arquivo ou None se não encontrar
         """
-        if not url or pd.isna(url):
+        if not url:
             return None
         
-        url = str(url).strip()
+        # Converter para string e verificar se é NaN (após conversão para string)
+        try:
+            url_str = str(url).strip()
+            # Verificar se é NaN após converter para string
+            if url_str.lower() in ['nan', 'none', 'null', '']:
+                return None
+        except Exception:
+            return None
+        
+        # Verificar se pd.isna retorna True (mas só se for realmente NaN do pandas)
+        try:
+            if pd.isna(url) or (isinstance(url, str) and url.strip() == ''):
+                return None
+        except (TypeError, ValueError):
+            # Se pd.isna falhar, continuar processando
+            pass
+        
+        url = url_str
         
         # Se já for apenas um ID (sem caracteres especiais de URL)
-        if re.match(r'^[a-zA-Z0-9_-]+$', url):
+        # Google Drive file IDs geralmente têm 33 caracteres
+        if re.match(r'^[a-zA-Z0-9_-]{25,}$', url):
             return url
         
         # Padrões comuns de URLs do Google Drive
         patterns = [
-            r'/file/d/([a-zA-Z0-9_-]+)',  # /file/d/FILE_ID
-            r'[?&]id=([a-zA-Z0-9_-]+)',   # ?id=FILE_ID ou &id=FILE_ID
-            r'/d/([a-zA-Z0-9_-]+)',        # /d/FILE_ID
+            r'/file/d/([a-zA-Z0-9_-]+)',      # /file/d/FILE_ID
+            r'/uc\?id=([a-zA-Z0-9_-]+)',      # /uc?id=FILE_ID
+            r'/thumbnail\?id=([a-zA-Z0-9_-]+)', # /thumbnail?id=FILE_ID
+            r'[?&]id=([a-zA-Z0-9_-]+)',       # ?id=FILE_ID ou &id=FILE_ID
+            r'/d/([a-zA-Z0-9_-]+)',           # /d/FILE_ID
+            r'id=([a-zA-Z0-9_-]+)',           # id=FILE_ID (formato alternativo)
         ]
         
         for pattern in patterns:
             match = re.search(pattern, url)
             if match:
-                return match.group(1)
+                file_id = match.group(1)
+                # Validar que o file_id tem um tamanho razoável (Google Drive IDs são geralmente ~33 caracteres)
+                if len(file_id) >= 10:  # Mínimo razoável para um file ID
+                    return file_id
         
-        logger.warning(f"Não foi possível extrair ID do arquivo da URL: {url}")
+        logger.warning(f"Não foi possível extrair ID do arquivo da URL: {url[:100]}")
         return None
 
     def download_file_as_base64(self, file_id: str, 

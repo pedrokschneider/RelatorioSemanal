@@ -1453,7 +1453,11 @@ class HTMLReportGenerator:
                         # Mostrar data de início se disponível, senão data de término
                         start_date = task.get('Data Inicio', task.get('Data de Início', task.get('Start Date', '')))
                         end_date = task.get('Data Término', task.get('Data de Término', task.get('End Date', '')))
-                        date = self._format_date(start_date) if start_date else self._format_date(end_date)
+                        # Verificar se start_date é válido (não vazio, não None, não 'nan')
+                        if start_date and str(start_date).strip() and str(start_date).lower() not in ['nan', 'none', '']:
+                            date = self._format_date(start_date)
+                        else:
+                            date = self._format_date(end_date)
                         name = task.get('Nome da Tarefa', task.get('Task Name', ''))
                         # Observação Otus
                         observacao_otus = task.get('Observação Otus', task.get('Observacao Otus', ''))
@@ -1517,7 +1521,14 @@ class HTMLReportGenerator:
                 if categories.get('a_iniciar'):
                     html += '<p style="margin:0 0 8px;font-family:\'Montserrat\',sans-serif;font-size:9px;font-weight:600;color:#f5a623;text-transform:uppercase;letter-spacing:1px;">● A Iniciar</p>'
                     for task in categories['a_iniciar']:
-                        date = self._format_date(task.get('Data Término', task.get('Data de Término', '')))
+                        # Mostrar data de início se disponível, senão data de término
+                        start_date = task.get('Data Inicio', task.get('Data de Início', task.get('Start Date', '')))
+                        end_date = task.get('Data Término', task.get('Data de Término', task.get('End Date', '')))
+                        # Verificar se start_date é válido (não vazio, não None, não 'nan')
+                        if start_date and str(start_date).strip() and str(start_date).lower() not in ['nan', 'none', '']:
+                            date = self._format_date(start_date)
+                        else:
+                            date = self._format_date(end_date)
                         name = task.get('Nome da Tarefa', task.get('Task Name', ''))
                         # Observação Otus
                         observacao_otus = task.get('Observação Otus', task.get('Observacao Otus', ''))

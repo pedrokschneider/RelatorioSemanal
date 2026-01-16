@@ -65,20 +65,18 @@ class ReportQueue:
             
         logger.info(f"Sistema de fila iniciado com {max_workers} workers")
     
-    def add_report_request(self, channel_id, hide_dashboard=False, schedule_days=None, reference_date=None):
+    def add_report_request(self, channel_id, hide_dashboard=False):
         """
         Adiciona uma solicitação de relatório à fila.
         
         Args:
             channel_id: ID do canal que solicitou o relatório
             hide_dashboard: Se True, não exibe o botão do Dashboard no relatório
-            schedule_days: Número de dias para o cronograma (None = padrão de 15 dias)
-            reference_date: Data de referência para o relatório (datetime object). Se None, usa data atual.
             
         Returns:
             int: Posição na fila (0 significa processamento imediato)
         """
-        logger.info(f"Tentando adicionar relatório para canal {channel_id} à fila (sem-dashboard={hide_dashboard}, schedule_days={schedule_days}, reference_date={reference_date})")
+        logger.info(f"Tentando adicionar relatório para canal {channel_id} à fila (sem-dashboard={hide_dashboard})")
 
         with self.lock:
             # Verificar se já existe um relatório em processamento para este canal
@@ -149,9 +147,7 @@ class ReportQueue:
                 'channel_id': channel_id,
                 'requested_at': datetime.now(),
                 'status': 'queued',
-                'hide_dashboard': hide_dashboard,
-                'schedule_days': schedule_days,
-                'reference_date': reference_date
+                'hide_dashboard': hide_dashboard
             }
             
             self.report_queue.put(request_info)
@@ -201,8 +197,6 @@ class ReportQueue:
                 
                 channel_id = request['channel_id']
                 hide_dashboard = request.get('hide_dashboard', False)
-                schedule_days = request.get('schedule_days', None)
-                reference_date = request.get('reference_date', None)
                 
                 # Obter nome do projeto logo no início para melhorar os logs
                 project_name = self.discord_bot.get_project_name(channel_id)
@@ -220,17 +214,12 @@ class ReportQueue:
                 
                 # Notificar que está começando o processamento
                 message = f"🔄 Iniciando geração do relatório para {project_name}. Isso pode levar alguns minutos..."
-                if schedule_days:
-                    message += f"\n📅 Cronograma configurado para **{schedule_days} dias**."
-                if reference_date:
-                    message += f"\n📆 Relatório para a semana de **{reference_date.strftime('%d/%m/%Y')}**."
                 self.send_message_with_rate_limit(channel_id, message)
                 
-                ref_date_str = reference_date.strftime('%d/%m/%Y') if reference_date else None
-                logger.info(f"Worker {worker_id} iniciando relatório para {project_name} (canal {channel_id}, sem-dashboard={hide_dashboard}, schedule_days={schedule_days}, reference_date={ref_date_str})")
+                logger.info(f"Worker {worker_id} iniciando relatório para {project_name} (canal {channel_id}, sem-dashboard={hide_dashboard})")
                 
                 # Executar o processo de geração de relatório - CORREÇÃO: Não passar project_name como argumento
-                success = self._generate_report(channel_id, worker_id, hide_dashboard=hide_dashboard, schedule_days=schedule_days, reference_date=reference_date)
+                success = self._generate_report(channel_id, worker_id, hide_dashboard=hide_dashboard)
                 
                 # Marcar como concluído na fila
                 self.report_queue.task_done()
@@ -273,7 +262,7 @@ class ReportQueue:
                 self.worker_status[worker_id] = f"error: {str(e)[:50]}"
                 time.sleep(1) 
     
-    def _generate_report(self, channel_id, worker_id, hide_dashboard=False, schedule_days=None, reference_date=None):
+    def _generate_report(self, channel_id, worker_id, hide_dashboard=False):
         """
         Gera um relatório para o canal específico, com monitoramento em tempo real.
         
@@ -281,8 +270,6 @@ class ReportQueue:
             channel_id: ID do canal
             worker_id: ID do worker processando esta solicitação
             hide_dashboard: Se True, não exibe o botão do Dashboard no relatório
-            schedule_days: Número de dias para o cronograma (None = padrão de 15 dias)
-            reference_date: Data de referência para o relatório (datetime object). Se None, usa data atual.
             
         Returns:
             bool: True se o relatório foi gerado com sucesso, False caso contrário
@@ -293,8 +280,7 @@ class ReportQueue:
         # Executar o script run.py com o parâmetro --channel
         script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "run.py")
         
-        ref_date_str = reference_date.strftime('%d/%m/%Y') if reference_date else None
-        logger.info(f"Worker {worker_id} executando relatório para {project_name} (canal {channel_id}, sem-dashboard={hide_dashboard}, schedule_days={schedule_days}, reference_date={ref_date_str})")
+        logger.info(f"Worker {worker_id} executando relatório para {project_name} (canal {channel_id}, sem-dashboard={hide_dashboard})")
         
         try:
             # Executar o processo redirecionando saída para capturar o URL
@@ -302,10 +288,6 @@ class ReportQueue:
             cmd = [sys.executable, script_path, "--channel", channel_id, "--quiet"]
             if hide_dashboard:
                 cmd.append("--hide-dashboard")
-            if schedule_days:
-                cmd.extend(["--schedule-days", str(schedule_days)])
-            if reference_date:
-                cmd.extend(["--reference-date", reference_date.strftime('%d/%m/%Y')])
             
             # Imprimir comando que será executado
             logger.info(f"Executando: {' '.join(cmd)}")
@@ -324,13 +306,12 @@ class ReportQueue:
             logger.info(f"Resultado do subprocess: returncode={result.returncode}, stdout_length={len(result.stdout) if result.stdout else 0}, stderr_length={len(result.stderr) if result.stderr else 0}")
             
             if result.returncode == 0:
-                # Procurar URL do documento na saída (pode ser Google Docs ou Google Drive)
+                # Procurar URL do documento na saída
                 doc_url = None
                 if result.stdout:
                     logger.info(f"Procurando URL na saída: {repr(result.stdout[:500])}...")
                     for line in result.stdout.split('\n'):
-                        # Procurar por links do Google Docs ou Google Drive
-                        if "docs.google.com/document" in line or "drive.google.com/file" in line:
+                        if "docs.google.com/document" in line:
                             doc_url = line.strip()
                             logger.info(f"URL encontrado: {doc_url}")
                             break

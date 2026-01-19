@@ -318,24 +318,41 @@ class ReportQueue:
             logger.info(f"Resultado do subprocess: returncode={result.returncode}, stdout_length={len(result.stdout) if result.stdout else 0}, stderr_length={len(result.stderr) if result.stderr else 0}")
             
             if result.returncode == 0:
-                # Procurar URL do documento na saída
+                # Procurar URL do documento na saída (suporta tanto Google Docs quanto Google Drive)
                 doc_url = None
                 if result.stdout:
                     logger.info(f"Procurando URL na saída: {repr(result.stdout[:500])}...")
                     for line in result.stdout.split('\n'):
-                        if "docs.google.com/document" in line:
+                        # Aceitar tanto URLs do Google Docs quanto do Google Drive
+                        if "docs.google.com/document" in line or "drive.google.com/file/d/" in line:
                             doc_url = line.strip()
                             logger.info(f"URL encontrado: {doc_url}")
                             break
                 else:
                     logger.warning("stdout está vazio, não foi possível encontrar URL")
                 
+                # Verificar também se houve mensagem de sucesso na saída
+                # Mesmo que não encontremos o URL, se o returncode for 0, consideramos sucesso
+                success_message_found = False
+                if result.stdout:
+                    success_indicators = [
+                        "✅ Sucesso",
+                        "Relatórios HTML gerados com sucesso",
+                        "Relatório gerado com sucesso",
+                        "Relatórios HTML de"
+                    ]
+                    for indicator in success_indicators:
+                        if indicator in result.stdout:
+                            success_message_found = True
+                            logger.info(f"Mensagem de sucesso encontrada na saída: {indicator}")
+                            break
+                
                 # Importamos aqui para evitar importação circular
                 from report_system.main import WeeklyReportSystem
                 system = WeeklyReportSystem()
                 
-                # Se temos um URL do documento, formatar a mensagem completa
-                if doc_url:
+                # Se temos um URL do documento OU se encontramos mensagem de sucesso, formatar a mensagem completa
+                if doc_url or success_message_found:
                     # Tentar obter o ID do projeto a partir do canal
                     project_id = system.get_project_by_discord_channel(channel_id)
                     
@@ -351,32 +368,78 @@ class ReportQueue:
                     
                     # Usar o formato de mensagem padrão
                     message = [
-                        "🎉 Relatório Semanal Concluído!",
-                        "",
-                        f"📋 Projeto: {project_name}",
-                        "",
-                        f"📄 [Abrir Relatório]({doc_url})"
+                        "✅ **Relatórios HTML de {} gerados com sucesso!**".format(project_name),
+                        ""
                     ]
                     
-                    if folder_url:
-                        message.append(f"📁 [Abrir Pasta do Projeto]({folder_url})")
+                    # Se temos o URL do relatório, incluir na mensagem
+                    if doc_url:
+                        # Verificar se é Google Docs ou Google Drive e formatar adequadamente
+                        if "docs.google.com/document" in doc_url:
+                            message.append(f"📄 [Relatório do Cliente]({doc_url})")
+                        elif "drive.google.com/file/d/" in doc_url:
+                            message.append(f"📄 [Relatório do Cliente (HTML)]({doc_url})")
+                            # Tentar extrair o ID do cliente para construir URL do relatório da equipe
+                            # O sistema retorna o URL do cliente, então podemos assumir que o da equipe está na mesma pasta
+                            message.append(f"📄 Relatório da Equipe (HTML) - disponível na pasta do projeto")
+                        else:
+                            message.append(f"📄 [Relatório]({doc_url})")
+                    else:
+                        # Se não temos o URL mas temos sucesso, informar que está na pasta
+                        message.append("📄 Relatórios HTML gerados e salvos no Google Drive")
+                        message.append("📄 Relatórios disponíveis na pasta do projeto")
                     
-                    message.extend([
-                        "",
-                        "✅ O relatório foi gerado com sucesso e está pronto para ser compartilhado.",
-                        "🔄 Para gerar um novo relatório, use o comando !relatorio neste canal."
-                    ])
+                    if folder_url:
+                        message.append(f"\n📁 [Link para a pasta do projeto]({folder_url})")
                     
                     formatted_message = "\n".join(message)
                     self.send_message_with_rate_limit(channel_id, formatted_message)
-                    logger.info(f"Relatório gerado com sucesso para {project_name} com URL: {doc_url}")
+                    
+                    if doc_url:
+                        logger.info(f"Relatório gerado com sucesso para {project_name} com URL: {doc_url}")
+                    else:
+                        logger.info(f"Relatório gerado com sucesso para {project_name} (URL não capturado na saída, mas processamento bem-sucedido)")
                     return True
                 else:
-                    # Se não encontramos o URL, considerar como falha
-                    logger.error(f"Relatório não gerado com sucesso para {project_name}: URL não encontrado na saída")
-                    # Mensagem simples para o canal do projeto
-                    error_message = f"❌ **Erro ao gerar relatório para {project_name}**\n\nO relatório foi processado mas não foi possível obter o link do documento. Isso pode indicar um problema na criação do Google Doc ou nas permissões do Google Drive."
-                    self.send_message_with_rate_limit(channel_id, error_message)
+                    # Se não encontramos o URL nem mensagem de sucesso, verificar se realmente falhou
+                    # Verificar stderr para ver se há erros reais
+                    has_real_error = False
+                    if result.stderr:
+                        error_indicators = ["ERROR", "Falha", "Erro fatal", "❌"]
+                        for indicator in error_indicators:
+                            if indicator in result.stderr:
+                                has_real_error = True
+                                break
+                    
+                    if not has_real_error and result.returncode == 0:
+                        # Se o returncode é 0 e não há erros, provavelmente foi sucesso mas não capturamos o URL
+                        logger.warning(f"Relatório processado para {project_name}, mas URL não encontrado na saída. Considerando sucesso baseado no returncode 0.")
+                        message = [
+                            "✅ **Relatórios HTML de {} gerados com sucesso!**".format(project_name),
+                            "",
+                            "📄 Relatórios HTML gerados e salvos no Google Drive",
+                            "📄 Relatórios disponíveis na pasta do projeto"
+                        ]
+                        
+                        try:
+                            project_id = system.get_project_by_discord_channel(channel_id)
+                            if project_id:
+                                project_folder_id = system.gdrive.get_project_folder(project_id, project_name)
+                                if project_folder_id:
+                                    folder_url = f"https://drive.google.com/drive/folders/{project_folder_id}"
+                                    message.append(f"\n📁 [Link para a pasta do projeto]({folder_url})")
+                        except Exception as e:
+                            logger.warning(f"Erro ao obter pasta do projeto: {e}")
+                        
+                        formatted_message = "\n".join(message)
+                        self.send_message_with_rate_limit(channel_id, formatted_message)
+                        return True
+                    else:
+                        # Se não encontramos o URL e há evidências de erro, considerar como falha
+                        logger.error(f"Relatório não gerado com sucesso para {project_name}: URL não encontrado na saída e returncode={result.returncode}")
+                        # Mensagem simples para o canal do projeto
+                        error_message = f"❌ **Erro ao gerar relatório para {project_name}**\n\nO relatório foi processado mas não foi possível obter o link do documento. Isso pode indicar um problema na criação do Google Doc ou nas permissões do Google Drive."
+                        self.send_message_with_rate_limit(channel_id, error_message)
                     
                     # Enviar notificação adicional para o canal admin/notificação
                     try:

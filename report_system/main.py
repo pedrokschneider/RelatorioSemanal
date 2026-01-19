@@ -372,6 +372,98 @@ class WeeklyReportSystem:
                         return str(row['construflow_id'])
         
         return None
+    
+    def get_project_by_code(self, project_code: str) -> Optional[str]:
+        """
+        Busca o ID do projeto (construflow_id) pelo código do projeto.
+        
+        Args:
+            project_code: Código do projeto (ex: PRC_CREFAZ)
+            
+        Returns:
+            ID do projeto (construflow_id) ou None se não encontrado
+        """
+        projects_df = self._load_project_config()
+        
+        if projects_df.empty:
+            logger.warning("Planilha de configuração vazia")
+            return None
+        
+        # Verificar colunas disponíveis
+        available_columns = list(projects_df.columns)
+        logger.debug(f"Colunas disponíveis na planilha: {', '.join(available_columns)}")
+        
+        # Tentar diferentes nomes de coluna para código do projeto
+        code_column = None
+        possible_code_columns = ['Código Projeto', 'codigo_projeto', 'project_code_norm', 'Código', 'codigo']
+        
+        for col in possible_code_columns:
+            if col in projects_df.columns:
+                code_column = col
+                break
+        
+        if not code_column:
+            logger.warning(f"Coluna de código do projeto não encontrada. Colunas disponíveis: {', '.join(available_columns)}")
+            # Tentar buscar em todas as colunas de texto
+            logger.info("Tentando buscar em todas as colunas de texto...")
+            for col in projects_df.columns:
+                if projects_df[col].dtype == 'object':  # Coluna de texto
+                    matches = projects_df[projects_df[col].astype(str).str.upper().str.contains(project_code.upper(), na=False)]
+                    if not matches.empty:
+                        logger.info(f"Encontrado '{project_code}' na coluna '{col}'")
+                        if 'construflow_id' in matches.columns:
+                            construflow_id = matches['construflow_id'].values[0]
+                            if pd.notna(construflow_id):
+                                logger.info(f"Projeto '{project_code}' encontrado na coluna '{col}': construflow_id={construflow_id}")
+                                return str(construflow_id)
+            return None
+        
+        if 'construflow_id' not in projects_df.columns:
+            logger.warning("Planilha não contém coluna 'construflow_id'")
+            return None
+        
+        # Buscar projeto pelo código (case-insensitive)
+        project_code_upper = project_code.upper()
+        project_row = projects_df[projects_df[code_column].astype(str).str.upper() == project_code_upper]
+        
+        if project_row.empty:
+            # Tentar busca parcial (contém)
+            project_row = projects_df[projects_df[code_column].astype(str).str.upper().str.contains(project_code_upper, na=False)]
+        
+        # Se ainda não encontrou, tentar buscar pelo nome do projeto
+        if project_row.empty and 'Projeto - PR' in projects_df.columns:
+            logger.info(f"Tentando buscar '{project_code}' pelo nome do projeto...")
+            project_row = projects_df[projects_df['Projeto - PR'].astype(str).str.upper().str.contains(project_code_upper, na=False)]
+            if not project_row.empty:
+                logger.info(f"Encontrado '{project_code}' no nome do projeto")
+        
+        # Se ainda não encontrou, tentar buscar em todas as colunas de texto
+        if project_row.empty:
+            logger.info(f"Tentando buscar '{project_code}' em todas as colunas de texto...")
+            for col in projects_df.columns:
+                if projects_df[col].dtype == 'object':  # Coluna de texto
+                    matches = projects_df[projects_df[col].astype(str).str.upper().str.contains(project_code_upper, na=False)]
+                    if not matches.empty:
+                        logger.info(f"Encontrado '{project_code}' na coluna '{col}'")
+                        project_row = matches
+                        break
+            
+            if project_row.empty:
+                # Listar alguns códigos disponíveis para ajudar no debug
+                if len(projects_df) > 0:
+                    sample_codes = projects_df[code_column].dropna().head(10).tolist()
+                    logger.warning(f"Projeto com código '{project_code}' não encontrado na planilha")
+                    logger.info(f"Alguns códigos disponíveis (primeiros 10): {sample_codes}")
+                return None
+        
+        construflow_id = project_row['construflow_id'].values[0]
+        
+        if pd.isna(construflow_id):
+            logger.warning(f"Projeto '{project_code}' encontrado mas sem construflow_id")
+            return None
+        
+        logger.info(f"Projeto '{project_code}' encontrado: construflow_id={construflow_id}")
+        return str(construflow_id)
 
     def filter_client_issues(self, df_issues: pd.DataFrame, project_id: str) -> pd.DataFrame:
         """
@@ -675,7 +767,7 @@ class WeeklyReportSystem:
             logging.error(f"Erro ao registrar log de execução na planilha: {e}")
             return False
 
-    def run_for_project(self, project_id, quiet_mode=False, skip_cache_update=False, skip_notifications=False, hide_dashboard=False, schedule_days=None, reference_date=None) -> Tuple[bool, str, Optional[str]]:
+    def run_for_project(self, project_id, quiet_mode=False, skip_cache_update=False, skip_notifications=False, hide_dashboard=False, schedule_days=None, reference_date=None, since_date=None) -> Tuple[bool, str, Optional[str]]:
         """
         Executa o processo completo para um projeto, atualizando o cache primeiro.
         
@@ -777,7 +869,7 @@ class WeeklyReportSystem:
                 # Chamar process_project_data com proteção adicional
                 project_data = None
                 try:
-                    project_data = self.processor.process_project_data(project_id, smartsheet_id, reference_date=reference_date)
+                    project_data = self.processor.process_project_data(project_id, smartsheet_id, reference_date=reference_date, since_date=since_date)
                 except Exception as e:
                     logger.error(f"Erro ao processar dados do projeto {project_id}: {e}")
                     
@@ -785,7 +877,7 @@ class WeeklyReportSystem:
                     if smartsheet_id is not None:
                         logger.info(f"Tentando processar projeto {project_id} novamente sem usar dados do Smartsheet")
                         try:
-                            project_data = self.processor.process_project_data(project_id, None, reference_date=reference_date)
+                            project_data = self.processor.process_project_data(project_id, None, reference_date=reference_date, since_date=since_date)
                         except Exception as e2:
                             logger.error(f"Erro ao processar projeto {project_id} sem Smartsheet: {e2}")
                             project_data = None

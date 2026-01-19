@@ -547,8 +547,24 @@ class HTMLReportGenerator:
             return {}
         
         all_tasks = smartsheet_data.get('all_tasks', [])
-        today = datetime.now()
-        week_ago = today - timedelta(days=7)
+        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        # Usar since_date se fornecido, senão usar última semana (7 dias)
+        since_date = data.get('since_date')
+        if since_date:
+            # Garantir que since_date seja datetime se for string
+            if isinstance(since_date, str):
+                try:
+                    since_date = datetime.fromisoformat(since_date)
+                except ValueError:
+                    try:
+                        since_date = datetime.strptime(since_date, "%d/%m/%Y")
+                    except ValueError:
+                        logger.warning(f"Formato de since_date inválido: {since_date}, usando padrão de 7 dias")
+                        since_date = None
+            if since_date:
+                since_date = since_date.replace(hour=0, minute=0, second=0, microsecond=0)
+        if not since_date:
+            since_date = today - timedelta(days=7)
         
         completed_by_discipline = {}
         tasks_cliente_otus = 0
@@ -560,13 +576,15 @@ class HTMLReportGenerator:
             if status != 'feito':
                 continue
             
-            # Verificar se foi concluída na última semana (se tiver data)
+            # Verificar se foi concluída desde a data inicial (se tiver data)
             end_date_str = task.get('Data Término', task.get('Data de Término', task.get('End Date', '')))
             if end_date_str:
                 try:
                     end_date = self._parse_date(end_date_str)
-                    if end_date and end_date < week_ago:
-                        continue  # Ignorar tarefas concluídas há mais de uma semana
+                    if end_date:
+                        end_date_normalized = end_date.replace(hour=0, minute=0, second=0, microsecond=0)
+                        if end_date_normalized < since_date:
+                            continue  # Ignorar tarefas concluídas antes da data inicial
                 except:
                     pass
             
@@ -602,7 +620,23 @@ class HTMLReportGenerator:
             return {}
         
         today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        week_ago = today - timedelta(days=7)
+        # Usar since_date se fornecido, senão usar última semana (7 dias)
+        since_date = data.get('since_date')
+        if since_date:
+            # Garantir que since_date seja datetime se for string
+            if isinstance(since_date, str):
+                try:
+                    since_date = datetime.fromisoformat(since_date)
+                except ValueError:
+                    try:
+                        since_date = datetime.strptime(since_date, "%d/%m/%Y")
+                    except ValueError:
+                        logger.warning(f"Formato de since_date inválido: {since_date}, usando padrão de 7 dias")
+                        since_date = None
+            if since_date:
+                since_date = since_date.replace(hour=0, minute=0, second=0, microsecond=0)
+        if not since_date:
+            since_date = today - timedelta(days=7)
         
         completed_by_discipline = {}
         tasks_nao_concluidas = 0
@@ -611,7 +645,7 @@ class HTMLReportGenerator:
         tasks_sem_data = 0
         tasks_hoje = 0
         
-        logger.info(f"Filtrando tarefas concluídas: período de {week_ago.strftime('%d/%m/%Y')} até {today.strftime('%d/%m/%Y')} (inclusive)")
+        logger.info(f"Filtrando tarefas concluídas: período de {since_date.strftime('%d/%m/%Y')} até {today.strftime('%d/%m/%Y')} (inclusive)")
         
         for task in all_tasks:
             if not isinstance(task, dict):
@@ -632,10 +666,10 @@ class HTMLReportGenerator:
                     if end_date:
                         # Normalizar para comparar apenas a data (sem hora)
                         end_date_normalized = end_date.replace(hour=0, minute=0, second=0, microsecond=0)
-                        # Incluir tarefas concluídas desde week_ago até hoje (inclusive)
-                        if end_date_normalized < week_ago:
+                        # Incluir tarefas concluídas desde since_date até hoje (inclusive)
+                        if end_date_normalized < since_date:
                             tasks_fora_periodo += 1
-                            continue  # Ignorar tarefas concluídas há mais de uma semana
+                            continue  # Ignorar tarefas concluídas antes da data inicial
                         elif end_date_normalized == today:
                             tasks_hoje += 1
                 except Exception as e:

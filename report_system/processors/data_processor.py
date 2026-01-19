@@ -42,7 +42,7 @@ class DataProcessor:
         
         self.gdrive = GoogleDriveManager(config)
     
-    def process_project_data(self, project_id: str, smartsheet_id: Optional[str] = None, reference_date: Optional[datetime] = None) -> Dict[str, Any]:
+    def process_project_data(self, project_id: str, smartsheet_id: Optional[str] = None, reference_date: Optional[datetime] = None, since_date: Optional[datetime] = None) -> Dict[str, Any]:
         """
         Processa todos os dados para um projeto específico.
         
@@ -61,7 +61,8 @@ class DataProcessor:
         'smartsheet_data': None,
         'construflow_data': None,
         'summary': {},
-        'reference_date': reference_date  # Armazenar data de referência para uso nos geradores
+        'reference_date': reference_date,  # Armazenar data de referência para uso nos geradores
+        'since_date': since_date  # Armazenar data inicial para atividades concluídas
         }
         
         # Obter nome do projeto

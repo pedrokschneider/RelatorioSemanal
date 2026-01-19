@@ -736,6 +736,35 @@ class DiscordBotAutoChannels:
                 
                 # Extrair parâmetro de dias (ex: !relatorio 30dias ou !relatorio dias=30)
                 schedule_days = None
+                since_date = None
+                
+                # Verificar se há parâmetro "desde dia X" ou "desde X"
+                desde_index = None
+                for i, part in enumerate(parts):
+                    if part.lower() == "desde":
+                        desde_index = i
+                        break
+                
+                if desde_index is not None and desde_index + 1 < len(parts):
+                    # Pode ser "desde dia DD/MM/YYYY" ou "desde DD/MM/YYYY"
+                    date_part = parts[desde_index + 1]
+                    if date_part.lower() == "dia" and desde_index + 2 < len(parts):
+                        date_part = parts[desde_index + 2]
+                    
+                    # Tentar parsear a data
+                    from datetime import datetime
+                    try:
+                        # Formato DD/MM/YYYY
+                        since_date = datetime.strptime(date_part, "%d/%m/%Y")
+                    except ValueError:
+                        try:
+                            # Formato DD-MM-YYYY
+                            since_date = datetime.strptime(date_part, "%d-%m-%Y")
+                        except ValueError:
+                            logger.warning(f"Formato de data inválido após 'desde': {date_part}")
+                            self.send_message(channel_id, f"❌ **Formato de data inválido!**\n\nUse: `!relatorio desde dia DD/MM/YYYY`\nExemplo: `!relatorio desde dia 15/01/2024`")
+                            return False
+                
                 for part in parts:
                     # Formato: 30dias, 30d, 15dias, etc
                     if part.endswith('dias') or part.endswith('d'):
@@ -758,7 +787,7 @@ class DiscordBotAutoChannels:
                         except (ValueError, IndexError):
                             pass
                 
-                logger.info(f"Processando comando !relatorio para canal {channel_id} (sem-dashboard={hide_dashboard}, schedule_days={schedule_days})")
+                logger.info(f"Processando comando !relatorio para canal {channel_id} (sem-dashboard={hide_dashboard}, schedule_days={schedule_days}, since_date={since_date.strftime('%d/%m/%Y') if since_date else None})")
                 
                 # Validar se o canal está configurado corretamente
                 validation = self.validate_channel_for_reports(channel_id)
@@ -777,8 +806,11 @@ class DiscordBotAutoChannels:
 
                 # Adicionar à fila em vez de processar diretamente
                 try:
-                    self.queue_system.add_report_request(channel_id, hide_dashboard=hide_dashboard, schedule_days=schedule_days)
-                    if schedule_days:
+                    self.queue_system.add_report_request(channel_id, hide_dashboard=hide_dashboard, schedule_days=schedule_days, since_date=since_date)
+                    if since_date:
+                        logger.info(f"Relatório para canal {channel_id} adicionado à fila com sucesso (sem-dashboard={hide_dashboard}, schedule_days={schedule_days}, since_date={since_date.strftime('%d/%m/%Y')})")
+                        self.send_message(channel_id, f"✅ Relatório adicionado à fila. Atividades concluídas desde **{since_date.strftime('%d/%m/%Y')}** até hoje.")
+                    elif schedule_days:
                         logger.info(f"Relatório para canal {channel_id} adicionado à fila com sucesso (sem-dashboard={hide_dashboard}, schedule_days={schedule_days})")
                         self.send_message(channel_id, f"✅ Relatório adicionado à fila com cronograma de **{schedule_days} dias**.")
                     else:

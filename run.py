@@ -47,6 +47,7 @@ def main():
     parser.add_argument('--hide-dashboard', action='store_true', help='Não exibir o botão do Dashboard de Indicadores no relatório')
     parser.add_argument('--schedule-days', type=int, help='Número de dias para o cronograma (padrão: 15 dias)')
     parser.add_argument('--reference-date', type=str, help='Data de referência para o relatório no formato DD/MM/YYYY (ex: 16/12/2024)')
+    parser.add_argument('--since-date', type=str, help='Data inicial para filtrar atividades concluídas no formato DD/MM/YYYY (ex: 15/01/2024)')
     args = parser.parse_args()
     
     try:
@@ -121,7 +122,21 @@ def main():
                 return 1
             logger.info(f"Encontrado projeto {project_id} para o canal {args.channel}")
         elif args.project:
-            project_id = args.project
+            # Verificar se é um código de projeto (não numérico) ou ID numérico
+            project_input = args.project
+            # Tentar converter para int - se falhar, é um código de projeto
+            try:
+                int(project_input)
+                # É um ID numérico, usar diretamente
+                project_id = project_input
+            except ValueError:
+                # Não é numérico, buscar pelo código do projeto
+                logger.info(f"Buscando projeto pelo código '{project_input}'")
+                project_id = system.get_project_by_code(project_input)
+                if not project_id:
+                    logger.error(f"Não foi possível encontrar projeto com código '{project_input}'")
+                    return 1
+                logger.info(f"Encontrado projeto {project_id} para o código '{project_input}'")
         
         # Executar o sistema
         if project_id:
@@ -138,8 +153,19 @@ def main():
                     logger.error(f"Formato de data inválido: {args.reference_date}. Use DD/MM/YYYY")
                     return 1
             
-            logger.info(f"Executando apenas para o projeto {project_id} (sem-dashboard={args.hide_dashboard}, schedule_days={schedule_days}, reference_date={reference_date.strftime('%d/%m/%Y') if reference_date else None})")
-            result = system.run_for_project(project_id, quiet_mode=True, skip_notifications=args.no_notifications, hide_dashboard=args.hide_dashboard, schedule_days=schedule_days, reference_date=reference_date) 
+            # Processar data inicial para atividades concluídas se fornecida
+            since_date = None
+            if args.since_date:
+                try:
+                    from datetime import datetime
+                    since_date = datetime.strptime(args.since_date, "%d/%m/%Y")
+                    logger.info(f"Data inicial para atividades concluídas configurada: {since_date.strftime('%d/%m/%Y')}")
+                except ValueError:
+                    logger.error(f"Formato de data inválido: {args.since_date}. Use DD/MM/YYYY")
+                    return 1
+            
+            logger.info(f"Executando apenas para o projeto {project_id} (sem-dashboard={args.hide_dashboard}, schedule_days={schedule_days}, reference_date={reference_date.strftime('%d/%m/%Y') if reference_date else None}, since_date={since_date.strftime('%d/%m/%Y') if since_date else None})")
+            result = system.run_for_project(project_id, quiet_mode=True, skip_notifications=args.no_notifications, hide_dashboard=args.hide_dashboard, schedule_days=schedule_days, reference_date=reference_date, since_date=since_date) 
             status = "Sucesso" if result[0] else "Falha"
             mensagem = "Relatório gerado com sucesso" if result[0] else (result[3] if len(result) > 3 and result[3] else "Falha ao gerar relatório")
             doc_url = f"https://docs.google.com/document/d/{result[2]}/edit" if result[2] else None

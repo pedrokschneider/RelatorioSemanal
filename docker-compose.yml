@@ -1,0 +1,22 @@
+version: "3.9"
+
+# Nome do projeto para evitar conflitos
+name: relatoriosemanal
+
+services:
+  weekly-report:
+    build: .
+    container_name: relatorio-semanal
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      TZ: "America/Sao_Paulo"
+      CRON_SCHEDULE: "0 7 * * 1"
+      REPORT_ARGS: ""
+    volumes:
+      - ./data/logs:/app/logs
+      - ./data/cache:/app/cache
+      - ./config:/app/config
+    networks:
+      - default

@@ -2,8 +2,8 @@ discord.py==2.3.2
 pandas==2.2.1
 openpyxl==3.1.2
 tqdm==4.66.2
-smartsheet-python-sdk==2.178.0
-pywin32==306
+smartsheet-python-sdk==2.177.1
+# pywin32==306  # Windows only, não necessário no container Linux
 requests==2.31.0
 python-dotenv==1.0.0
 setuptools==69.2.0

@@ -482,13 +482,34 @@ class ConstruflowGraphQLConnector(APIConnector):
             
             logger.info(f"Total de {len(issues)} linhas de issues+disciplinas carregadas do projeto {project_id}")
             
+            # Iniciar busca de deadlines em paralelo enquanto processamos as issues
+            # Só buscar se realmente precisamos (há issues com disciplineId)
+            deadline_future = None
+            needs_deadlines = len(issues) > 0 and any(
+                issue.get('disciplineId') for issue in issues if isinstance(issue, dict)
+            )
+            
+            if self.rest_connector and needs_deadlines:
+                from concurrent.futures import ThreadPoolExecutor
+                executor = ThreadPoolExecutor(max_workers=1)
+                logger.info("🚀 Iniciando busca paralela de deadlines via API REST...")
+                deadline_future = executor.submit(self.rest_connector.get_issue_disciplines, False)
+            elif not needs_deadlines:
+                logger.debug("Pulando busca de deadlines: nenhuma issue com disciplineId encontrada")
+            
             issues_df = pd.DataFrame(issues)
             
-            # Adicionar deadline da API REST se disponível
+            # Adicionar deadline da API REST se disponível (já iniciado em paralelo)
             if not issues_df.empty and self.rest_connector and 'disciplineId' in issues_df.columns:
                 try:
-                    logger.info("Buscando deadline das disciplinas via API REST...")
-                    df_issue_disciplines = self.rest_connector.get_issue_disciplines(force_refresh=False)
+                    # Aguardar resultado da busca paralela de deadlines
+                    if deadline_future:
+                        logger.info("⏳ Aguardando resultado da busca de deadlines...")
+                        df_issue_disciplines = deadline_future.result(timeout=180)  # Timeout de 3 minutos
+                        deadline_future = None  # Limpar referência
+                    else:
+                        logger.info("Buscando deadline das disciplinas via API REST...")
+                        df_issue_disciplines = self.rest_connector.get_issue_disciplines(force_refresh=False)
                     
                     if not df_issue_disciplines.empty and 'deadline' in df_issue_disciplines.columns:
                         # Preparar dados para merge

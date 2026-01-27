@@ -8,6 +8,7 @@ import inspect
 import sys
 from datetime import datetime
 from typing import Dict, List, Optional, Any
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from ..config import ConfigManager
 from ..connectors import SmartsheetConnector, ConstruflowConnector
@@ -121,7 +122,7 @@ class DataProcessor:
         result['project_name'] = project_name
     
         
-        # Buscar dados do Smartsheet (restante do método permanece igual)
+        # Buscar ID do Smartsheet se não fornecido
         if not smartsheet_id:
             projects_df = self.gdrive.load_project_config_from_sheet()
             
@@ -132,8 +133,59 @@ class DataProcessor:
                 if not project_row.empty and pd.notna(project_row['ID_Smartsheet'].values[0]):
                     smartsheet_id = project_row['ID_Smartsheet'].values[0]
                     logger.info(f"ID do Smartsheet obtido da planilha: {smartsheet_id}")
+        
+        # Paralelizar busca de dados do Smartsheet e Construflow
+        logger.info(f"🚀 Iniciando busca paralela de dados para projeto {project_id}")
+        
+        def fetch_smartsheet_data():
+            """Busca dados do Smartsheet em thread separada."""
+            if smartsheet_id:
+                try:
+                    logger.info(f"📊 Buscando dados do Smartsheet {smartsheet_id}...")
+                    tasks_df = self.smartsheet.get_recent_tasks(smartsheet_id, force_refresh=True)
+                    return tasks_df
+                except Exception as e:
+                    logger.error(f"Erro ao buscar dados do Smartsheet: {e}")
+                    return None
+            return None
+        
+        def fetch_construflow_data():
+            """Busca dados do Construflow em thread separada."""
+            try:
+                logger.info(f"🔍 Buscando issues do Construflow para projeto {project_id}...")
+                issues_df = self.construflow.get_project_issues(project_id)
+                return issues_df if issues_df is not None else pd.DataFrame()
+            except Exception as e:
+                logger.error(f"Erro ao buscar issues do Construflow: {e}")
+                return pd.DataFrame()
+        
+        # Executar buscas em paralelo
+        tasks_df = None
+        issues_df = pd.DataFrame()
+        
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            # Submeter ambas as tarefas
+            smartsheet_future = executor.submit(fetch_smartsheet_data) if smartsheet_id else None
+            construflow_future = executor.submit(fetch_construflow_data)
             
-        if smartsheet_id:
+            # Aguardar resultados
+            if smartsheet_future:
+                try:
+                    tasks_df = smartsheet_future.result(timeout=120)  # Timeout de 2 minutos
+                    logger.info(f"✅ Dados do Smartsheet obtidos: {len(tasks_df) if tasks_df is not None and not tasks_df.empty else 0} tarefas")
+                except Exception as e:
+                    logger.error(f"Erro ao obter dados do Smartsheet: {e}")
+                    tasks_df = None
+            
+            try:
+                issues_df = construflow_future.result(timeout=300)  # Timeout de 5 minutos
+                logger.info(f"✅ Issues do Construflow obtidas: {len(issues_df)} issues")
+            except Exception as e:
+                logger.error(f"Erro ao obter issues do Construflow: {e}")
+                issues_df = pd.DataFrame()
+        
+        # Processar dados do Smartsheet
+        if tasks_df is not None and not tasks_df.empty:
             # Processar dados do Smartsheet
             # Forçar atualização do cache para garantir dados mais recentes
             tasks_df = self.smartsheet.get_recent_tasks(smartsheet_id, force_refresh=True)
@@ -244,21 +296,46 @@ class DataProcessor:
                 all_tasks = [row._asdict() if hasattr(row, '_asdict') else row.to_dict() for _, row in tasks_df.iterrows()]
 
                 # Construir lista de atrasadas:
-                # - Status = 'não feito' OU Categoria de atraso preenchida
+                # - Status = 'não feito' (com/sem acento)
+                # - OU categoria/motivo de atraso preenchidos
                 # - OU data de término anterior a hoje e status != 'feito'
                 delayed_tasks = []
                 # Usar data de referência se fornecida, senão usar data atual
                 today = (reference_date if reference_date else datetime.now()).replace(hour=0, minute=0, second=0, microsecond=0)
+
+                def normalize_status(value: Any) -> str:
+                    if value is None:
+                        return ""
+                    import unicodedata
+                    import re
+                    text = str(value).strip().lower()
+                    text = unicodedata.normalize('NFD', text)
+                    text = ''.join(c for c in text if unicodedata.category(c) != 'Mn')
+                    text = re.sub(r'\s+', ' ', text)
+                    return text
+
+                def has_delay_info(task_row: pd.Series) -> bool:
+                    delay_keys = [
+                        'Categoria de atraso',
+                        'Delay Category',
+                        'Motivo de atraso',
+                        'Motivo do atraso',
+                        'Delay Reason'
+                    ]
+                    for key in delay_keys:
+                        val = task_row.get(key)
+                        if val is not None and str(val).strip() not in ['', 'nan', 'None']:
+                            return True
+                    return False
                 
                 for _, task in tasks_df.iterrows():
                     task_dict = task.to_dict()
-                    status = str(task.get('Status', '')).lower().strip()
-                    categoria_atraso = task.get('Categoria de atraso') or task.get('Delay Category')
-                    tem_categoria_atraso = categoria_atraso and str(categoria_atraso).strip() not in ['', 'nan', 'None']
+                    status_norm = normalize_status(task.get('Status', ''))
+                    tem_info_atraso = has_delay_info(task)
 
                     # Verificar se está atrasada pela data (término antes de hoje e não concluída)
                     atrasada_por_data = False
-                    if status != 'feito':
+                    if status_norm != 'feito':
                         end_date = task.get('Data Término') or task.get('Data de Término') or task.get('End Date')
                         if end_date and not pd.isna(end_date):
                             try:
@@ -280,7 +357,7 @@ class DataProcessor:
                                 pass
 
                     # Status padronizados do Smartsheet: 'a fazer', 'em progresso', 'feito', 'não feito'
-                    if status == 'não feito' or tem_categoria_atraso or atrasada_por_data:
+                    if status_norm == 'nao feito' or tem_info_atraso or atrasada_por_data:
                         delayed_tasks.append(task_dict)
 
                 # Organizar dados (sem completed_tasks/scheduled_tasks para evitar sobrepor lógica do gerador)
@@ -298,19 +375,12 @@ class DataProcessor:
                     result['summary']['status_counts'] = status_counts
 
                 logger.info(f"Smartsheet: {len(all_tasks)} tarefas carregadas; {len(delayed_tasks)} marcadas como atrasadas (não feito/categoria atraso)")
+        elif smartsheet_id:
+            logger.warning(f"ID do Smartsheet fornecido ({smartsheet_id}) mas não foi possível obter dados")
         else:
             logger.warning(f"ID do Smartsheet não encontrado para projeto {project_id}")
         
-        # Processar dados do Construflow
-        issues_df = pd.DataFrame()
-        try:
-            issues_df = self.construflow.get_project_issues(project_id)
-            if issues_df is None:
-                issues_df = pd.DataFrame()
-        except Exception as e:
-            logger.error(f"Erro ao buscar issues do Construflow para projeto {project_id}: {e}")
-            issues_df = pd.DataFrame()
-        
+        # Processar dados do Construflow (já obtidos em paralelo acima)
         # Se não conseguiu obter dados do Construflow ou DataFrame está vazio, 
         # manter construflow_data como None para que a notificação seja enviada
         if issues_df is None or issues_df.empty:
@@ -452,6 +522,36 @@ class DataProcessor:
         if not disciplinas_cliente or 'name' not in df_issues.columns:
             logger.warning(f"Não foi possível filtrar issues para o cliente. Disciplinas: {disciplinas_cliente}")
             return df_issues
+
+        # Filtrar por visibilidade (apenas coordenação ou público)
+        visibility_cols = [c for c in df_issues.columns if 'visibility' in str(c).lower() or 'visibilidade' in str(c).lower()]
+        if visibility_cols:
+            allowed_visibility = {
+                'publico', 'público', 'public',
+                'coordenacao', 'coordenação', 'coordination'
+            }
+
+            def is_allowed_visibility(value) -> bool:
+                if value is None or (isinstance(value, float) and pd.isna(value)):
+                    return True
+                norm = normalize_text(value)
+                if not norm:
+                    return True
+                return any(norm == v or v in norm for v in allowed_visibility)
+
+            def row_visibility_ok(row) -> bool:
+                # Usar o primeiro valor de visibilidade preenchido
+                for col in visibility_cols:
+                    val = row.get(col)
+                    if val is None or (isinstance(val, float) and pd.isna(val)) or str(val).strip() == '':
+                        continue
+                    return is_allowed_visibility(val)
+                return True
+
+            before_count = len(df_issues)
+            df_issues = df_issues[df_issues.apply(row_visibility_ok, axis=1)]
+            filtered_count = before_count - len(df_issues)
+            logger.info(f"Filtradas {filtered_count} issues por visibilidade (permitidas: coordenação/público)")
         
         # Normalizar disciplinas do cliente (remover acentos, espaços, case-insensitive)
         disciplinas_cliente_normalized = [normalize_text(d) for d in disciplinas_cliente if d and str(d).strip()]

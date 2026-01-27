@@ -1056,51 +1056,77 @@ class WeeklyReportSystem:
                     project_data['project_name']
                 )
                 
-                # Fazer upload dos arquivos HTML para o Google Drive
+                # Fazer upload dos arquivos HTML para o Google Drive em paralelo
                 uploaded_files = {}
                 client_file_id = None  # Inicializar variável
                 if project_folder_id:
                     today_str = datetime.now().strftime("%Y-%m-%d")
                     
-                    # Upload do relatório do cliente
-                    if html_paths.get('client'):
-                        try:
-                            client_result = self.gdrive.upload_file(
-                                file_path=html_paths['client'],
-                                name=f"Email_cliente_{project_data['project_name']}_{today_str}.html",
-                                parent_id=project_folder_id
-                            )
-                            if client_result:
-                                # Se retornou dicionário (com webViewLink), usar o link; senão usar o ID
-                                if isinstance(client_result, dict):
-                                    uploaded_files['client'] = client_result.get('webViewLink', f"https://drive.google.com/file/d/{client_result.get('id')}/view")
-                                    client_file_id = client_result.get('id')
-                                else:
-                                    uploaded_files['client'] = f"https://drive.google.com/file/d/{client_result}/view"
-                                    client_file_id = client_result
-                                logger.info(f"Relatório do cliente enviado para o Drive: {client_file_id}")
-                        except Exception as e:
-                            logger.error(f"Erro ao enviar relatório do cliente para o Drive: {e}")
+                    # Funções para upload em paralelo
+                    def upload_client_report():
+                        """Upload do relatório do cliente."""
+                        if html_paths.get('client'):
+                            try:
+                                result = self.gdrive.upload_file(
+                                    file_path=html_paths['client'],
+                                    name=f"Email_cliente_{project_data['project_name']}_{today_str}.html",
+                                    parent_id=project_folder_id
+                                )
+                                return ('client', result)
+                            except Exception as e:
+                                logger.error(f"Erro ao enviar relatório do cliente para o Drive: {e}")
+                                return ('client', None)
+                        return ('client', None)
                     
-                    # Upload do relatório da equipe
-                    if html_paths.get('team'):
-                        try:
-                            team_result = self.gdrive.upload_file(
-                                file_path=html_paths['team'],
-                                name=f"Email_time_{project_data['project_name']}_{today_str}.html",
-                                parent_id=project_folder_id
-                            )
-                            if team_result:
-                                # Se retornou dicionário (com webViewLink), usar o link; senão usar o ID
-                                if isinstance(team_result, dict):
-                                    uploaded_files['team'] = team_result.get('webViewLink', f"https://drive.google.com/file/d/{team_result.get('id')}/view")
-                                    team_file_id = team_result.get('id')
-                                else:
-                                    uploaded_files['team'] = f"https://drive.google.com/file/d/{team_result}/view"
-                                    team_file_id = team_result
-                                logger.info(f"Relatório da equipe enviado para o Drive: {team_file_id}")
-                        except Exception as e:
-                            logger.error(f"Erro ao enviar relatório da equipe para o Drive: {e}")
+                    def upload_team_report():
+                        """Upload do relatório da equipe."""
+                        if html_paths.get('team'):
+                            try:
+                                result = self.gdrive.upload_file(
+                                    file_path=html_paths['team'],
+                                    name=f"Email_time_{project_data['project_name']}_{today_str}.html",
+                                    parent_id=project_folder_id
+                                )
+                                return ('team', result)
+                            except Exception as e:
+                                logger.error(f"Erro ao enviar relatório da equipe para o Drive: {e}")
+                                return ('team', None)
+                        return ('team', None)
+                    
+                    # Executar uploads em paralelo
+                    from concurrent.futures import ThreadPoolExecutor
+                    logger.info("🚀 Iniciando upload paralelo dos relatórios para o Google Drive...")
+                    
+                    with ThreadPoolExecutor(max_workers=2) as executor:
+                        futures = []
+                        if html_paths.get('client'):
+                            futures.append(executor.submit(upload_client_report))
+                        if html_paths.get('team'):
+                            futures.append(executor.submit(upload_team_report))
+                        
+                        # Processar resultados
+                        for future in futures:
+                            try:
+                                report_type, result = future.result(timeout=120)  # Timeout de 2 minutos por arquivo
+                                if result:
+                                    if report_type == 'client':
+                                        if isinstance(result, dict):
+                                            uploaded_files['client'] = result.get('webViewLink', f"https://drive.google.com/file/d/{result.get('id')}/view")
+                                            client_file_id = result.get('id')
+                                        else:
+                                            uploaded_files['client'] = f"https://drive.google.com/file/d/{result}/view"
+                                            client_file_id = result
+                                        logger.info(f"Relatório do cliente enviado para o Drive: {client_file_id}")
+                                    elif report_type == 'team':
+                                        if isinstance(result, dict):
+                                            uploaded_files['team'] = result.get('webViewLink', f"https://drive.google.com/file/d/{result.get('id')}/view")
+                                            team_file_id = result.get('id')
+                                        else:
+                                            uploaded_files['team'] = f"https://drive.google.com/file/d/{result}/view"
+                                            team_file_id = result
+                                        logger.info(f"Relatório da equipe enviado para o Drive: {team_file_id}")
+                            except Exception as e:
+                                logger.error(f"Erro ao processar resultado do upload: {e}")
                 else:
                     logger.warning(f"ID da pasta do Drive não encontrado para projeto {project_id}")
                 

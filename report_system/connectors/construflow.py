@@ -49,7 +49,9 @@ class ConstruflowConnector(APIConnector):
             cache_age = time.time() - cache_time
             
             # Cache válido por 24 horas (86400 segundos)
-            if cache_age < 86400:
+            # Para deadlines (issues-disciplines), usar cache mais agressivo (48 horas)
+            cache_duration = 172800 if "issues-disciplines" in endpoint else 86400
+            if cache_age < cache_duration:
                 try:
                     with open(cache_file, 'rb') as f:
                         logger.info(f"Usando cache para {endpoint}")

@@ -322,12 +322,77 @@ class ReportQueue:
                 doc_url = None
                 if result.stdout:
                     logger.info(f"Procurando URL na saída: {repr(result.stdout[:500])}...")
-                    for line in result.stdout.split('\n'):
-                        # Aceitar tanto URLs do Google Docs quanto do Google Drive
-                        if "docs.google.com/document" in line or "drive.google.com/file/d/" in line:
-                            doc_url = line.strip()
-                            logger.info(f"URL encontrado: {doc_url}")
-                            break
+                    
+                    # Primeiro, procurar por linhas que indicam especificamente o link do relatório
+                    lines = result.stdout.split('\n')
+                    for i, line in enumerate(lines):
+                        # Procurar por padrões que indicam o link do relatório
+                        if ("Link do relatório" in line or 
+                            "Relatório do cliente enviado" in line or
+                            "Relatório da equipe enviado" in line or
+                            "Relatório do cliente enviado para o Drive" in line):
+                            # Procurar URL nas próximas linhas ou na mesma linha
+                            search_lines = [line] + lines[i+1:i+3] if i+1 < len(lines) else [line]
+                            for search_line in search_lines:
+                                # Extrair URL do Google Drive (formato: https://drive.google.com/file/d/ID/view)
+                                import re
+                                url_pattern = r'https://drive\.google\.com/file/d/([a-zA-Z0-9_-]+)/view[^\s]*'
+                                match = re.search(url_pattern, search_line)
+                                if match:
+                                    file_id = match.group(1)
+                                    doc_url = f"https://drive.google.com/file/d/{file_id}/view?usp=drivesdk"
+                                    logger.info(f"URL do relatório encontrado via padrão específico: {doc_url}")
+                                    break
+                            if doc_url:
+                                break
+                    
+                    # Se não encontrou via padrão específico, procurar pela linha "Link do relatório"
+                    if not doc_url:
+                        import re
+                        url_pattern = r'https://drive\.google\.com/file/d/([a-zA-Z0-9_-]+)/view[^\s]*'
+                        for i, line in enumerate(lines):
+                            if "Link do relatório" in line:
+                                # Procurar URL na mesma linha ou nas próximas
+                                search_lines = [line] + (lines[i+1:i+2] if i+1 < len(lines) else [])
+                                for search_line in search_lines:
+                                    match = re.search(url_pattern, search_line)
+                                    if match:
+                                        file_id = match.group(1)
+                                        doc_url = f"https://drive.google.com/file/d/{file_id}/view?usp=drivesdk"
+                                        logger.info(f"URL encontrado via 'Link do relatório': {doc_url}")
+                                        break
+                                if doc_url:
+                                    break
+                    
+                    # Se ainda não encontrou, procurar pela última URL válida (não a primeira)
+                    if not doc_url:
+                        # Coletar todas as URLs válidas, ignorando imagens
+                        valid_urls = []
+                        import re
+                        url_pattern = r'https://drive\.google\.com/file/d/([a-zA-Z0-9_-]+)/view[^\s]*'
+                        for line in lines:
+                            # Ignorar linhas que claramente são de imagens
+                            if "imagem" in line.lower() or "capa" in line.lower() or "URL da imagem" in line:
+                                continue
+                            matches = re.findall(url_pattern, line)
+                            for file_id in matches:
+                                url = f"https://drive.google.com/file/d/{file_id}/view?usp=drivesdk"
+                                valid_urls.append(url)
+                        
+                        # Usar a última URL encontrada (que geralmente é a do relatório)
+                        if valid_urls:
+                            doc_url = valid_urls[-1]
+                            logger.info(f"URL do relatório encontrado (última URL válida): {doc_url}")
+                        else:
+                            # Fallback: procurar qualquer URL do Google Drive, começando do final
+                            for line in reversed(lines):
+                                if "drive.google.com/file/d/" in line and "imagem" not in line.lower() and "capa" not in line.lower():
+                                    match = re.search(url_pattern, line)
+                                    if match:
+                                        file_id = match.group(1)
+                                        doc_url = f"https://drive.google.com/file/d/{file_id}/view?usp=drivesdk"
+                                        logger.info(f"URL encontrado (fallback): {doc_url}")
+                                        break
                 else:
                     logger.warning("stdout está vazio, não foi possível encontrar URL")
                 

@@ -344,17 +344,17 @@ class DataProcessor:
                                         try:
                                             end_dt = datetime.strptime(end_date.split('T')[0], fmt)
                                             break
-                                        except:
+                                        except ValueError:
                                             continue
                                     else:
                                         end_dt = None
                                 else:
                                     end_dt = pd.to_datetime(end_date).to_pydatetime()
-                                
+
                                 if end_dt and end_dt.replace(hour=0, minute=0, second=0, microsecond=0) < today:
                                     atrasada_por_data = True
-                            except:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"Erro ao processar data de término '{end_date}': {e}")
 
                     # Status padronizados do Smartsheet: 'a fazer', 'em progresso', 'feito', 'não feito'
                     if status_norm == 'nao feito' or tem_info_atraso or atrasada_por_data:

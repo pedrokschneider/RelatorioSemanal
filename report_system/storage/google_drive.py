@@ -500,15 +500,16 @@ class GoogleDriveManager:
                                 fields='mimeType'
                             ).execute()
                         mime_type = file_metadata.get('mimeType', 'application/octet-stream')
-                    except:
+                    except Exception as e:
+                        logger.warning(f"Falha ao obter MIME type para {file_id}, usando fallback: {e}")
                         mime_type = 'image/jpeg'  # Fallback para JPEG
-                    
+
                     return f"data:{mime_type};base64,{base64_content}"
             else:
                 # Se Pillow não estiver disponível, retornar o arquivo original
                 logger.warning("Pillow não disponível, retornando imagem sem processamento")
                 base64_content = base64.b64encode(file_content).decode('utf-8')
-                
+
                 # Usar metadados já obtidos ou tentar obter novamente
                 try:
                     if 'file_metadata' not in locals():
@@ -517,7 +518,8 @@ class GoogleDriveManager:
                             fields='mimeType'
                         ).execute()
                     mime_type = file_metadata.get('mimeType', 'application/octet-stream')
-                except:
+                except Exception as e:
+                    logger.warning(f"Falha ao obter MIME type para {file_id}, usando fallback: {e}")
                     mime_type = 'image/jpeg'  # Fallback para JPEG
                 
                 return f"data:{mime_type};base64,{base64_content}"
@@ -602,7 +604,97 @@ class GoogleDriveManager:
         except Exception as e:
             logger.error(f"Erro ao buscar pasta '{name}': {e}")
             return None
-    
+
+    def load_project_config_from_supabase(self) -> pd.DataFrame:
+        """
+        Carrega a configuração de projetos do Supabase.
+
+        Returns:
+            DataFrame com configurações de projetos
+        """
+        try:
+            from supabase import create_client
+
+            if not self.config.supabase_url or not self.config.supabase_key:
+                logger.error("Credenciais do Supabase não configuradas (SUPABASE_URL, SUPABASE_KEY)")
+                return pd.DataFrame()
+
+            # Criar cliente Supabase
+            client = create_client(self.config.supabase_url, self.config.supabase_key)
+
+            logger.info("Buscando dados do Supabase: project_features + projects")
+
+            # Query para buscar projetos com features
+            response = client.table('project_features').select(
+                'construflow_id, smartsheet_id, discord_id, relatorio_semanal_status, '
+                'pasta_emails_id, capa_email_url, gantt_email_url, disciplina_email_url, '
+                'project_id, projects(name, project_code)'
+            ).execute()
+
+            if not response.data:
+                logger.warning("Supabase retornou vazio")
+                return pd.DataFrame()
+
+            df = pd.DataFrame(response.data)
+
+            # Mapear nomes de colunas do Supabase para formato esperado pelo sistema
+            df = df.rename(columns={
+                'relatorio_semanal_status': 'relatoriosemanal_status',
+                'pasta_emails_id': 'pastaemails_id',
+                'gantt_email_url': 'email_url_gant',
+                'disciplina_email_url': 'email_url_disciplina',
+                'capa_email_url': 'email_url_capa',
+            })
+
+            # Extrair dados aninhados de projects
+            if 'projects' in df.columns:
+                df['Projeto - PR'] = df['projects'].apply(lambda x: x.get('name') if x else None)
+                df['Código Projeto'] = df['projects'].apply(lambda x: x.get('project_code') if x else None)
+                df = df.drop(columns=['projects'])
+
+            # Converter status para formato esperado
+            if 'relatoriosemanal_status' in df.columns:
+                status_mapping = {'ativo': 'Sim', 'desativado': 'Não', 'não_aplica': 'Não'}
+                df['relatoriosemanal_status'] = df['relatoriosemanal_status'].map(status_mapping).fillna('Não')
+
+            # Garantir que o ID do Construflow seja string
+            if 'construflow_id' in df.columns:
+                df['construflow_id'] = df['construflow_id'].astype(str)
+
+            # Buscar disciplinas do cliente (construflow_disciplinasclientes)
+            try:
+                disciplines_response = client.table('company_cflow_disciplines').select(
+                    'project_id, discipline_name'
+                ).execute()
+
+                if disciplines_response.data:
+                    disciplines_df = pd.DataFrame(disciplines_response.data)
+                    # Agrupar disciplinas por projeto
+                    disciplines_grouped = disciplines_df.groupby('project_id')['discipline_name'].apply(
+                        lambda x: ', '.join(x.dropna().unique())
+                    ).reset_index()
+                    disciplines_grouped.columns = ['project_id', 'construflow_disciplinasclientes']
+
+                    # Merge com o DataFrame principal
+                    df = df.merge(disciplines_grouped, on='project_id', how='left')
+            except Exception as e:
+                logger.warning(f"Não foi possível buscar disciplinas do cliente: {e}")
+
+            # Remover coluna project_id que não é usada pelo sistema
+            if 'project_id' in df.columns:
+                df = df.drop(columns=['project_id'])
+
+            logger.info(f"Carregados {len(df)} projetos do Supabase")
+            logger.debug(f"Colunas disponíveis: {', '.join(df.columns.tolist())}")
+            return df
+
+        except ImportError:
+            logger.error("Biblioteca supabase não instalada. Execute: pip install supabase")
+            return pd.DataFrame()
+        except Exception as e:
+            logger.error(f"Erro ao carregar dados do Supabase: {e}", exc_info=True)
+            return pd.DataFrame()
+
     def load_project_config_from_bigquery(self) -> pd.DataFrame:
         """
         Carrega a configuração de projetos do BigQuery.
@@ -740,13 +832,21 @@ class GoogleDriveManager:
     
     def load_project_config_from_sheet(self) -> pd.DataFrame:
         """
-        Carrega a configuração de projetos da planilha Google Sheets ou BigQuery.
-        Se USE_BIGQUERY=true, usa BigQuery. Caso contrário, usa Google Sheets.
-        
+        Carrega a configuração de projetos do Supabase, BigQuery ou Google Sheets.
+        Prioridade: Supabase > BigQuery > Google Sheets (fallback)
+
         Returns:
             DataFrame com configurações de projetos
         """
-        # Se configurado para usar BigQuery, tentar primeiro
+        # Prioridade 1: Supabase (mais leve e recomendado)
+        if self.config.use_supabase:
+            logger.info("Usando Supabase como fonte de dados de projetos")
+            df = self.load_project_config_from_supabase()
+            if not df.empty:
+                return df
+            logger.warning("Supabase retornou vazio, tentando fallback")
+
+        # Prioridade 2: BigQuery
         if self.config.use_bigquery:
             logger.info("Usando BigQuery como fonte de dados de projetos")
             df = self.load_project_config_from_bigquery()

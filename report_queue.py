@@ -12,7 +12,17 @@ import threading
 import queue
 import time
 import platform
+import traceback
 from datetime import datetime
+
+# Importar sistema de mensagens de erro
+try:
+    from report_system.utils.error_messages import (
+        ErrorMessages, ErrorCategory, classify_error, get_error_response
+    )
+    ERROR_MESSAGES_AVAILABLE = True
+except ImportError:
+    ERROR_MESSAGES_AVAILABLE = False
 
 # Configurar encoding padrão para UTF-8
 if sys.platform == "win32":
@@ -35,24 +45,29 @@ logger = logging.getLogger("DiscordBotQueue")
 
 class ReportQueue:
     """Sistema de fila para processar solicitações de relatórios."""
-    
-    def __init__(self, discord_bot, max_workers=2, notification_delay=2):
+
+    def __init__(self, discord_bot, max_workers=2, notification_delay=2, config=None):
         """
         Inicializa o sistema de fila.
-        
+
         Args:
             discord_bot: Instância do bot DiscordBotAutoChannels
             max_workers: Número máximo de workers para processar relatórios simultaneamente
             notification_delay: Tempo em segundos a aguardar entre mensagens do Discord (para evitar rate limiting)
+            config: Instância do ConfigManager (opcional, usa defaults se não fornecido)
         """
         self.discord_bot = discord_bot
+        self.config = config
         self.max_workers = max_workers
         self.notification_delay = notification_delay
         self.report_queue = queue.Queue()
         self.active_reports = {}  # Dicionário para rastrear relatórios sendo processados
-        self.lock = threading.Lock()  # Lock para acesso seguro a active_reports
+        self.queued_channels = set()  # Set para rastrear canais já na fila (evita duplicação)
+        self.lock = threading.Lock()  # Lock para acesso seguro a active_reports e queued_channels
         self.worker_status = {}  # Status de cada worker
-        self.process_timeout = 600  # Timeout para processos (10 minutos)
+        # Timeouts configuráveis via ConfigManager
+        self.process_timeout = config.get_report_process_timeout() if config else 600
+        self.stuck_detection_timeout = config.get_report_stuck_detection_timeout() if config else 900
         self.last_message_time = 0  # Timestamp da última mensagem enviada
         
         # Iniciar threads de worker
@@ -81,6 +96,10 @@ class ReportQueue:
         logger.info(f"Tentando adicionar relatório para canal {channel_id} à fila (sem-dashboard={hide_dashboard}, schedule_days={schedule_days}, since_date={since_date.strftime('%d/%m/%Y') if since_date else None})")
 
         with self.lock:
+            # Verificar se o canal já está na fila aguardando processamento
+            if channel_id in self.queued_channels:
+                return self._handle_already_queued(channel_id)
+
             # Verificar se já existe um relatório em processamento para este canal
             if channel_id in self.active_reports:
                 logger.info(f"Já existe uma solicitação de relatório em processamento para o canal {channel_id}")
@@ -89,12 +108,12 @@ class ReportQueue:
                 report_info = self.active_reports[channel_id]
                 started_at = report_info.get('started_at', 'tempo desconhecido')
                 
-                # Verificar se o processo está preso por muito tempo (mais de 15 minutos)
+                # Verificar se o processo está preso por muito tempo
                 if isinstance(started_at, datetime):
                     elapsed_seconds = (datetime.now() - started_at).total_seconds()
-                    
-                    # Se estiver preso há mais de 15 minutos, cancelar e permitir nova solicitação
-                    if elapsed_seconds > 900:  # 15 minutos
+
+                    # Se estiver preso por muito tempo, cancelar e permitir nova solicitação
+                    if elapsed_seconds > self.stuck_detection_timeout:
                         logger.warning(f"Relatório para canal {channel_id} está preso há {int(elapsed_seconds//60)} minutos. Cancelando.")
                         
                         # Tentar matar o processo se ele existir
@@ -153,8 +172,9 @@ class ReportQueue:
                 'schedule_days': schedule_days,
                 'since_date': since_date
             }
-            
+
             self.report_queue.put(request_info)
+            self.queued_channels.add(channel_id)  # Marcar canal como na fila
             
             # Verificar se será processado imediatamente ou aguardará na fila
             position = queue_size
@@ -176,7 +196,27 @@ class ReportQueue:
             self.send_message_with_rate_limit(channel_id, message)
             
             return position
-    
+
+    def _handle_already_queued(self, channel_id):
+        """
+        Trata o caso de canal já estar na fila.
+
+        Args:
+            channel_id: ID do canal
+
+        Returns:
+            int: -1 indicando que já está na fila
+        """
+        logger.info(f"Canal {channel_id} já está na fila aguardando processamento")
+        project_name = self.discord_bot.get_project_name(channel_id)
+        message = (
+            f"⏳ **Solicitação já na fila**\n\n"
+            f"Já existe uma solicitação de relatório para **{project_name}** aguardando na fila.\n"
+            f"Por favor, aguarde a conclusão."
+        )
+        self.send_message_with_rate_limit(channel_id, message)
+        return -1
+
     def _process_queue(self, worker_id):
         """
         Função executada por cada worker para processar itens da fila.
@@ -217,6 +257,8 @@ class ReportQueue:
                     request['worker_id'] = worker_id
                     request['project_name'] = project_name  # Armazenar nome do projeto
                     self.active_reports[channel_id] = request
+                    # Remover da fila de espera (agora está em processamento ativo)
+                    self.queued_channels.discard(channel_id)
                 
                 # Notificar que está começando o processamento
                 message = f"🔄 Iniciando geração do relatório para {project_name}. Isso pode levar alguns minutos..."
@@ -231,33 +273,44 @@ class ReportQueue:
                 self.report_queue.task_done()
                 
                 if not success:
-                    # Enviar mensagem de erro detalhada para o canal do projeto
-                    error_message = f"❌ **Erro ao gerar relatório para {project_name}**\n\nAntes de entrar em contato com o suporte, verifique se as colunas **STATUS** e **DISCIPLINA** do cronograma do SmartSheet não possuem dados vazios."
-                    self.send_message_with_rate_limit(channel_id, error_message)
-                    
-                    # Enviar notificação adicional para o canal admin/notificação
+                    # Obter project_id para mensagens detalhadas
+                    project_id = self._get_project_id_from_channel(channel_id)
+
+                    # Usar sistema de mensagens padronizadas se disponível
+                    if ERROR_MESSAGES_AVAILABLE:
+                        user_message = ErrorMessages.get_user_message(
+                            category=ErrorCategory.SYSTEM,
+                            project_name=project_name,
+                            details="Falha durante o processamento"
+                        )
+                        admin_message = ErrorMessages.get_admin_message(
+                            category=ErrorCategory.SYSTEM,
+                            project_name=project_name,
+                            project_id=str(project_id) if project_id else "N/A",
+                            channel_id=str(channel_id),
+                            error_details="Processo de geração retornou falha"
+                        )
+                    else:
+                        # Fallback para mensagens simples
+                        user_message = f"❌ **Erro ao gerar relatório para {project_name}**\n\nOcorreu um erro durante o processamento. Por favor, tente novamente em alguns minutos."
+                        admin_message = f"🚨 **ERRO NO RELATÓRIO - {project_name}**\n\n**Canal:** <#{channel_id}>\n**Status:** Falha na geração"
+
+                    self.send_message_with_rate_limit(channel_id, user_message)
+
+                    # Enviar notificação para canal admin
                     try:
                         from report_system.main import WeeklyReportSystem
                         system = WeeklyReportSystem()
                         notification_channel_id = system.config.get_discord_notification_channel_id()
-                        
+
                         if notification_channel_id:
-                            admin_error_message = f"🚨 **ERRO NO RELATÓRIO - {project_name}**\n\n"
-                            admin_error_message += f"**Canal:** <#{channel_id}>\n"
-                            admin_error_message += f"**Projeto:** {project_name}\n"
-                            admin_error_message += f"**Status:** Falha na geração\n"
-                            admin_error_message += f"**Motivo:** Erro durante o processamento do relatório\n"
-                            admin_error_message += f"**Ação:** Verificar logs e configurações"
-                            
-                            system.discord.send_notification(notification_channel_id, admin_error_message)
+                            system.discord.send_notification(notification_channel_id, admin_message)
                             logger.info(f"Notificação de erro enviada para canal admin {notification_channel_id}")
                     except Exception as e:
                         logger.error(f"Erro ao enviar notificação admin: {e}")
                 
-                # Marcar como concluído
-                with self.lock:
-                    if channel_id in self.active_reports:
-                        del self.active_reports[channel_id]
+                # Marcar como concluído e limpar rastreamento
+                self._cleanup_channel_tracking(channel_id)
                 
                 # Atualizar status do worker
                 self.worker_status[worker_id] = "idle"
@@ -266,8 +319,37 @@ class ReportQueue:
                 logger.error(f"Erro no worker {worker_id}: {e}", exc_info=True)
                 # Atualizar status para refletir o erro
                 self.worker_status[worker_id] = f"error: {str(e)[:50]}"
-                time.sleep(1) 
-    
+                time.sleep(1)
+
+    def _cleanup_channel_tracking(self, channel_id):
+        """
+        Remove o canal das estruturas de rastreamento.
+
+        Args:
+            channel_id: ID do canal a limpar
+        """
+        with self.lock:
+            if channel_id in self.active_reports:
+                del self.active_reports[channel_id]
+            self.queued_channels.discard(channel_id)
+
+    def _get_project_id_from_channel(self, channel_id) -> str:
+        """
+        Obtém o ID do projeto a partir do canal.
+
+        Args:
+            channel_id: ID do canal Discord
+
+        Returns:
+            ID do projeto ou string vazia
+        """
+        try:
+            from report_system.main import WeeklyReportSystem
+            system = WeeklyReportSystem()
+            return system.get_project_id_from_discord_channel(str(channel_id)) or ""
+        except Exception:
+            return ""
+
     def _generate_report(self, channel_id, worker_id, hide_dashboard=False, schedule_days=None, since_date=None):
         """
         Gera um relatório para o canal específico, com monitoramento em tempo real.
@@ -502,50 +584,93 @@ class ReportQueue:
                     else:
                         # Se não encontramos o URL e há evidências de erro, considerar como falha
                         logger.error(f"Relatório não gerado com sucesso para {project_name}: URL não encontrado na saída e returncode={result.returncode}")
-                        # Mensagem simples para o canal do projeto
-                        error_message = f"❌ **Erro ao gerar relatório para {project_name}**\n\nO relatório foi processado mas não foi possível obter o link do documento. Isso pode indicar um problema na criação do Google Doc ou nas permissões do Google Drive."
-                        self.send_message_with_rate_limit(channel_id, error_message)
-                    
-                    # Enviar notificação adicional para o canal admin/notificação
+                        project_id = self._get_project_id_from_channel(channel_id)
+
+                        if ERROR_MESSAGES_AVAILABLE:
+                            user_message = ErrorMessages.get_user_message(
+                                category=ErrorCategory.PERMISSION,
+                                project_name=project_name,
+                                details="o Google Drive"
+                            )
+                            admin_message = ErrorMessages.get_admin_message(
+                                category=ErrorCategory.PERMISSION,
+                                project_name=project_name,
+                                project_id=str(project_id) if project_id else "N/A",
+                                channel_id=str(channel_id),
+                                error_details="Documento não foi criado no Google Drive - URL não encontrado na saída"
+                            )
+                        else:
+                            user_message = f"❌ **Erro ao gerar relatório para {project_name}**\n\nNão foi possível salvar o documento. Por favor, tente novamente."
+                            admin_message = f"🚨 **ERRO - {project_name}**\n\n**Canal:** <#{channel_id}>\n**Status:** Documento não criado"
+
+                        self.send_message_with_rate_limit(channel_id, user_message)
+
+                    # Enviar notificação para canal admin
                     try:
                         from report_system.main import WeeklyReportSystem
                         system = WeeklyReportSystem()
                         notification_channel_id = system.config.get_discord_notification_channel_id()
-                        
+
                         if notification_channel_id:
-                            admin_error_message = f"🚨 **ERRO NO RELATÓRIO - {project_name}**\n\n"
-                            admin_error_message += f"**Canal:** <#{channel_id}>\n"
-                            admin_error_message += f"**Projeto:** {project_name}\n"
-                            admin_error_message += f"**Status:** Documento não criado\n"
-                            admin_error_message += f"**Motivo:** Documento não foi criado no Google Docs - URL não encontrado na saída\n"
-                            admin_error_message += f"**Ação:** Verificar permissões do Google Drive e configurações"
-                            
-                            system.discord.send_notification(notification_channel_id, admin_error_message)
+                            system.discord.send_notification(notification_channel_id, admin_message)
                             logger.info(f"Notificação de erro enviada para canal admin {notification_channel_id}")
                     except Exception as e:
                         logger.error(f"Erro ao enviar notificação admin: {e}")
-                    
+
                     return False
             else:
-                # Mensagem de erro com mais detalhes
-                error_details = ""
-                if result.stderr:
-                    error_details = f"\n\n**Detalhes do erro:**\n{result.stderr[:500]}"
-                
-                # Determinar o motivo do erro baseado no returncode e stderr (apenas para canal admin)
+                # Determinar o motivo do erro e categoria
                 error_reason = self._determine_error_reason(result.returncode, result.stderr)
-                
-                # Mensagem simples para o canal do projeto
-                message = f"❌ **Erro ao gerar relatório para {project_name}**\n\nAntes de entrar em contato com o suporte, verifique se as colunas **STATUS** e **DISCIPLINA** do cronograma do SmartSheet não possuem dados vazios."
-                
-                self.send_message_with_rate_limit(channel_id, message)
+                project_id = self._get_project_id_from_channel(channel_id)
+
+                # Classificar o erro baseado no stderr
+                if ERROR_MESSAGES_AVAILABLE:
+                    # Tentar classificar o erro
+                    error_category = ErrorCategory.SYSTEM
+                    error_detail = None
+
+                    stderr_lower = (result.stderr or "").lower()
+                    if "timeout" in stderr_lower or "timed out" in stderr_lower:
+                        error_category = ErrorCategory.TIMEOUT
+                    elif "auth" in stderr_lower or "credential" in stderr_lower or "token" in stderr_lower:
+                        error_category = ErrorCategory.AUTHENTICATION
+                    elif "permission" in stderr_lower or "denied" in stderr_lower:
+                        error_category = ErrorCategory.PERMISSION
+                    elif "not found" in stderr_lower or "404" in stderr_lower:
+                        error_category = ErrorCategory.NOT_FOUND
+                    elif "empty" in stderr_lower or "null" in stderr_lower or "data" in stderr_lower:
+                        error_category = ErrorCategory.DATA
+                        error_detail = "Verifique se o cronograma tem dados completos"
+                    elif "connection" in stderr_lower or "network" in stderr_lower:
+                        error_category = ErrorCategory.CONNECTION
+
+                    user_message = ErrorMessages.get_user_message(
+                        category=error_category,
+                        project_name=project_name,
+                        details=error_detail
+                    )
+                else:
+                    user_message = f"❌ **Erro ao gerar relatório para {project_name}**\n\nOcorreu um erro durante o processamento. Por favor, tente novamente em alguns minutos."
+
+                self.send_message_with_rate_limit(channel_id, user_message)
                 logger.error(f"Subprocess falhou com returncode {result.returncode}. stderr: {result.stderr}")
                 return False
-                
+
         except Exception as e:
             logger.error(f"Erro ao executar script: {e}")
             logger.error(f"Detalhes do erro: stdout={getattr(result, 'stdout', 'N/A')}, stderr={getattr(result, 'stderr', 'N/A')}")
-            self.send_message_with_rate_limit(channel_id, f"❌ **Erro ao gerar relatório**\n\nAntes de entrar em contato com o suporte, verifique se as colunas **STATUS** e **DISCIPLINA** do cronograma do SmartSheet não possuem dados vazios.")
+
+            if ERROR_MESSAGES_AVAILABLE:
+                # Classificar exceção
+                error_category = classify_error(e)
+                user_message = ErrorMessages.get_user_message(
+                    category=error_category,
+                    project_name=project_name
+                )
+            else:
+                user_message = f"❌ **Erro ao gerar relatório**\n\nOcorreu um erro inesperado. Por favor, tente novamente."
+
+            self.send_message_with_rate_limit(channel_id, user_message)
             return False
     
     def _read_pipe_windows_compatible(self, pipe):
@@ -613,30 +738,16 @@ class ReportQueue:
     def show_queue_status(self, channel_id=None):
         """
         Envia uma mensagem com o status atual da fila.
-        
+
         Args:
             channel_id: ID do canal para enviar a mensagem (opcional)
-            
+
         Returns:
             str: Mensagem de status
         """
         status = self.get_queue_status()
-        
-        # Construir mensagem de status
-        message = "📊 **Status do Sistema de Relatórios**\n\n"
-        
-        # Informações sobre workers
-        active_workers = status['workers_running']
-        total_workers = status['max_workers']
-        worker_emoji = "✅" if active_workers == total_workers else "⚠️"
-        message.append(f"{worker_emoji} **Workers:** {active_workers}/{total_workers} ativos")
-        
-        # Informações sobre a fila
-        queue_size = status['queue_size']
-        queue_emoji = "✅" if queue_size == 0 else "📋"
-        message.append(f"{queue_emoji} **Fila:** {queue_size} relatório(s) aguardando")
-        message.append("")
 
+        message = ["📊 **Status do Sistema de Relatórios**\n"]
 
         # Informações sobre workers
         active_workers = status['workers_running']
@@ -647,28 +758,15 @@ class ReportQueue:
         # Informações sobre a fila
         queue_size = status['queue_size']
         queue_emoji = "✅" if queue_size == 0 else "📋"
-        message.append(f"{queue_emoji} **Fila:** {queue_size} relatório(s) aguardando")
-        message.append("")
-        
+        message.append(f"{queue_emoji} **Fila:** {queue_size} relatório(s) aguardando\n")
+
         # Informações sobre workers e seu status atual
         message.append("**Status dos Workers:**")
         for worker_id, worker_status in status['worker_status'].items():
-            # Escolher emoji baseado no status
-            if "idle" in worker_status:
-                emoji = "💤"
-            elif "processing" in worker_status:
-                emoji = "⚙️"
-            elif "waiting" in worker_status:
-                emoji = "⏳"
-            elif "error" in worker_status:
-                emoji = "⚠️"
-            else:
-                emoji = "ℹ️"
-                
+            emoji = self._get_worker_emoji(worker_status)
             message.append(f"{emoji} Worker {worker_id}: {worker_status}")
-        
-        message.append("")    
-            
+
+        message.append("")
 
         # Informações sobre relatórios em processamento
         if status['active_reports']:
@@ -680,13 +778,33 @@ class ReportQueue:
                 message.append(f"⚙️ **{project_name}** - Worker {worker} - Em processamento há {elapsed}")
         else:
             message.append("🔍 Nenhum relatório em processamento no momento.")
-        
-         # Enviar para o canal específico se fornecido
+
+        # Enviar para o canal específico se fornecido
         formatted_message = "\n".join(message)
         if channel_id:
             self.send_message_with_rate_limit(channel_id, formatted_message)
-        
+
         return formatted_message
+
+    def _get_worker_emoji(self, worker_status):
+        """
+        Retorna o emoji apropriado para o status do worker.
+
+        Args:
+            worker_status: Status do worker
+
+        Returns:
+            str: Emoji correspondente ao status
+        """
+        if "idle" in worker_status:
+            return "💤"
+        if "processing" in worker_status:
+            return "⚙️"
+        if "waiting" in worker_status:
+            return "⏳"
+        if "error" in worker_status:
+            return "⚠️"
+        return "ℹ️"
 
     def _determine_error_reason(self, returncode, stderr):
         """

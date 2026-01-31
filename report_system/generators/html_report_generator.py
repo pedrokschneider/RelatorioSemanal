@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 import base64
 import io
+from functools import lru_cache
 
 from ..config import ConfigManager
 
@@ -22,24 +23,16 @@ try:
 except ImportError:
     PIL_AVAILABLE = False
 
-# Cache para a logo processada
-_logo_cache = None
 
-
+@lru_cache(maxsize=1)
 def _get_logo_base64() -> str:
     """
     Carrega e processa a logo do arquivo Logo.png, retornando em base64.
-    Usa cache para evitar reprocessamento.
-    
+    Usa lru_cache para thread-safety e evitar reprocessamento.
+
     Returns:
         String base64 da logo otimizada
     """
-    global _logo_cache
-    
-    # Retornar do cache se já foi processada
-    if _logo_cache is not None:
-        return _logo_cache
-    
     logo_path = os.path.join(os.getcwd(), "Logo.png")
     
     if not os.path.exists(logo_path):
@@ -78,10 +71,8 @@ def _get_logo_base64() -> str:
                 image_data = f.read()
                 base64_content = base64.b64encode(image_data).decode('utf-8')
                 data_uri = f"data:image/png;base64,{base64_content}"
-        
-        # Armazenar no cache
-        _logo_cache = data_uri
-        return _logo_cache
+
+        return data_uri
         
     except Exception as e:
         logger.error(f"Erro ao processar logo: {e}")
@@ -122,6 +113,31 @@ class HTMLReportGenerator:
                 'otus' in discipline_lower or 
                 'coordenacao' in discipline_normalized or
                 'coordenação' in discipline_lower)
+
+    def _normalize_status(self, value) -> str:
+        if value is None:
+            return ""
+        import unicodedata
+        import re
+        text = str(value).strip().lower()
+        text = unicodedata.normalize('NFD', text)
+        text = ''.join(c for c in text if unicodedata.category(c) != 'Mn')
+        text = re.sub(r'\s+', ' ', text)
+        return text
+
+    def _has_delay_info(self, task: Dict) -> bool:
+        delay_keys = [
+            'Categoria de atraso',
+            'Delay Category',
+            'Motivo de atraso',
+            'Motivo do atraso',
+            'Delay Reason'
+        ]
+        for key in delay_keys:
+            val = task.get(key)
+            if val is not None and str(val).strip() not in ['', 'nan', 'None']:
+                return True
+        return False
     
     def generate_client_report(self, data: Dict[str, Any], project_id: str = None,
                                project_image_base64: Optional[str] = None,
@@ -487,8 +503,8 @@ class HTMLReportGenerator:
                     names = obj.get_client_names(project_id)
                     if names and names[0]:
                         return names[0]
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"Falha ao obter nome do cliente via introspection: {e}")
         
         # 4. Se não encontrar, usar o nome do projeto completo
         if project_name:
@@ -585,8 +601,8 @@ class HTMLReportGenerator:
                         end_date_normalized = end_date.replace(hour=0, minute=0, second=0, microsecond=0)
                         if end_date_normalized < since_date:
                             continue  # Ignorar tarefas concluídas antes da data inicial
-                except:
-                    pass
+                except (ValueError, TypeError) as e:
+                    logger.debug(f"Falha ao processar data de término '{end_date_str}': {e}")
             
             discipline = task.get('Disciplina', task.get('Discipline', 'Sem Disciplina')) or 'Sem Disciplina'
             # Excluir 'Cliente' e 'Otus' do relatório da equipe (serão mostrados no relatório do cliente)
@@ -745,6 +761,13 @@ class HTMLReportGenerator:
                 tasks_outra_disciplina += 1
                 continue
             
+            # Incluir atrasos explícitos mesmo fora do período
+            status_norm = self._normalize_status(task.get('Status', ''))
+            atraso_explicito = status_norm == 'nao feito' or self._has_delay_info(task)
+            if atraso_explicito:
+                client_delays.append(task)
+                continue
+
             # Verificar se o atraso está nas últimas 2 semanas
             # Usar data de término (ou baseline se disponível) para verificar se está atrasado nas últimas 2 semanas
             task_date = None
@@ -755,15 +778,15 @@ class HTMLReportGenerator:
             if baseline_date_str:
                 try:
                     task_date = self._parse_date(baseline_date_str)
-                except:
-                    pass
-            
+                except (ValueError, TypeError) as e:
+                    logger.debug(f"Falha ao processar data baseline '{baseline_date_str}': {e}")
+
             if not task_date and end_date_str:
                 try:
                     task_date = self._parse_date(end_date_str)
-                except:
-                    pass
-            
+                except (ValueError, TypeError) as e:
+                    logger.debug(f"Falha ao processar data término '{end_date_str}': {e}")
+
             # Se tem data, verificar se está nas últimas 2 semanas
             if task_date:
                 task_date_normalized = task_date.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -775,7 +798,7 @@ class HTMLReportGenerator:
             else:
                 # Se não tem data, incluir (pode ser tarefa sem data definida mas marcada como atrasada)
                 client_delays.append(task)
-        
+
         logger.info(f"Atrasos do cliente: {len(client_delays)} de {len(delayed_tasks)} atrasadas (últimas 2 semanas)")
         if tasks_outra_disciplina > 0:
             logger.info(f"  - {tasks_outra_disciplina} tarefas atrasadas de outras disciplinas (não 'Cliente' ou 'Otus')")
@@ -813,6 +836,13 @@ class HTMLReportGenerator:
                 tasks_cliente_otus += 1
                 continue
             
+            # Incluir atrasos explícitos mesmo fora do período
+            status_norm = self._normalize_status(task.get('Status', ''))
+            atraso_explicito = status_norm == 'nao feito' or self._has_delay_info(task)
+            if atraso_explicito:
+                team_delays.append(task)
+                continue
+
             # Verificar se o atraso está nas últimas 2 semanas
             task_date = None
             end_date_str = task.get('Data Término', task.get('Data de Término', task.get('End Date', '')))
@@ -822,15 +852,15 @@ class HTMLReportGenerator:
             if baseline_date_str:
                 try:
                     task_date = self._parse_date(baseline_date_str)
-                except:
-                    pass
-            
+                except (ValueError, TypeError) as e:
+                    logger.debug(f"Falha ao processar data baseline '{baseline_date_str}': {e}")
+
             if not task_date and end_date_str:
                 try:
                     task_date = self._parse_date(end_date_str)
-                except:
-                    pass
-            
+                except (ValueError, TypeError) as e:
+                    logger.debug(f"Falha ao processar data término '{end_date_str}': {e}")
+
             # Se tem data, verificar se está nas últimas 2 semanas
             if task_date:
                 task_date_normalized = task_date.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -842,7 +872,7 @@ class HTMLReportGenerator:
             else:
                 # Se não tem data, incluir (pode ser tarefa sem data definida mas marcada como atrasada)
                 team_delays.append(task)
-        
+
         logger.info(f"Atrasos da equipe: {len(team_delays)} tarefas atrasadas (últimas 2 semanas)")
         if tasks_cliente_otus > 0:
             logger.info(f"  - {tasks_cliente_otus} tarefas atrasadas de 'Cliente' e 'Otus' excluídas (aparecem no relatório do cliente)")
@@ -941,9 +971,9 @@ class HTMLReportGenerator:
                         if start_date_normalized >= today and start_date_normalized <= future_cutoff:
                             task_in_period = True
                             starts_in_period = True
-                except:
-                    pass
-            
+                except (ValueError, TypeError) as e:
+                    logger.debug(f"Falha ao processar data início '{task_start_str}': {e}")
+
             if task_end_str:
                 try:
                     end_date = self._parse_date(task_end_str)
@@ -953,9 +983,9 @@ class HTMLReportGenerator:
                         if end_date_normalized >= today and end_date_normalized <= future_cutoff:
                             task_in_period = True
                             ends_in_period = True
-                except:
-                    pass
-            
+                except (ValueError, TypeError) as e:
+                    logger.debug(f"Falha ao processar data término '{task_end_str}': {e}")
+
             if task_in_period:
                 client_schedule.append(task)
                 if starts_in_period:
@@ -964,7 +994,7 @@ class HTMLReportGenerator:
                     tasks_terminando += 1
             else:
                 tasks_fora_periodo += 1
-        
+
         # Ordenar por data
         client_schedule.sort(key=lambda x: self._parse_date(x.get('Data Término', x.get('Data de Término', x.get('End Date', '')))) or datetime.max)
         
@@ -1042,9 +1072,9 @@ class HTMLReportGenerator:
                         if start_date_normalized >= today and start_date_normalized <= future_cutoff:
                             task_in_period = True
                             starts_in_period = True
-                except:
-                    pass
-            
+                except (ValueError, TypeError) as e:
+                    logger.debug(f"Falha ao processar data início '{task_start_str}': {e}")
+
             if task_end_str:
                 try:
                     end_date = self._parse_date(task_end_str)
@@ -1054,9 +1084,9 @@ class HTMLReportGenerator:
                         if end_date_normalized >= today and end_date_normalized <= future_cutoff:
                             task_in_period = True
                             ends_in_period = True
-                except:
-                    pass
-            
+                except (ValueError, TypeError) as e:
+                    logger.debug(f"Falha ao processar data término '{task_end_str}': {e}")
+
             if not task_in_period:
                 tasks_fora_periodo += 1
                 continue
@@ -1117,7 +1147,7 @@ class HTMLReportGenerator:
         for fmt in formats:
             try:
                 return datetime.strptime(date_str.strip(), fmt)
-            except:
+            except ValueError:
                 continue
         return None
     
@@ -1151,6 +1181,29 @@ class HTMLReportGenerator:
             pass
         
         return str(date_value)[:5]
+
+    def _format_start_end_range(self, start_date, end_date) -> str:
+        """Formata intervalo início/fim para 'dd/mm a dd/mm'."""
+        def has_value(value) -> bool:
+            if value is None:
+                return False
+            text = str(value).strip().lower()
+            return text not in ['nan', 'none', 'nat', '']
+
+        start_ok = has_value(start_date)
+        end_ok = has_value(end_date)
+
+        if start_ok and end_ok:
+            start_fmt = self._format_date(start_date)
+            end_fmt = self._format_date(end_date)
+            if start_fmt and end_fmt and start_fmt != end_fmt:
+                return f"{start_fmt} a {end_fmt}"
+            return start_fmt or end_fmt
+        if start_ok:
+            return self._format_date(start_date)
+        if end_ok:
+            return self._format_date(end_date)
+        return ""
     
     def _format_deadline_date(self, deadline_value) -> str:
         """Formata deadline (formato ISO) para dd/mm/yyyy."""
@@ -1487,11 +1540,7 @@ class HTMLReportGenerator:
                         # Mostrar data de início se disponível, senão data de término
                         start_date = task.get('Data Inicio', task.get('Data de Início', task.get('Start Date', '')))
                         end_date = task.get('Data Término', task.get('Data de Término', task.get('End Date', '')))
-                        # Verificar se start_date é válido (não vazio, não None, não 'nan')
-                        if start_date and str(start_date).strip() and str(start_date).lower() not in ['nan', 'none', '']:
-                            date = self._format_date(start_date)
-                        else:
-                            date = self._format_date(end_date)
+                        date = self._format_start_end_range(start_date, end_date)
                         name = task.get('Nome da Tarefa', task.get('Task Name', ''))
                         # Observação Otus
                         observacao_otus = task.get('Observação Otus', task.get('Observacao Otus', ''))
@@ -1558,11 +1607,7 @@ class HTMLReportGenerator:
                         # Mostrar data de início se disponível, senão data de término
                         start_date = task.get('Data Inicio', task.get('Data de Início', task.get('Start Date', '')))
                         end_date = task.get('Data Término', task.get('Data de Término', task.get('End Date', '')))
-                        # Verificar se start_date é válido (não vazio, não None, não 'nan')
-                        if start_date and str(start_date).strip() and str(start_date).lower() not in ['nan', 'none', '']:
-                            date = self._format_date(start_date)
-                        else:
-                            date = self._format_date(end_date)
+                        date = self._format_start_end_range(start_date, end_date)
                         name = task.get('Nome da Tarefa', task.get('Task Name', ''))
                         # Observação Otus
                         observacao_otus = task.get('Observação Otus', task.get('Observacao Otus', ''))

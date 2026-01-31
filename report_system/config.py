@@ -63,7 +63,12 @@ class ConfigManager:
         self.use_bigquery = self.get_env_var("USE_BIGQUERY", "false").lower() == "true"
         self.bigquery_table = self.get_env_var("BIGQUERY_TABLE", "dadosindicadores.portifolio.portifolio_plataforma_enriched")
         self.bigquery_project = self.get_env_var("BIGQUERY_PROJECT", None)
-        
+
+        # Supabase para configuração de projetos (alternativa ao BigQuery)
+        self.use_supabase = self.get_env_var("USE_SUPABASE", "false").lower() == "true"
+        self.supabase_url = self.get_env_var("SUPABASE_URL")
+        self.supabase_key = self.get_env_var("SUPABASE_KEY")
+
         # Caminho para templates de prompt
         self.prompt_template_path = self.get_env_var("PROMPT_TEMPLATE_PATH", "templates/prompt_template.txt")
         
@@ -311,11 +316,11 @@ class ConfigManager:
     def get_discord_hourly_notification_channel_id(self) -> str:
         """
         Obtém o ID do canal para notificações por hora.
-        
+
         Returns:
             ID do canal de notificação por hora
         """
-        return self.get_env_var('DISCORD_HOURLY_NOTIFICATION_CHANNEL_ID', '1383090628379934851')
+        return self.get_env_var('DISCORD_HOURLY_NOTIFICATION_CHANNEL_ID', '')
     
     def get_discord_notification_channel_id(self) -> str:
         """
@@ -329,8 +334,77 @@ class ConfigManager:
     def get_discord_notification_team_channel_id(self) -> str:
         """
         Obtém o ID do canal para notificações da equipe.
-        
+
         Returns:
             ID do canal de notificação da equipe
         """
         return self.get_env_var('DISCORD_NOTIFICATION_TEAM_CHANNEL_ID', '')
+
+    # === Weekly Report Control Sheet IDs ===
+
+    def get_weekly_report_control_sheet_id(self) -> str:
+        """
+        Obtém o ID da planilha de controle de relatórios semanais.
+
+        Returns:
+            ID da planilha de controle
+        """
+        return self.get_env_var('WEEKLY_REPORT_CONTROL_SHEET_ID', '')
+
+    def get_weekly_report_base_sheet_id(self) -> str:
+        """
+        Obtém o ID da planilha base de relatórios semanais.
+
+        Returns:
+            ID da planilha base
+        """
+        return self.get_env_var('WEEKLY_REPORT_BASE_SHEET_ID', '')
+
+    # === Cache Durations ===
+
+    def get_cache_duration_default(self) -> int:
+        """
+        Obtém a duração padrão do cache em segundos (24 horas).
+
+        Returns:
+            Duração do cache em segundos
+        """
+        return int(self.get_env_var('CACHE_DURATION_DEFAULT', '86400'))
+
+    def get_cache_duration_disciplines(self) -> int:
+        """
+        Obtém a duração do cache para disciplinas em segundos (48 horas).
+
+        Returns:
+            Duração do cache em segundos
+        """
+        return int(self.get_env_var('CACHE_DURATION_DISCIPLINES', '172800'))
+
+    def get_cache_duration_token(self) -> int:
+        """
+        Obtém a duração do cache para tokens em segundos (1 hora).
+
+        Returns:
+            Duração do cache em segundos
+        """
+        return int(self.get_env_var('CACHE_DURATION_TOKEN', '3600'))
+
+    # === Report Queue Timeouts ===
+
+    def get_report_process_timeout(self) -> int:
+        """
+        Obtém o timeout para processos de relatório em segundos.
+
+        Returns:
+            Timeout em segundos
+        """
+        return int(self.get_env_var('REPORT_PROCESS_TIMEOUT', '600'))
+
+    def get_report_stuck_detection_timeout(self) -> int:
+        """
+        Obtém o timeout para detecção de processos travados em segundos.
+
+        Returns:
+            Timeout em segundos
+        """
+        return int(self.get_env_var('REPORT_STUCK_DETECTION_TIMEOUT', '900'))

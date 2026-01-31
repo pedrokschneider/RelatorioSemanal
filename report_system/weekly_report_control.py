@@ -35,11 +35,11 @@ class WeeklyReportController:
         """
         self.config = config_manager
         self.gdrive = None
-        
-        # IDs das planilhas
-        self.control_sheet_id = "1fGrGtPXvP-J1q1N6n5Btp6s0Mfi9_5ig8xWJfRLrJWI"  # Planilha de controle
-        self.base_sheet_id = "1Qgm6U3EsNdTYFJAQ00M4U0YELrajsmXpjDf7g3yqyq8"   # Planilha base
-        
+
+        # IDs das planilhas (obtidos via configuração)
+        self.control_sheet_id = self.config.get_weekly_report_control_sheet_id()
+        self.base_sheet_id = self.config.get_weekly_report_base_sheet_id()
+
         # Inicializar Google Drive
         self._initialize_google_drive()
     

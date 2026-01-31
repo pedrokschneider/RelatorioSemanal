@@ -14,7 +14,6 @@ import sys
 import requests
 import json
 from googleapiclient.discovery import build
-import time
 import googleapiclient.errors
 
 
@@ -28,6 +27,15 @@ from report_system.generators.html_report_generator import HTMLReportGenerator
 from report_system.storage import GoogleDriveManager
 from report_system.utils.logging_config import setup_logging
 from report_system.utils.simple_cache import SimpleCacheManager
+
+# Sistema de mensagens de erro padronizadas
+try:
+    from report_system.utils.error_messages import (
+        ErrorMessages, ErrorCategory, classify_error, get_error_response
+    )
+    ERROR_MESSAGES_AVAILABLE = True
+except ImportError:
+    ERROR_MESSAGES_AVAILABLE = False
 from report_system.discord_handler import DiscordCommandHandler
 
 # Configurar logging
@@ -200,7 +208,92 @@ class WeeklyReportSystem:
             self.project_config_df = self.gdrive.load_project_config_from_sheet()
         
         return self.project_config_df
-    
+
+    def _extract_column_value(self, project_row: pd.DataFrame, column_name: str) -> Optional[str]:
+        """
+        Extrai valor de uma coluna do DataFrame de forma segura.
+
+        Args:
+            project_row: DataFrame com dados do projeto
+            column_name: Nome da coluna
+
+        Returns:
+            Valor da coluna ou None se ausente/inválido
+        """
+        if column_name not in project_row.columns:
+            return None
+
+        value = project_row[column_name].values[0]
+        if pd.notna(value):
+            value_str = str(value).strip()
+            if value_str.lower() not in ['nan', 'none', 'null', '']:
+                return value_str
+        return None
+
+    def _download_project_image(self, image_url: str, project_id: str, project_name: str) -> Optional[str]:
+        """
+        Baixa a imagem do projeto do Google Drive.
+
+        Args:
+            image_url: URL da imagem
+            project_id: ID do projeto
+            project_name: Nome do projeto
+
+        Returns:
+            Imagem em base64 ou None se falhar
+        """
+        if not hasattr(self, 'gdrive') or not self.gdrive:
+            return None
+
+        try:
+            logger.info(f"📷 Processando imagem do projeto {project_id} ({project_name})")
+            logger.info(f"   URL da imagem de capa: {image_url[:150]}...")
+
+            file_id = self.gdrive.extract_file_id_from_url(image_url)
+            if not file_id:
+                self._log_file_id_extraction_error(image_url)
+                return None
+
+            logger.info(f"   🔑 File ID extraído: {file_id}")
+            logger.info(f"   📥 Tentando baixar imagem do projeto...")
+
+            project_image_base64 = self.gdrive.download_file_as_base64(file_id)
+            if project_image_base64:
+                logger.info(f"   ✅ Imagem do projeto carregada com sucesso (tamanho: {len(project_image_base64)} caracteres)")
+                return project_image_base64
+
+            self._log_image_download_error(file_id, image_url)
+            return None
+
+        except Exception as img_error:
+            logger.error(f"❌ Erro ao processar imagem do projeto: {img_error}")
+            logger.error(f"   URL da imagem: {image_url[:150] if image_url else 'N/A'}")
+            import traceback
+            logger.error(f"   Traceback: {traceback.format_exc()}")
+            return None
+
+    def _log_file_id_extraction_error(self, image_url: str):
+        """Log de erro ao extrair File ID da URL."""
+        logger.warning(f"   ⚠️ Não foi possível extrair o File ID da URL.")
+        logger.warning(f"      URL fornecida: {image_url[:150]}")
+        logger.warning(f"      Verifique se a URL está no formato correto do Google Drive.")
+        logger.warning(f"      Formatos suportados:")
+        logger.warning(f"      - https://drive.google.com/file/d/FILE_ID/view")
+        logger.warning(f"      - https://drive.google.com/open?id=FILE_ID")
+        logger.warning(f"      - https://drive.google.com/uc?id=FILE_ID")
+        logger.warning(f"      - FILE_ID (apenas o ID)")
+
+    def _log_image_download_error(self, file_id: str, image_url: str):
+        """Log de erro ao baixar imagem."""
+        logger.warning(f"   ⚠️ Não foi possível baixar a imagem do projeto.")
+        logger.warning(f"      Verifique se o arquivo existe no Google Drive e se as credenciais têm permissão para acessá-lo.")
+        logger.warning(f"      File ID: {file_id}")
+        logger.warning(f"      URL original: {image_url[:150]}")
+        logger.warning(f"      Possíveis causas:")
+        logger.warning(f"      1. O arquivo foi deletado ou movido")
+        logger.warning(f"      2. O arquivo não está compartilhado com a conta de serviço")
+        logger.warning(f"      3. O formato da URL não é reconhecido")
+
     def get_project_smartsheet_id(self, project_id: str) -> Optional[str]:
         """
         Obtém o ID do Smartsheet para um projeto.
@@ -738,12 +831,12 @@ class WeeklyReportSystem:
         Registra um log de execução na planilha do Google Sheets via API.
         """
         import logging
-        logging.info(f"[DEBUG] Início do log_execution_to_sheet para {project_id} ({project_name}) com status={status}")
+        logging.debug(f"Início do log_execution_to_sheet para {project_id} ({project_name}) com status={status}")
         logging.info(f"Chamando log_execution_to_sheet para {project_id} ({project_name})")
         try:
             from googleapiclient.discovery import build
             from datetime import datetime
-            LOG_SHEET_ID = '1fGrGtPXvP-J1q1N6n5Btp6s0Mfi9_5ig8xWJfRLrJWI'
+            LOG_SHEET_ID = self.config.get_weekly_report_control_sheet_id()
             LOG_SHEET_NAME = 'Log'  # ou 'Sheet1', conforme sua planilha
             creds = self.config.get_google_creds()
             if not creds:
@@ -905,11 +998,19 @@ class WeeklyReportSystem:
                             logger.error(f"Erro ao enviar notificação sobre falta de dados do Construflow: {notify_error}")
                     
                     if progress_reporter:
-                        error_msg = f"❌ **Erro:** Não foi possível encontrar dados para o projeto {project_name}."
-                        if construflow_data_missing:
-                            error_msg += "\n\n⚠️ **Dados do Construflow não disponíveis.**"
+                        if ERROR_MESSAGES_AVAILABLE:
+                            detail = "os dados do cronograma" if construflow_data_missing else None
+                            error_msg = ErrorMessages.get_user_message(
+                                category=ErrorCategory.NOT_FOUND,
+                                project_name=project_name,
+                                details=detail
+                            )
+                        else:
+                            error_msg = f"❌ **Erro:** Não foi possível encontrar dados para o projeto {project_name}."
+                            if construflow_data_missing:
+                                error_msg += "\n\n⚠️ **Dados do cronograma não disponíveis.**"
                         progress_reporter.complete(
-                            success=False, 
+                            success=False,
                             final_message=error_msg
                         )
                     # Log de falha
@@ -940,65 +1041,21 @@ class WeeklyReportSystem:
                     progress_reporter.update("Geração de relatório HTML", "Criando relatórios HTML para e-mail...")
                 
                 # Obter URLs do cronograma, relatório de disciplinas e imagem da planilha
+                # IMPORTANTE: Forçar refresh para garantir URLs e imagem atualizadas
                 email_url_gant = None
                 email_url_disciplina = None
                 project_image_base64 = None
                 try:
-                    projects_df = self._load_project_config()
+                    projects_df = self._load_project_config(force_refresh=True)
                     if not projects_df.empty and 'construflow_id' in projects_df.columns:
                         project_row = projects_df[projects_df['construflow_id'].astype(str) == str(project_id)]
                         if not project_row.empty:
-                            if 'email_url_gant' in project_row.columns:
-                                email_url_gant = project_row['email_url_gant'].values[0] if pd.notna(project_row['email_url_gant'].values[0]) else None
-                            if 'email_url_disciplina' in project_row.columns:
-                                email_url_disciplina = project_row['email_url_disciplina'].values[0] if pd.notna(project_row['email_url_disciplina'].values[0]) else None
-                            # Obter URL da imagem do projeto (coluna email_url_capa)
-                            if 'email_url_capa' in project_row.columns:
-                                image_url_raw = project_row['email_url_capa'].values[0]
-                                # Converter para string e verificar se é válido
-                                image_url = None
-                                if pd.notna(image_url_raw):
-                                    image_url_str = str(image_url_raw).strip()
-                                    # Verificar se não é NaN, None, ou string vazia após conversão
-                                    if image_url_str.lower() not in ['nan', 'none', 'null', '']:
-                                        image_url = image_url_str
-                                if image_url and hasattr(self, 'gdrive') and self.gdrive:
-                                    try:
-                                        logger.info(f"📷 Processando imagem do projeto {project_id} ({project_name})")
-                                        logger.info(f"   URL da imagem de capa: {str(image_url)[:150]}...")
-                                        # Extrair file_id da URL e baixar como base64
-                                        file_id = self.gdrive.extract_file_id_from_url(str(image_url))
-                                        if file_id:
-                                            logger.info(f"   🔑 File ID extraído: {file_id}")
-                                            logger.info(f"   📥 Tentando baixar imagem do projeto...")
-                                            project_image_base64 = self.gdrive.download_file_as_base64(file_id)
-                                            if project_image_base64:
-                                                logger.info(f"   ✅ Imagem do projeto carregada com sucesso (tamanho: {len(project_image_base64)} caracteres)")
-                                            else:
-                                                logger.warning(f"   ⚠️ Não foi possível baixar a imagem do projeto.")
-                                                logger.warning(f"      Verifique se o arquivo existe no Google Drive e se as credenciais têm permissão para acessá-lo.")
-                                                logger.warning(f"      File ID: {file_id}")
-                                                logger.warning(f"      URL original: {str(image_url)[:150]}")
-                                                logger.warning(f"      Possíveis causas:")
-                                                logger.warning(f"      1. O arquivo foi deletado ou movido")
-                                                logger.warning(f"      2. O arquivo não está compartilhado com a conta de serviço")
-                                                logger.warning(f"      3. O formato da URL não é reconhecido")
-                                        else:
-                                            logger.warning(f"   ⚠️ Não foi possível extrair o File ID da URL.")
-                                            logger.warning(f"      URL fornecida: {str(image_url)[:150]}")
-                                            logger.warning(f"      Verifique se a URL está no formato correto do Google Drive.")
-                                            logger.warning(f"      Formatos suportados:")
-                                            logger.warning(f"      - https://drive.google.com/file/d/FILE_ID/view")
-                                            logger.warning(f"      - https://drive.google.com/open?id=FILE_ID")
-                                            logger.warning(f"      - https://drive.google.com/uc?id=FILE_ID")
-                                            logger.warning(f"      - FILE_ID (apenas o ID)")
-                                    except Exception as img_error:
-                                        logger.error(f"❌ Erro ao processar imagem do projeto: {img_error}")
-                                        logger.error(f"   URL da imagem: {str(image_url)[:150] if image_url else 'N/A'}")
-                                        import traceback
-                                        logger.error(f"   Traceback: {traceback.format_exc()}")
-                                elif not image_url:
-                                    logger.debug(f"URL da imagem de capa não configurada para o projeto {project_id}")
+                            email_url_gant = self._extract_column_value(project_row, 'email_url_gant')
+                            email_url_disciplina = self._extract_column_value(project_row, 'email_url_disciplina')
+                            image_url = self._extract_column_value(project_row, 'email_url_capa')
+
+                            if image_url:
+                                project_image_base64 = self._download_project_image(image_url, project_id, project_name)
                 except Exception as e:
                     logger.warning(f"Erro ao obter URLs e imagem do projeto: {e}")
                 
@@ -1015,30 +1072,48 @@ class WeeklyReportSystem:
                 )
                 
                 logger.info(f"Relatórios HTML gerados: {html_paths}")
-                    
-                # Verificar se os relatórios HTML foram gerados com sucesso
+
+                # Verificar se o relatório do cliente foi gerado (obrigatório)
                 if not html_paths or not html_paths.get('client'):
-                    logger.error(f"Erro ao gerar relatórios HTML para projeto {project_id}")
-                    
+                    logger.error(f"Erro ao gerar relatório do CLIENTE para projeto {project_id}")
+
+                    if ERROR_MESSAGES_AVAILABLE:
+                        error_message = ErrorMessages.get_user_message(
+                            category=ErrorCategory.SYSTEM,
+                            project_name=project_name,
+                            details="Falha ao criar o documento do relatório"
+                        )
+                    else:
+                        error_message = f"❌ **Erro:** Falha ao gerar o relatório do cliente para {project_name}."
+
                     if progress_reporter:
-                        progress_reporter.complete(
-                            success=False, 
-                            final_message=f"❌ **Erro:** Falha ao gerar os relatórios HTML para {project_name}."
-                        )
+                        progress_reporter.complete(success=False, final_message=error_message)
                     elif discord_channel_id and not skip_notifications:
-                        self.send_discord_notification(
-                            discord_channel_id,
-                            f"❌ **Erro:** Falha ao gerar os relatórios HTML para {project_name}."
-                        )
-                    # Log de falha
+                        self.send_discord_notification(discord_channel_id, error_message)
+
                     self.log_execution_to_sheet(
                         project_id=codigo_projeto or project_id,
                         project_name=project_name,
                         status="Falha",
-                        message="Falha ao gerar os relatórios HTML.",
+                        message="Falha ao gerar o relatório do cliente.",
                         doc_url=None
                     )
                     return False, "", None
+
+                # Verificar se o relatório da equipe foi gerado (opcional, apenas aviso)
+                if not html_paths.get('team'):
+                    logger.warning(f"⚠️ Relatório da EQUIPE não foi gerado para projeto {project_id} ({project_name})")
+                    if discord_channel_id and not skip_notifications:
+                        if ERROR_MESSAGES_AVAILABLE:
+                            warning_message = ErrorMessages.partial_success_message(
+                                project_name=project_name,
+                                generated="do Cliente",
+                                failed="da Equipe",
+                                reason="Dados insuficientes para gerar o relatório da equipe"
+                            )
+                        else:
+                            warning_message = f"⚠️ **Aviso:** Relatório da equipe não foi gerado para {project_name}."
+                        self.send_discord_notification(discord_channel_id, warning_message)
                 
                 # Verificar se o projeto tem apontamentos e notificar se não tiver
                 if not skip_notifications:
@@ -1184,55 +1259,59 @@ class WeeklyReportSystem:
                     
             except Exception as e:
                 logger.error(f"Erro ao processar projeto {project_id}: {str(e)}", exc_info=True)
-                
+
                 if progress_reporter:
-                    progress_reporter.complete(
-                        success=False,
-                        final_message=(
-                            f"❌ **Erro fatal ao gerar relatório para {project_name}**\n"
-                            f"Erro: {str(e)}\n"
-                            f"Por favor, contate o suporte técnico."
+                    if ERROR_MESSAGES_AVAILABLE:
+                        error_category = classify_error(e)
+                        error_message = ErrorMessages.get_user_message(
+                            category=error_category,
+                            project_name=project_name
                         )
-                    )
-                
+                    else:
+                        error_message = f"❌ **Erro ao gerar relatório para {project_name}**\n\nOcorreu um erro inesperado. Por favor, tente novamente em alguns minutos."
+
+                    progress_reporter.complete(success=False, final_message=error_message)
+
                 # Log de falha
                 self.log_execution_to_sheet(
                     project_id=codigo_projeto or project_id,
                     project_name=project_name,
                     status="Falha",
-                    message=f"Erro fatal ao gerar relatório: {str(e)}",
+                    message=f"Erro ao gerar relatório: {str(e)[:200]}",
                     doc_url=None
                 )
-                
+
                 return False, "", None
         except Exception as e:
             logger.error(f"Erro ao processar projeto {project_id}: {str(e)}", exc_info=True)
-            
+
             if progress_reporter:
-                progress_reporter.complete(
-                    success=False,
-                    final_message=(
-                        f"❌ **Erro fatal ao gerar relatório para {project_name}**\n"
-                        f"Erro: {str(e)}\n"
-                        f"Por favor, contate o suporte técnico."
+                if ERROR_MESSAGES_AVAILABLE:
+                    error_category = classify_error(e)
+                    error_message = ErrorMessages.get_user_message(
+                        category=error_category,
+                        project_name=project_name if 'project_name' in locals() else str(project_id)
                     )
-                )
-            
+                else:
+                    error_message = f"❌ **Erro ao gerar relatório**\n\nOcorreu um erro inesperado. Por favor, tente novamente."
+
+                progress_reporter.complete(success=False, final_message=error_message)
+
             # Log de falha
             self.log_execution_to_sheet(
                 project_id=codigo_projeto or project_id,
-                project_name=project_name,
+                project_name=project_name if 'project_name' in locals() else str(project_id),
                 status="Falha",
-                message=f"Erro fatal ao gerar relatório: {str(e)}",
+                message=f"Erro ao gerar relatório: {str(e)[:200]}",
                 doc_url=None
             )
-            
+
             return False, "", None
         finally:
             import logging
-            logging.info(f"[DEBUG] Entrou no finally do run_for_project para {project_id}")
+            logging.debug(f"Entrou no finally do run_for_project para {project_id}")
             if status is not None:
-                logging.info(f"[DEBUG] Chamando log_execution_to_sheet no finally para {project_id} com status={status}")
+                logging.debug(f"Chamando log_execution_to_sheet no finally para {project_id} com status={status}")
                 self.log_execution_to_sheet(
                     project_id=codigo_projeto or project_id,
                     project_name=project_name if 'project_name' in locals() else str(project_id),
@@ -1241,7 +1320,7 @@ class WeeklyReportSystem:
                     doc_url=doc_url
                 )
             else:
-                logging.info(f"[DEBUG] status é None no finally do run_for_project para {project_id}")
+                logging.debug(f"status é None no finally do run_for_project para {project_id}")
 
     def create_google_doc_with_links(self, docs_service, drive_service, title, project_data, parent_folder_id=None):
         """

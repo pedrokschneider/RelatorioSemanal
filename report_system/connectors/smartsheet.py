@@ -50,8 +50,8 @@ class SmartsheetConnector:
             cache_time = os.path.getmtime(cache_file)
             cache_age = time.time() - cache_time
             
-            # Cache válido por 24 horas (86400 segundos)
-            if cache_age < 86400:
+            # Cache válido por 24 horas (configurável)
+            if cache_age < self.config.get_cache_duration_default():
                 try:
                     with open(cache_file, 'rb') as f:
                         logger.info(f"Usando cache para Smartsheet {sheet_id}")

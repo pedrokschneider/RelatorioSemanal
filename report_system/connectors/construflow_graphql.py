@@ -47,6 +47,15 @@ class ConstruflowGraphQLConnector(APIConnector):
             logger.info("Conector REST disponível como fallback")
         except ImportError:
             logger.warning("Conector REST não disponível para fallback")
+
+        # ThreadPoolExecutor reutilizável para operações paralelas
+        from concurrent.futures import ThreadPoolExecutor
+        self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="construflow_")
+
+    def __del__(self):
+        """Cleanup: shutdown executor on object destruction."""
+        if hasattr(self, '_executor'):
+            self._executor.shutdown(wait=False)
     
     def _get_auth_token(self) -> str:
         """Obtém token de autenticação com sistema de tokens flutuantes."""
@@ -81,7 +90,7 @@ class ConstruflowGraphQLConnector(APIConnector):
                     if refresh_data.get('data', {}).get('refreshToken', {}).get('accessToken'):
                         self.token_cache['access_token'] = refresh_data['data']['refreshToken']['accessToken']
                         self.token_cache['refresh_token'] = refresh_data['data']['refreshToken']['refreshToken']
-                        self.token_cache['expires_at'] = time.time() + 3600  # 1 hora
+                        self.token_cache['expires_at'] = time.time() + self.config.get_cache_duration_token()
                         logger.info("Token renovado com sucesso")
                         return self.token_cache['access_token']
                 except Exception as e:
@@ -114,7 +123,7 @@ class ConstruflowGraphQLConnector(APIConnector):
             if login_data.get('data', {}).get('signIn', {}).get('accessToken'):
                 self.token_cache['access_token'] = login_data['data']['signIn']['accessToken']
                 self.token_cache['refresh_token'] = login_data['data']['signIn']['refreshToken']
-                self.token_cache['expires_at'] = time.time() + 3600  # 1 hora
+                self.token_cache['expires_at'] = time.time() + self.config.get_cache_duration_token()
                 logger.info("Login realizado e tokens armazenados")
                 return self.token_cache['access_token']
             else:
@@ -196,7 +205,7 @@ class ConstruflowGraphQLConnector(APIConnector):
         # Verificar cache
         if not force_refresh and os.path.exists(cache_file):
             cache_time = os.path.getmtime(cache_file)
-            if time.time() - cache_time < 86400:  # 24 horas
+            if time.time() - cache_time < self.config.get_cache_duration_default():
                 try:
                     with open(cache_file, 'rb') as f:
                         logger.info("Usando cache para projetos GraphQL")
@@ -350,7 +359,7 @@ class ConstruflowGraphQLConnector(APIConnector):
         
         if use_cache and os.path.exists(cache_file):
             cache_time = os.path.getmtime(cache_file)
-            if time.time() - cache_time < 3600:  # 1 hora para issues
+            if time.time() - cache_time < self.config.get_cache_duration_token():
                 try:
                     with open(cache_file, 'rb') as f:
                         cached_data = pickle.load(f)
@@ -490,10 +499,8 @@ class ConstruflowGraphQLConnector(APIConnector):
             )
             
             if self.rest_connector and needs_deadlines:
-                from concurrent.futures import ThreadPoolExecutor
-                executor = ThreadPoolExecutor(max_workers=1)
-                logger.info("🚀 Iniciando busca paralela de deadlines via API REST...")
-                deadline_future = executor.submit(self.rest_connector.get_issue_disciplines, False)
+                logger.info("Iniciando busca paralela de deadlines via API REST...")
+                deadline_future = self._executor.submit(self.rest_connector.get_issue_disciplines, False)
             elif not needs_deadlines:
                 logger.debug("Pulando busca de deadlines: nenhuma issue com disciplineId encontrada")
             
@@ -504,7 +511,7 @@ class ConstruflowGraphQLConnector(APIConnector):
                 try:
                     # Aguardar resultado da busca paralela de deadlines
                     if deadline_future:
-                        logger.info("⏳ Aguardando resultado da busca de deadlines...")
+                        logger.info("Aguardando resultado da busca de deadlines...")
                         df_issue_disciplines = deadline_future.result(timeout=180)  # Timeout de 3 minutos
                         deadline_future = None  # Limpar referência
                     else:

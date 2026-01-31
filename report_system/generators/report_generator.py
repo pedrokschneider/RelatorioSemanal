@@ -80,6 +80,31 @@ def parse_data_flex(date_str):
     logger.warning(f"Não foi possível converter a data: '{date_str}'")
     return None
 
+def normalize_status(value) -> str:
+    if value is None:
+        return ""
+    import unicodedata
+    import re
+    text = str(value).strip().lower()
+    text = unicodedata.normalize('NFD', text)
+    text = ''.join(c for c in text if unicodedata.category(c) != 'Mn')
+    text = re.sub(r'\s+', ' ', text)
+    return text
+
+def has_delay_info(task: Dict[str, Any]) -> bool:
+    delay_keys = [
+        'Categoria de atraso',
+        'Delay Category',
+        'Motivo de atraso',
+        'Motivo do atraso',
+        'Delay Reason'
+    ]
+    for key in delay_keys:
+        val = task.get(key)
+        if val is not None and str(val).strip() not in ['', 'nan', 'None']:
+            return True
+    return False
+
 # 1. Ajustar formatação das listas (sem asteriscos, data sempre dd/mm)
 def format_task_line(date_value, discipline, name, responsible=None):
     # Tenta converter para datetime
@@ -547,15 +572,15 @@ Qualquer dúvida, estamos à disposição!
     def _is_status_done(self, status_raw: str) -> bool:
         if not status_raw:
             return False
-        s = str(status_raw).strip().lower()
+        s = normalize_status(status_raw)
         # Smartsheet: valores exatos
         return s == 'feito'
 
     def _is_status_not_done(self, status_raw: str) -> bool:
         if not status_raw:
             return False
-        s = str(status_raw).strip().lower()
-        return s == 'não feito'
+        s = normalize_status(status_raw)
+        return s == 'nao feito'
 
     def _gerar_tarefas_realizadas(self, data: Dict[str, Any]) -> str:
         """Gera a seção de tarefas realizadas no período."""
@@ -795,9 +820,7 @@ Qualquer dúvida, estamos à disposição!
                 if not isinstance(task, dict):
                     continue
                 status = task.get('Status')
-                categoria_atraso = task.get('Categoria de atraso') or task.get('Delay Category')
-                tem_categoria_atraso = categoria_atraso and str(categoria_atraso).strip() not in ['', 'nan', 'None']
-                if self._is_status_not_done(status) or tem_categoria_atraso:
+                if self._is_status_not_done(status) or has_delay_info(task):
                     delayed_tasks.append(task)
 
         if not delayed_tasks:
@@ -822,7 +845,7 @@ Qualquer dúvida, estamos à disposição!
             motivo = task.get('Motivo de atraso')
             motivo_fmt = motivo if motivo else "-"
 
-            status = str(task.get('Status', '')).strip().lower()
+            status = normalize_status(task.get('Status', ''))
             if self._is_status_not_done(status) and (not motivo_fmt or motivo_fmt == "-"):
                 motivo_fmt = "Tarefa não realizada (status: Não Feito)"
 
@@ -888,7 +911,8 @@ Qualquer dúvida, estamos à disposição!
                         try:
                             if today < task_date <= next_week_end:
                                 future_tasks.append(task)
-                        except:
+                        except TypeError as e:
+                            logger.debug(f"Erro ao comparar datas de tarefa: {e}")
                             future_tasks.append(task)
             if not future_tasks and all_tasks:
                 future_tasks = all_tasks[:min(3, len(all_tasks))]
@@ -910,7 +934,8 @@ Qualquer dúvida, estamos à disposição!
                         try:
                             if today < task_date <= next_week_end:
                                 future_tasks.append(task)
-                        except:
+                        except TypeError as e:
+                            logger.debug(f"Erro ao comparar datas de tarefa: {e}")
                             future_tasks.append(task)
             if not future_tasks and all_tasks:
                 valid_tasks = [t for t in all_tasks if isinstance(t, dict)]
@@ -928,7 +953,8 @@ Qualquer dúvida, estamos à disposição!
             if isinstance(task_date, str):
                 try:
                     return datetime.strptime(task_date, "%d/%m/%Y")
-                except:
+                except ValueError as e:
+                    logger.debug(f"Falha ao processar data '{task_date}': {e}")
                     return datetime.now() + timedelta(days=14)
             return task_date if task_date else datetime.now() + timedelta(days=14)
         

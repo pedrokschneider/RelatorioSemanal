@@ -141,22 +141,26 @@ class ReportQueue:
                         )
                         self.send_message_with_rate_limit(channel_id, message)
                     else:
-                        # Calcular tempo decorrido para exibição
-                        elapsed = f" (em processamento há {int(elapsed_seconds//60)} min e {int(elapsed_seconds%60)} seg)"
-                        
                         # Enviar mensagem de status
                         project_name = self.discord_bot.get_project_name(channel_id)
-                        message = (
-                            f"⏳ **Processamento em Andamento**\n\n"
-                            f"Já existe um relatório para **{project_name}** em processamento{elapsed}.\n"
-                            f"Por favor, aguarde a conclusão ou verifique o status usando `!status`."
-                        )
+                        elapsed_minutes = int(elapsed_seconds // 60)
+
+                        if ERROR_MESSAGES_AVAILABLE:
+                            message = ErrorMessages.already_processing_message(project_name, elapsed_minutes)
+                        else:
+                            message = f"⏳ **Processamento em andamento**\n\n📋 **Projeto:** {project_name}\n⏱️ **Tempo decorrido:** {elapsed_minutes} minutos\n\nJá existe um relatório sendo gerado para este projeto.\nPor favor, aguarde a conclusão."
+
                         self.send_message_with_rate_limit(channel_id, message)
                         return -1  # Código especial indicando que já existe processamento
                 else:
-                    # Enviar mensagem de status
+                    # Enviar mensagem de status (sem timestamp disponível)
                     project_name = self.discord_bot.get_project_name(channel_id)
-                    message = f"⏳ Já existe um relatório para {project_name} em processamento. Por favor, aguarde."
+
+                    if ERROR_MESSAGES_AVAILABLE:
+                        message = ErrorMessages.already_processing_message(project_name, 0)
+                    else:
+                        message = f"⏳ **Processamento em andamento**\n\n📋 **Projeto:** {project_name}\n\nJá existe um relatório sendo gerado.\nPor favor, aguarde a conclusão."
+
                     self.send_message_with_rate_limit(channel_id, message)
                     return -1  # Código especial indicando que já existe processamento
             
@@ -182,16 +186,15 @@ class ReportQueue:
             # Enviar mensagem adequada sobre a posição na fila
             project_name = self.discord_bot.get_project_name(channel_id)
             if position == 0 and sum(1 for r in self.active_reports.values() if r['status'] == 'processing') < self.max_workers:
-                message = (
-                    f"🤖**Iniciando geração do relatório para {project_name}**.\n"
-                    f"⏳Este processo pode levar alguns minutos. Você será notificado quando estiver concluído."
-                )
+                if ERROR_MESSAGES_AVAILABLE:
+                    message = ErrorMessages.queue_message(project_name, 0)
+                else:
+                    message = f"🚀 **Iniciando geração do relatório**\n\n📋 **Projeto:** {project_name}\n\n⏳ O processamento começou. Você será notificado quando terminar."
             else:
-                message = (
-                    f"🔢Relatório para **{project_name}** adicionado à fila de processamento.\n"
-                    f"Posição atual: **{position+1}** na fila de espera.\n\n"
-                    f"Você será notificado quando o processamento começar."
-                )
+                if ERROR_MESSAGES_AVAILABLE:
+                    message = ErrorMessages.queue_message(project_name, position + 1)
+                else:
+                    message = f"📋 **Relatório adicionado à fila**\n\n📋 **Projeto:** {project_name}\n🔢 **Posição:** {position + 1}º na fila\n\n⏳ Você será notificado quando o processamento começar."
             
             self.send_message_with_rate_limit(channel_id, message)
             
@@ -209,11 +212,12 @@ class ReportQueue:
         """
         logger.info(f"Canal {channel_id} já está na fila aguardando processamento")
         project_name = self.discord_bot.get_project_name(channel_id)
-        message = (
-            f"⏳ **Solicitação já na fila**\n\n"
-            f"Já existe uma solicitação de relatório para **{project_name}** aguardando na fila.\n"
-            f"Por favor, aguarde a conclusão."
-        )
+
+        if ERROR_MESSAGES_AVAILABLE:
+            message = ErrorMessages.already_queued_message(project_name)
+        else:
+            message = f"⏳ **Já está na fila**\n\n📋 **Projeto:** {project_name}\n\nJá existe uma solicitação de relatório aguardando na fila.\nPor favor, aguarde a conclusão."
+
         self.send_message_with_rate_limit(channel_id, message)
         return -1
 
@@ -260,9 +264,8 @@ class ReportQueue:
                     # Remover da fila de espera (agora está em processamento ativo)
                     self.queued_channels.discard(channel_id)
                 
-                # Notificar que está começando o processamento
-                message = f"🔄 Iniciando geração do relatório para {project_name}. Isso pode levar alguns minutos..."
-                self.send_message_with_rate_limit(channel_id, message)
+                # Nota: Mensagem de início já foi enviada em add_report_request()
+                # Não duplicar mensagem aqui
                 
                 logger.info(f"Worker {worker_id} iniciando relatório para {project_name} (canal {channel_id}, sem-dashboard={hide_dashboard}, schedule_days={schedule_days}, since_date={since_date.strftime('%d/%m/%Y') if since_date else None})")
                 
@@ -498,54 +501,15 @@ class ReportQueue:
                 from report_system.main import WeeklyReportSystem
                 system = WeeklyReportSystem()
                 
-                # Se temos um URL do documento OU se encontramos mensagem de sucesso, formatar a mensagem completa
-                if doc_url or success_message_found:
-                    # Tentar obter o ID do projeto a partir do canal
-                    project_id = system.get_project_by_discord_channel(channel_id)
-                    
-                    # Tentar obter a pasta do projeto
-                    folder_url = None
-                    if project_id:
-                        try:
-                            project_folder_id = system.gdrive.get_project_folder(project_id, project_name)
-                            if project_folder_id:
-                                folder_url = f"https://drive.google.com/drive/folders/{project_folder_id}"
-                        except Exception as e:
-                            logger.warning(f"Erro ao obter pasta do projeto: {e}")
-                    
-                    # Usar o formato de mensagem padrão
-                    message = [
-                        "✅ **Relatórios HTML de {} gerados com sucesso!**".format(project_name),
-                        ""
-                    ]
-                    
-                    # Se temos o URL do relatório, incluir na mensagem
-                    if doc_url:
-                        # Verificar se é Google Docs ou Google Drive e formatar adequadamente
-                        if "docs.google.com/document" in doc_url:
-                            message.append(f"📄 [Relatório do Cliente]({doc_url})")
-                        elif "drive.google.com/file/d/" in doc_url:
-                            message.append(f"📄 [Relatório do Cliente (HTML)]({doc_url})")
-                            # Tentar extrair o ID do cliente para construir URL do relatório da equipe
-                            # O sistema retorna o URL do cliente, então podemos assumir que o da equipe está na mesma pasta
-                            message.append(f"📄 Relatório da Equipe (HTML) - disponível na pasta do projeto")
-                        else:
-                            message.append(f"📄 [Relatório]({doc_url})")
-                    else:
-                        # Se não temos o URL mas temos sucesso, informar que está na pasta
-                        message.append("📄 Relatórios HTML gerados e salvos no Google Drive")
-                        message.append("📄 Relatórios disponíveis na pasta do projeto")
-                    
-                    if folder_url:
-                        message.append(f"\n📁 [Link para a pasta do projeto]({folder_url})")
-                    
-                    formatted_message = "\n".join(message)
-                    self.send_message_with_rate_limit(channel_id, formatted_message)
-                    
-                    if doc_url:
-                        logger.info(f"Relatório gerado com sucesso para {project_name} com URL: {doc_url}")
-                    else:
-                        logger.info(f"Relatório gerado com sucesso para {project_name} (URL não capturado na saída, mas processamento bem-sucedido)")
+                # Se encontramos mensagem de sucesso, o main.py já enviou a notificação - não duplicar
+                if success_message_found:
+                    logger.info(f"Relatório gerado com sucesso para {project_name} (notificação já enviada pelo main.py)")
+                    return True
+
+                # Se encontrou URL, significa que o relatório foi gerado com sucesso
+                # Nota: Não enviamos mensagem aqui - o main.py já envia via progress_reporter
+                if doc_url:
+                    logger.info(f"Relatório gerado com sucesso para {project_name} (URL detectado: {doc_url})")
                     return True
                 else:
                     # Se não encontramos o URL nem mensagem de sucesso, verificar se realmente falhou
@@ -557,29 +521,11 @@ class ReportQueue:
                             if indicator in result.stderr:
                                 has_real_error = True
                                 break
-                    
+
                     if not has_real_error and result.returncode == 0:
-                        # Se o returncode é 0 e não há erros, provavelmente foi sucesso mas não capturamos o URL
-                        logger.warning(f"Relatório processado para {project_name}, mas URL não encontrado na saída. Considerando sucesso baseado no returncode 0.")
-                        message = [
-                            "✅ **Relatórios HTML de {} gerados com sucesso!**".format(project_name),
-                            "",
-                            "📄 Relatórios HTML gerados e salvos no Google Drive",
-                            "📄 Relatórios disponíveis na pasta do projeto"
-                        ]
-                        
-                        try:
-                            project_id = system.get_project_by_discord_channel(channel_id)
-                            if project_id:
-                                project_folder_id = system.gdrive.get_project_folder(project_id, project_name)
-                                if project_folder_id:
-                                    folder_url = f"https://drive.google.com/drive/folders/{project_folder_id}"
-                                    message.append(f"\n📁 [Link para a pasta do projeto]({folder_url})")
-                        except Exception as e:
-                            logger.warning(f"Erro ao obter pasta do projeto: {e}")
-                        
-                        formatted_message = "\n".join(message)
-                        self.send_message_with_rate_limit(channel_id, formatted_message)
+                        # Se o returncode é 0 e não há erros, provavelmente foi sucesso
+                        # O main.py já deve ter enviado a notificação - não duplicar
+                        logger.info(f"Relatório processado para {project_name} com returncode 0 (notificação provavelmente já enviada)")
                         return True
                     else:
                         # Se não encontramos o URL e há evidências de erro, considerar como falha

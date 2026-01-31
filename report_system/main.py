@@ -1205,30 +1205,16 @@ class WeeklyReportSystem:
                 else:
                     logger.warning(f"ID da pasta do Drive não encontrado para projeto {project_id}")
                 
-                # Preparar mensagem final
+                # Preparar mensagem final - formato limpo e conciso
                 folder_url = f"https://drive.google.com/drive/folders/{project_folder_id}" if project_folder_id else None
-                
-                final_message = (
-                    f"✅ **Relatórios HTML de {project_name} gerados com sucesso!**\n\n"
-                )
-                
-                # Priorizar links do Drive se disponíveis
-                if uploaded_files.get('client'):
-                    final_message += f"📄 **[Relatório do Cliente (HTML)]({uploaded_files['client']})**\n"
-                elif html_paths.get('client'):
-                    final_message += f"📄 Relatório do Cliente: `{html_paths.get('client', 'N/A')}`\n"
-                else:
-                    final_message += f"📄 Relatório do Cliente: Não gerado\n"
-                
-                if uploaded_files.get('team'):
-                    final_message += f"📄 [Relatório da Equipe (HTML)]({uploaded_files['team']})\n"
-                elif html_paths.get('team'):
-                    final_message += f"📄 Relatório da Equipe: `{html_paths.get('team', 'N/A')}`\n"
-                else:
-                    final_message += f"📄 Relatório da Equipe: Não gerado\n"
-                
+
                 if folder_url:
-                    final_message += f"\n📁 [Link para a pasta do projeto]({folder_url})"
+                    final_message = f"✅ **Relatório de {project_name} gerado com sucesso!**\n\n📁 [Abrir Pasta do Projeto]({folder_url})"
+                else:
+                    # Fallback caso não tenha pasta (raro)
+                    final_message = f"✅ **Relatório de {project_name} gerado com sucesso!**"
+                    if uploaded_files.get('client'):
+                        final_message += f"\n\n📄 [Abrir Relatório]({uploaded_files['client']})"
                 
                 # Enviar notificação
                 if progress_reporter:

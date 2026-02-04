@@ -1170,6 +1170,10 @@ class DiscordBotAutoChannels:
         start_time = time.time()
         heartbeat_interval = 30  # Intervalo para heartbeat em segundos
         last_heartbeat = start_time
+
+        # Configuração para reload automático de canais (detectar novos projetos)
+        channel_reload_interval = 600  # Recarregar canais a cada 10 minutos (600 segundos)
+        last_channel_reload = start_time
         
         # Loop principal de monitoramento
         try:
@@ -1189,7 +1193,61 @@ class DiscordBotAutoChannels:
                     sys.stdout.flush()
                     
                     last_heartbeat = current_time
-                
+
+                # Reload automático de canais a cada 10 minutos (detectar novos projetos)
+                if current_time - last_channel_reload >= channel_reload_interval:
+                    try:
+                        new_channels = self.get_channels_from_spreadsheet()
+                        new_channel_ids = set(new_channels.keys())
+                        current_channel_ids = set(channels_to_monitor)
+
+                        # Verificar se há novos canais
+                        added_channels = new_channel_ids - current_channel_ids
+                        removed_channels = current_channel_ids - new_channel_ids
+
+                        if added_channels or removed_channels:
+                            # Atualizar lista de canais
+                            channels_to_monitor = list(new_channel_ids)
+
+                            # Inicializar novos canais
+                            for channel_id in added_channels:
+                                project_name = new_channels[channel_id].get('project_name', 'Desconhecido')
+                                print(f"\n🆕 Novo canal detectado: {project_name} (ID: {channel_id})")
+                                logger.info(f"Novo canal adicionado ao monitoramento: {project_name} (ID: {channel_id})")
+
+                                # Inicializar tracking para novo canal
+                                error_counters[channel_id] = 0
+                                channel_check_interval[channel_id] = 0
+                                next_check_time[channel_id] = 0
+
+                                # Obter última mensagem do novo canal
+                                try:
+                                    messages = self.get_channel_messages(channel_id, limit=1)
+                                    if messages and len(messages) > 0:
+                                        last_message_ids[channel_id] = messages[0]['id']
+                                    else:
+                                        last_message_ids[channel_id] = "0"
+                                except Exception:
+                                    last_message_ids[channel_id] = "0"
+
+                            # Limpar canais removidos
+                            for channel_id in removed_channels:
+                                print(f"\n🗑️ Canal removido do monitoramento: {channel_id}")
+                                logger.info(f"Canal removido do monitoramento: {channel_id}")
+                                # Limpar dados do canal removido
+                                error_counters.pop(channel_id, None)
+                                channel_check_interval.pop(channel_id, None)
+                                next_check_time.pop(channel_id, None)
+                                last_message_ids.pop(channel_id, None)
+
+                            print(f"\n✅ Lista de canais atualizada: {len(channels_to_monitor)} canais monitorados")
+                        else:
+                            logger.debug("Reload de canais: nenhuma alteração detectada")
+                    except Exception as e:
+                        logger.warning(f"Erro ao recarregar canais: {e}")
+
+                    last_channel_reload = current_time
+
                 # Verificar canais que estão na hora de serem verificados
                 for channel_id in channels_to_monitor:
                     # Verificar se é hora de verificar este canal

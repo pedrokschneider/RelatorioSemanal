@@ -1,18 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "[entrypoint] Iniciando bot Discord para relatórios"
-echo "[entrypoint] Bot executará apenas quando solicitado via Discord"
-echo "[entrypoint] Modo: serviço (monitoramento contínuo)"
+CRON_SCHEDULE="${CRON_SCHEDULE:-0 7 * * 1}"
+REPORT_ARGS="${REPORT_ARGS:-}"
+RUN_ON_START="${RUN_ON_START:-false}"
 
-# Executar o bot do Discord em modo serviço
-# Se o bot sair, aguardar e tentar novamente
-cd /app
+echo "[entrypoint] Iniciando container de relatórios"
+echo "[entrypoint] Cron schedule: ${CRON_SCHEDULE}"
+echo "[entrypoint] Report args: ${REPORT_ARGS}"
 
-while true; do
-    echo "[entrypoint] Iniciando bot Discord em modo serviço..."
-    python discord_bot.py --service || {
-        echo "[entrypoint] Bot saiu com código $?. Aguardando 30 segundos antes de reiniciar..."
-        sleep 30
-    }
-done
+if [ "${RUN_ON_START}" = "true" ]; then
+  echo "[entrypoint] Executando relatório na inicialização"
+  bash -lc "cd /app && python run.py ${REPORT_ARGS}" || true
+fi
+
+CRON_FILE="/etc/cron.d/weekly-report"
+echo "${CRON_SCHEDULE} root cd /app && python run.py ${REPORT_ARGS} >> /proc/1/fd/1 2>&1" > "${CRON_FILE}"
+chmod 0644 "${CRON_FILE}"
+crontab "${CRON_FILE}"
+
+echo "[entrypoint] Cron instalado. Iniciando serviço..."
+cron -f

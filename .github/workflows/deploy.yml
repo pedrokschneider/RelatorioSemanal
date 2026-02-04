@@ -1,0 +1,33 @@
+name: Deploy VPS
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT || 22 }}
+          envs: REPO_DIR,REPO_URL
+          script: |
+            set -e
+            REPO_DIR="${REPO_DIR:-/opt/relatorio-semanal}"
+            REPO_URL="${REPO_URL:-https://github.com/pedrokschneider/RelatorioSemanal.git}"
+
+            if [ ! -d "$REPO_DIR/.git" ]; then
+              mkdir -p "$REPO_DIR"
+              git clone "$REPO_URL" "$REPO_DIR"
+            fi
+
+            cd "$REPO_DIR"
+            git fetch --all
+            git reset --hard origin/main
+            docker compose up -d --build

@@ -12,6 +12,15 @@ from report_system.config import ConfigManager
 from report_system.utils.simple_cache import SimpleCacheManager
 from report_system.discord_notification import DiscordNotificationManager
 
+# Sistema de mensagens de erro padronizadas
+try:
+    from report_system.utils.error_messages import (
+        ErrorMessages, ErrorCategory, classify_error
+    )
+    ERROR_MESSAGES_AVAILABLE = True
+except ImportError:
+    ERROR_MESSAGES_AVAILABLE = False
+
 logger = logging.getLogger("ReportSystem")
 
 class DiscordCommandHandler:
@@ -39,7 +48,26 @@ class DiscordCommandHandler:
             logger.error(f"Erro ao inicializar SimpleCacheManager: {e}")
             self.cache_manager = None
             self.use_drive_cache = False
-    
+
+    def _get_project_name(self, project_id: str) -> str:
+        """
+        Obtém o nome amigável do projeto.
+
+        Args:
+            project_id: ID do projeto
+
+        Returns:
+            Nome do projeto ou o ID se não encontrar
+        """
+        try:
+            if self.report_system and hasattr(self.report_system, 'get_project_name'):
+                name = self.report_system.get_project_name(project_id)
+                if name:
+                    return name
+        except Exception:
+            pass
+        return f"Projeto {project_id}"
+
     def process_command(self, channel_id: str, command: str, 
                        project_id: Optional[str] = None) -> bool:
         """
@@ -67,11 +95,15 @@ class DiscordCommandHandler:
         
         # Se ainda não temos project_id, não podemos continuar
         if not project_id:
-            self.discord.send_notification(
-                channel_id,
-                "❌ Erro: Não foi possível identificar o projeto associado a este canal. " +
-                "Por favor, especifique o ID do projeto."
-            )
+            if ERROR_MESSAGES_AVAILABLE:
+                error_msg = ErrorMessages.get_user_message(
+                    category=ErrorCategory.CONFIGURATION,
+                    project_name="este canal",
+                    details="Canal não está vinculado a um projeto"
+                )
+            else:
+                error_msg = "❌ **Canal não configurado**\n\nEste canal não está vinculado a um projeto.\nPor favor, contate a equipe de Tecnologia para configurar."
+            self.discord.send_notification(channel_id, error_msg)
             return False
         
         # Processar comandos conhecidos
@@ -103,21 +135,23 @@ class DiscordCommandHandler:
         """
         if not self.report_system:
             logger.error("Sistema de relatórios não disponível")
-            self.discord.send_notification(
-                channel_id,
-                "❌ Erro: Sistema de relatórios não disponível."
-            )
+            if ERROR_MESSAGES_AVAILABLE:
+                error_msg = ErrorMessages.get_user_message(
+                    category=ErrorCategory.SYSTEM,
+                    project_name=project_id,
+                    details="Sistema de relatórios indisponível"
+                )
+            else:
+                error_msg = "❌ **Sistema indisponível**\n\nO sistema de relatórios está temporariamente indisponível. Tente novamente em alguns minutos."
+            self.discord.send_notification(channel_id, error_msg)
             return False
-        
+
         # Atualizar cache do projeto primeiro de forma otimizada
         success = self._update_project_cache(channel_id, project_id)
-        
+
         if not success:
-            self.discord.send_notification(
-                channel_id,
-                f"⚠️ Atenção: Não foi possível atualizar o cache para o projeto {project_id}. " +
-                "Continuando com os dados existentes."
-            )
+            # Apenas log de aviso, não precisa alarmar o usuário
+            logger.warning(f"Cache não atualizado para projeto {project_id}, usando dados existentes")
         
         # Gerar relatório
         try:
@@ -163,17 +197,29 @@ class DiscordCommandHandler:
                     )
                 return True
             else:
-                self.discord.send_notification(
-                    channel_id,
-                    f"❌ Ocorreu um erro ao gerar o relatório para o projeto {project_id}. Antes de entrar em contato com o suporte, verifique se as colunas **STATUS** e **DISCIPLINA** do cronograma do SmartSheet não possuem dados vazios."
-                )
+                # Obter nome do projeto para mensagem mais amigável
+                project_name = self._get_project_name(project_id)
+                if ERROR_MESSAGES_AVAILABLE:
+                    error_msg = ErrorMessages.get_user_message(
+                        category=ErrorCategory.SYSTEM,
+                        project_name=project_name
+                    )
+                else:
+                    error_msg = f"❌ **Erro ao gerar relatório**\n\n📋 **Projeto:** {project_name}\n\nOcorreu um erro durante o processamento. Por favor, tente novamente."
+                self.discord.send_notification(channel_id, error_msg)
                 return False
         except Exception as e:
             logger.error(f"Erro ao gerar relatório: {e}")
-            self.discord.send_notification(
-                channel_id,
-                f"❌ Ocorreu um erro ao gerar o relatório. Antes de entrar em contato com o suporte, verifique se as colunas **STATUS** e **DISCIPLINA** do cronograma do SmartSheet não possuem dados vazios."
-            )
+            project_name = self._get_project_name(project_id)
+            if ERROR_MESSAGES_AVAILABLE:
+                error_category = classify_error(e)
+                error_msg = ErrorMessages.get_user_message(
+                    category=error_category,
+                    project_name=project_name
+                )
+            else:
+                error_msg = f"❌ **Erro ao gerar relatório**\n\nOcorreu um erro inesperado. Por favor, tente novamente em alguns minutos."
+            self.discord.send_notification(channel_id, error_msg)
             return False
     
     def _process_update_command(self, channel_id: str, project_id: str) -> bool:
@@ -206,19 +252,23 @@ class DiscordCommandHandler:
             time_str = f"{elapsed_time/60:.1f} minutos"
         
         # Atualizar mensagem com status
+        project_name = self._get_project_name(project_id)
         if success:
             self.discord.update_message(
                 channel_id,
-                #message_id,
-                f"✅ Cache atualizado com sucesso para o projeto {project_id}! (tempo: {time_str})"
+                f"✅ **Dados atualizados!**\n\n📋 **Projeto:** {project_name}\n⏱️ **Tempo:** {time_str}"
             )
             return True
         else:
-            self.discord.update_message(
-                channel_id,
-                #message_id,
-                f"❌ Erro ao atualizar cache para o projeto {project_id}. (tempo: {time_str})"
-            )
+            if ERROR_MESSAGES_AVAILABLE:
+                error_msg = ErrorMessages.get_user_message(
+                    category=ErrorCategory.CONNECTION,
+                    project_name=project_name,
+                    details="os sistemas externos"
+                )
+            else:
+                error_msg = f"❌ **Falha ao atualizar dados**\n\n📋 **Projeto:** {project_name}\n⏱️ **Tempo:** {time_str}\n\nTente novamente em alguns minutos."
+            self.discord.update_message(channel_id, error_msg)
             return False
     
     def _process_status_command(self, channel_id: str, project_id: str) -> bool:
@@ -235,10 +285,15 @@ class DiscordCommandHandler:
         try:
             # Verificar se o cache manager foi inicializado
             if not self.cache_manager:
-                self.discord.send_notification(
-                    channel_id,
-                    "❌ Erro: Sistema de cache não inicializado."
-                )
+                if ERROR_MESSAGES_AVAILABLE:
+                    error_msg = ErrorMessages.get_user_message(
+                        category=ErrorCategory.SYSTEM,
+                        project_name=project_id,
+                        details="Sistema de cache não inicializado"
+                    )
+                else:
+                    error_msg = "❌ **Sistema indisponível**\n\nO sistema de cache não está disponível no momento."
+                self.discord.send_notification(channel_id, error_msg)
                 return False
             
             # Obter status do cache
@@ -290,10 +345,16 @@ class DiscordCommandHandler:
             return True
         except Exception as e:
             logger.error(f"Erro ao obter status do cache: {e}")
-            self.discord.send_notification(
-                channel_id,
-                f"❌ Erro ao obter status do cache: {str(e)}"
-            )
+            project_name = self._get_project_name(project_id)
+            if ERROR_MESSAGES_AVAILABLE:
+                error_msg = ErrorMessages.get_user_message(
+                    category=ErrorCategory.SYSTEM,
+                    project_name=project_name,
+                    details="Erro ao consultar status"
+                )
+            else:
+                error_msg = f"❌ **Erro ao consultar status**\n\nNão foi possível obter o status dos dados. Tente novamente."
+            self.discord.send_notification(channel_id, error_msg)
             return False
     
     def _update_project_cache(self, channel_id: str, project_id: str) -> bool:

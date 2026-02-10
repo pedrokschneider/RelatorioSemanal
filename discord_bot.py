@@ -4,7 +4,7 @@ import subprocess
 import logging
 import requests
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 from dotenv import load_dotenv
 
@@ -786,6 +786,10 @@ class DiscordBotAutoChannels:
                             break
                         except (ValueError, IndexError):
                             pass
+
+                # Se schedule_days foi informado mas since_date não, derivar since_date
+                if schedule_days and not since_date:
+                    since_date = datetime.now() - timedelta(days=schedule_days)
                 
                 logger.info(f"Processando comando !relatorio para canal {channel_id} (sem-dashboard={hide_dashboard}, schedule_days={schedule_days}, since_date={since_date.strftime('%d/%m/%Y') if since_date else None})")
                 

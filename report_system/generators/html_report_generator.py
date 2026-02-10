@@ -735,10 +735,23 @@ class HTMLReportGenerator:
             logger.info("Nenhuma tarefa atrasada encontrada no SmartSheet")
             return []
         
-        # Filtrar atrasos das últimas 2 semanas (relatório semanal)
+        # Filtrar atrasos pelo período do relatório
         today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        two_weeks_ago = today - timedelta(days=14)
-        
+        since_date = data.get('since_date')
+        if since_date:
+            if isinstance(since_date, str):
+                try:
+                    since_date = datetime.fromisoformat(since_date)
+                except ValueError:
+                    try:
+                        since_date = datetime.strptime(since_date, "%d/%m/%Y")
+                    except ValueError:
+                        since_date = None
+            if since_date:
+                since_date = since_date.replace(hour=0, minute=0, second=0, microsecond=0)
+        if not since_date:
+            since_date = today - timedelta(days=7)
+
         # Log: mostrar disciplinas únicas nas tarefas atrasadas
         disciplinas_atrasadas = set()
         for task in delayed_tasks:
@@ -747,33 +760,25 @@ class HTMLReportGenerator:
                 if disciplina:
                     disciplinas_atrasadas.add(disciplina)
         logger.info(f"Disciplinas nas tarefas atrasadas: {sorted(disciplinas_atrasadas)}")
-        
-        # Filtrar por disciplina "Cliente" ou "Otus" e por período (últimas 2 semanas)
+
+        # Filtrar por disciplina "Cliente" ou "Otus" e por período
         client_delays = []
         tasks_outra_disciplina = 0
         tasks_fora_periodo = 0
-        
+
         for task in delayed_tasks:
             disciplina = task.get('Disciplina', task.get('Discipline', ''))
-            
+
             # Filtrar por disciplina
             if not self._is_client_discipline(disciplina):
                 tasks_outra_disciplina += 1
                 continue
-            
-            # Incluir atrasos explícitos mesmo fora do período
-            status_norm = self._normalize_status(task.get('Status', ''))
-            atraso_explicito = status_norm == 'nao feito' or self._has_delay_info(task)
-            if atraso_explicito:
-                client_delays.append(task)
-                continue
 
-            # Verificar se o atraso está nas últimas 2 semanas
-            # Usar data de término (ou baseline se disponível) para verificar se está atrasado nas últimas 2 semanas
+            # Verificar se o atraso está no período
             task_date = None
             end_date_str = task.get('Data Término', task.get('Data de Término', task.get('End Date', '')))
             baseline_date_str = task.get('Data de Fim - Baseline Otus', '')
-            
+
             # Priorizar baseline, senão usar data de término
             if baseline_date_str:
                 try:
@@ -787,11 +792,10 @@ class HTMLReportGenerator:
                 except (ValueError, TypeError) as e:
                     logger.debug(f"Falha ao processar data término '{end_date_str}': {e}")
 
-            # Se tem data, verificar se está nas últimas 2 semanas
+            # Se tem data, verificar se está no período
             if task_date:
                 task_date_normalized = task_date.replace(hour=0, minute=0, second=0, microsecond=0)
-                # Incluir atrasos que deveriam ter sido concluídos nas últimas 2 semanas
-                if task_date_normalized >= two_weeks_ago and task_date_normalized <= today:
+                if task_date_normalized >= since_date and task_date_normalized <= today:
                     client_delays.append(task)
                 else:
                     tasks_fora_periodo += 1
@@ -799,11 +803,11 @@ class HTMLReportGenerator:
                 # Se não tem data, incluir (pode ser tarefa sem data definida mas marcada como atrasada)
                 client_delays.append(task)
 
-        logger.info(f"Atrasos do cliente: {len(client_delays)} de {len(delayed_tasks)} atrasadas (últimas 2 semanas)")
+        logger.info(f"Atrasos do cliente: {len(client_delays)} de {len(delayed_tasks)} atrasadas (desde {since_date.strftime('%d/%m/%Y')})")
         if tasks_outra_disciplina > 0:
             logger.info(f"  - {tasks_outra_disciplina} tarefas atrasadas de outras disciplinas (não 'Cliente' ou 'Otus')")
         if tasks_fora_periodo > 0:
-            logger.info(f"  - {tasks_fora_periodo} tarefas atrasadas fora do período (mais de 2 semanas)")
+            logger.info(f"  - {tasks_fora_periodo} tarefas atrasadas fora do período (antes de {since_date.strftime('%d/%m/%Y')})")
         
         return client_delays
     
@@ -811,43 +815,49 @@ class HTMLReportGenerator:
         """
         Obtém atrasos para relatório da equipe.
         Retorna todas as tarefas atrasadas, EXCETO 'Cliente' e 'Otus' (que aparecem no relatório do cliente).
-        Mostra apenas atrasos das últimas 2 semanas (relatório semanal).
+        Mostra apenas atrasos do período do relatório.
         """
         smartsheet_data = data.get('smartsheet_data', {})
         if not smartsheet_data:
             return []
-        
+
         delayed_tasks = smartsheet_data.get('delayed_tasks', [])
-        
-        # Filtrar atrasos das últimas 2 semanas (relatório semanal)
+
+        # Filtrar atrasos pelo período do relatório
         today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        two_weeks_ago = today - timedelta(days=14)
-        
+        since_date = data.get('since_date')
+        if since_date:
+            if isinstance(since_date, str):
+                try:
+                    since_date = datetime.fromisoformat(since_date)
+                except ValueError:
+                    try:
+                        since_date = datetime.strptime(since_date, "%d/%m/%Y")
+                    except ValueError:
+                        since_date = None
+            if since_date:
+                since_date = since_date.replace(hour=0, minute=0, second=0, microsecond=0)
+        if not since_date:
+            since_date = today - timedelta(days=7)
+
         # Excluir 'Cliente' e 'Otus' do relatório da equipe e filtrar por período
         team_delays = []
         tasks_cliente_otus = 0
         tasks_fora_periodo = 0
-        
+
         for task in delayed_tasks:
             disciplina = task.get('Disciplina', task.get('Discipline', ''))
-            
+
             # Excluir disciplinas do cliente
             if self._is_client_discipline(disciplina):
                 tasks_cliente_otus += 1
                 continue
-            
-            # Incluir atrasos explícitos mesmo fora do período
-            status_norm = self._normalize_status(task.get('Status', ''))
-            atraso_explicito = status_norm == 'nao feito' or self._has_delay_info(task)
-            if atraso_explicito:
-                team_delays.append(task)
-                continue
 
-            # Verificar se o atraso está nas últimas 2 semanas
+            # Verificar se o atraso está no período
             task_date = None
             end_date_str = task.get('Data Término', task.get('Data de Término', task.get('End Date', '')))
             baseline_date_str = task.get('Data de Fim - Baseline Otus', '')
-            
+
             # Priorizar baseline, senão usar data de término
             if baseline_date_str:
                 try:
@@ -861,11 +871,10 @@ class HTMLReportGenerator:
                 except (ValueError, TypeError) as e:
                     logger.debug(f"Falha ao processar data término '{end_date_str}': {e}")
 
-            # Se tem data, verificar se está nas últimas 2 semanas
+            # Se tem data, verificar se está no período
             if task_date:
                 task_date_normalized = task_date.replace(hour=0, minute=0, second=0, microsecond=0)
-                # Incluir atrasos que deveriam ter sido concluídos nas últimas 2 semanas
-                if task_date_normalized >= two_weeks_ago and task_date_normalized <= today:
+                if task_date_normalized >= since_date and task_date_normalized <= today:
                     team_delays.append(task)
                 else:
                     tasks_fora_periodo += 1
@@ -873,11 +882,11 @@ class HTMLReportGenerator:
                 # Se não tem data, incluir (pode ser tarefa sem data definida mas marcada como atrasada)
                 team_delays.append(task)
 
-        logger.info(f"Atrasos da equipe: {len(team_delays)} tarefas atrasadas (últimas 2 semanas)")
+        logger.info(f"Atrasos da equipe: {len(team_delays)} tarefas atrasadas (desde {since_date.strftime('%d/%m/%Y')})")
         if tasks_cliente_otus > 0:
             logger.info(f"  - {tasks_cliente_otus} tarefas atrasadas de 'Cliente' e 'Otus' excluídas (aparecem no relatório do cliente)")
         if tasks_fora_periodo > 0:
-            logger.info(f"  - {tasks_fora_periodo} tarefas atrasadas fora do período (mais de 2 semanas)")
+            logger.info(f"  - {tasks_fora_periodo} tarefas atrasadas fora do período (antes de {since_date.strftime('%d/%m/%Y')})")
         return team_delays
     
     def _get_schedule_client(self, data: Dict[str, Any], schedule_days: Optional[int] = None) -> List[Dict]:

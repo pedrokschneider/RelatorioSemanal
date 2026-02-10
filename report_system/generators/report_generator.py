@@ -823,6 +823,36 @@ Qualquer dúvida, estamos à disposição!
                 if self._is_status_not_done(status) or has_delay_info(task):
                     delayed_tasks.append(task)
 
+        # Filtrar atrasos pelo período do relatório
+        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        since_date = data.get('since_date')
+        if since_date:
+            if isinstance(since_date, str):
+                since_date = parse_data_flex(since_date)
+            if since_date:
+                since_date = since_date.replace(hour=0, minute=0, second=0, microsecond=0)
+        if not since_date:
+            since_date = today - timedelta(days=7)
+
+        filtered_tasks = []
+        for task in delayed_tasks:
+            if not isinstance(task, dict):
+                continue
+            task_date = None
+            end_date_str = task.get('Data Término', task.get('Data de Término', task.get('End Date', '')))
+            baseline_date_str = task.get('Data de Fim - Baseline Otus', '')
+            if baseline_date_str:
+                task_date = parse_data_flex(baseline_date_str)
+            if not task_date and end_date_str:
+                task_date = parse_data_flex(end_date_str)
+            if task_date:
+                task_date_normalized = task_date.replace(hour=0, minute=0, second=0, microsecond=0)
+                if task_date_normalized >= since_date and task_date_normalized <= today:
+                    filtered_tasks.append(task)
+            else:
+                filtered_tasks.append(task)
+        delayed_tasks = filtered_tasks
+
         if not delayed_tasks:
             return "Não foram identificados atrasos no período."
 

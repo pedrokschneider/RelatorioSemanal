@@ -774,23 +774,28 @@ class HTMLReportGenerator:
                 tasks_outra_disciplina += 1
                 continue
 
-            # Verificar se o atraso está no período
+            # Tarefas com info de atraso explícita (Categoria/Motivo preenchidos) sempre incluídas
+            if self._has_delay_info(task):
+                client_delays.append(task)
+                continue
+
+            # Verificar se o atraso está no período usando data do cronograma atual
             task_date = None
             end_date_str = task.get('Data Término', task.get('Data de Término', task.get('End Date', '')))
-            baseline_date_str = task.get('Data de Fim - Baseline Otus', '')
+            reprog_date_str = task.get('Data de Fim - Reprogramado Otus', '')
 
-            # Priorizar baseline, senão usar data de término
-            if baseline_date_str:
-                try:
-                    task_date = self._parse_date(baseline_date_str)
-                except (ValueError, TypeError) as e:
-                    logger.debug(f"Falha ao processar data baseline '{baseline_date_str}': {e}")
-
-            if not task_date and end_date_str:
+            # Priorizar data de término (cronograma atual), senão reprogramado
+            if end_date_str:
                 try:
                     task_date = self._parse_date(end_date_str)
                 except (ValueError, TypeError) as e:
                     logger.debug(f"Falha ao processar data término '{end_date_str}': {e}")
+
+            if not task_date and reprog_date_str:
+                try:
+                    task_date = self._parse_date(reprog_date_str)
+                except (ValueError, TypeError) as e:
+                    logger.debug(f"Falha ao processar data reprogramado '{reprog_date_str}': {e}")
 
             # Se tem data, verificar se está no período
             if task_date:
@@ -853,23 +858,28 @@ class HTMLReportGenerator:
                 tasks_cliente_otus += 1
                 continue
 
-            # Verificar se o atraso está no período
+            # Tarefas com info de atraso explícita (Categoria/Motivo preenchidos) sempre incluídas
+            if self._has_delay_info(task):
+                team_delays.append(task)
+                continue
+
+            # Verificar se o atraso está no período usando data do cronograma atual
             task_date = None
             end_date_str = task.get('Data Término', task.get('Data de Término', task.get('End Date', '')))
-            baseline_date_str = task.get('Data de Fim - Baseline Otus', '')
+            reprog_date_str = task.get('Data de Fim - Reprogramado Otus', '')
 
-            # Priorizar baseline, senão usar data de término
-            if baseline_date_str:
-                try:
-                    task_date = self._parse_date(baseline_date_str)
-                except (ValueError, TypeError) as e:
-                    logger.debug(f"Falha ao processar data baseline '{baseline_date_str}': {e}")
-
-            if not task_date and end_date_str:
+            # Priorizar data de término (cronograma atual), senão reprogramado
+            if end_date_str:
                 try:
                     task_date = self._parse_date(end_date_str)
                 except (ValueError, TypeError) as e:
                     logger.debug(f"Falha ao processar data término '{end_date_str}': {e}")
+
+            if not task_date and reprog_date_str:
+                try:
+                    task_date = self._parse_date(reprog_date_str)
+                except (ValueError, TypeError) as e:
+                    logger.debug(f"Falha ao processar data reprogramado '{reprog_date_str}': {e}")
 
             # Se tem data, verificar se está no período
             if task_date:

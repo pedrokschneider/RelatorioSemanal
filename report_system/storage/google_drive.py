@@ -628,7 +628,7 @@ class GoogleDriveManager:
             response = client.table('project_features').select(
                 'construflow_id, smartsheet_id, discord_id, relatorio_semanal_status, '
                 'pasta_emails_id, capa_email_url, gantt_email_url, disciplina_email_url, '
-                'project_id, projects(name, project_code)'
+                'project_id, projects(name, project_code, comercial_name, companies(name))'
             ).execute()
 
             if not response.data:
@@ -650,6 +650,10 @@ class GoogleDriveManager:
             if 'projects' in df.columns:
                 df['Projeto - PR'] = df['projects'].apply(lambda x: x.get('name') if x else None)
                 df['Código Projeto'] = df['projects'].apply(lambda x: x.get('project_code') if x else None)
+                df['nome_comercial'] = df['projects'].apply(lambda x: x.get('comercial_name') if x else None)
+                df['nome_cliente'] = df['projects'].apply(
+                    lambda x: x.get('companies', {}).get('name') if x and x.get('companies') else None
+                )
                 df = df.drop(columns=['projects'])
 
             # Converter status para formato esperado

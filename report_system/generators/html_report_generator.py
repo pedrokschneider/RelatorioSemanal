@@ -174,6 +174,18 @@ class HTMLReportGenerator:
         schedule = self._get_schedule_client(data, schedule_days=schedule_days)
         completed = self._get_completed_tasks_client(data)
         
+        # Warning diagnóstico quando todas as seções estão vazias
+        if not client_issues and not delays and not schedule and not completed:
+            smartsheet_data = data.get('smartsheet_data')
+            all_tasks_count = len(smartsheet_data.get('all_tasks', [])) if smartsheet_data else 0
+            delayed_count = len(smartsheet_data.get('delayed_tasks', [])) if smartsheet_data else 0
+            logger.warning(
+                f"RELATÓRIO CLIENTE VAZIO para projeto {project_id} ({project_name})! "
+                f"smartsheet_data presente: {smartsheet_data is not None}, "
+                f"tarefas brutas: {all_tasks_count}, atrasadas brutas: {delayed_count}. "
+                f"Verificar: smartsheet_id correto? Disciplinas 'Cliente'/'Otus' existem? Filtros de data/Level?"
+            )
+
         # Gerar seções HTML
         pendencias_html = self._generate_pendencias_section(client_issues, project_id)
         atrasos_html = self._generate_atrasos_client_section(delays)

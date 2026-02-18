@@ -100,26 +100,48 @@ class DataProcessor:
                 logger.error(projects_df['id'].tolist())
             return result
         
-        # Obter nome do projeto - PRIORIDADE: usar nome da planilha, não do Construflow
+        # Obter nomes do Supabase - SEM fallback para Construflow
         project_name = None
+        client_name = None
+        config_df = None
         try:
-            # Primeiro tentar obter da planilha de configuração
-            projects_df = self.gdrive.load_project_config_from_sheet()
-            if not projects_df.empty and 'construflow_id' in projects_df.columns:
-                projects_df['construflow_id'] = projects_df['construflow_id'].astype(str)
-                planilha_row = projects_df[projects_df['construflow_id'] == str(project_id)]
-                if not planilha_row.empty and 'Projeto - PR' in planilha_row.columns:
-                    project_name = planilha_row['Projeto - PR'].values[0]
-                    logger.info(f"Usando nome da planilha para projeto {project_id}: {project_name}")
+            config_df = self.gdrive.load_project_config_from_sheet()
+            if not config_df.empty and 'construflow_id' in config_df.columns:
+                config_df['construflow_id'] = config_df['construflow_id'].astype(str)
+                planilha_row = config_df[config_df['construflow_id'] == str(project_id)]
+                if not planilha_row.empty:
+                    # Project name: nome_comercial > Projeto - PR (projects.name)
+                    if 'nome_comercial' in planilha_row.columns:
+                        val = planilha_row['nome_comercial'].values[0]
+                        if pd.notna(val) and str(val).strip() and str(val).strip() != '-':
+                            project_name = str(val).strip()
+                            logger.info(f"Usando nome comercial para projeto {project_id}: {project_name}")
+                    if not project_name and 'Projeto - PR' in planilha_row.columns:
+                        val = planilha_row['Projeto - PR'].values[0]
+                        if pd.notna(val) and str(val).strip():
+                            project_name = str(val).strip()
+                            logger.info(f"Usando nome do Supabase (projects.name) para projeto {project_id}: {project_name}")
+                    # Client name: companies.name
+                    if 'nome_cliente' in planilha_row.columns:
+                        val = planilha_row['nome_cliente'].values[0]
+                        if pd.notna(val) and str(val).strip():
+                            client_name = str(val).strip()
+                            logger.info(f"Nome do cliente para projeto {project_id}: {client_name}")
+                else:
+                    logger.warning(f"Projeto {project_id} não encontrado na config Supabase. "
+                                  f"construflow_ids disponíveis: {config_df['construflow_id'].tolist()[:10]}")
+            else:
+                logger.warning(f"Config sheet vazia ou sem coluna construflow_id")
         except Exception as e:
-            logger.warning(f"Erro ao obter nome da planilha: {e}")
-        
-        # Se não encontrou na planilha, usar o nome do Construflow como fallback
+            logger.warning(f"Erro ao obter nomes do Supabase: {e}")
+
         if not project_name:
-            project_name = project_row['name'].values[0]
-            logger.info(f"Usando nome do Construflow para projeto {project_id}: {project_name}")
-        
+            logger.error(f"Nome do projeto {project_id} não encontrado no Supabase! "
+                        f"Verifique project_features e projects no Supabase.")
+            project_name = str(project_id)
+
         result['project_name'] = project_name
+        result['client_name'] = client_name
     
         
         # Buscar ID do Smartsheet se não fornecido
@@ -295,6 +317,16 @@ class DataProcessor:
                 # Manter todas as tarefas para o gerador decidir o que é concluído
                 all_tasks = [row._asdict() if hasattr(row, '_asdict') else row.to_dict() for _, row in tasks_df.iterrows()]
 
+                # Log diagnóstico: disciplinas e status disponíveis
+                if 'Disciplina' in tasks_df.columns:
+                    disciplinas = tasks_df['Disciplina'].dropna().unique().tolist()
+                    logger.info(f"Disciplinas encontradas no Smartsheet ({len(disciplinas)}): {sorted(disciplinas)}")
+                else:
+                    logger.warning(f"Coluna 'Disciplina' não encontrada no Smartsheet. Colunas: {tasks_df.columns.tolist()[:15]}")
+                if 'Status' in tasks_df.columns:
+                    status_dist = tasks_df['Status'].value_counts().to_dict()
+                    logger.info(f"Distribuição de status: {status_dist}")
+
                 # Construir lista de atrasadas:
                 # - Status = 'não feito' (com/sem acento)
                 # - OU categoria/motivo de atraso preenchidos
@@ -376,9 +408,9 @@ class DataProcessor:
 
                 logger.info(f"Smartsheet: {len(all_tasks)} tarefas carregadas; {len(delayed_tasks)} marcadas como atrasadas (não feito/categoria atraso)")
         elif smartsheet_id:
-            logger.warning(f"ID do Smartsheet fornecido ({smartsheet_id}) mas não foi possível obter dados")
+            logger.warning(f"Smartsheet ID={smartsheet_id} fornecido para projeto {project_id}, mas get_recent_tasks retornou vazio ou None. Relatório terá seções de Smartsheet vazias.")
         else:
-            logger.warning(f"ID do Smartsheet não encontrado para projeto {project_id}")
+            logger.warning(f"Nenhum smartsheet_id encontrado para projeto {project_id}. Verifique a coluna smartsheet_id no Supabase.")
         
         # Processar dados do Construflow (já obtidos em paralelo acima)
         # Se não conseguiu obter dados do Construflow ou DataFrame está vazio, 

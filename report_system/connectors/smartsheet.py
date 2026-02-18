@@ -122,30 +122,41 @@ class SmartsheetConnector:
         sheet_data = self.get_sheet(sheet_id, use_cache=use_cache, force_refresh=force_refresh)
         df = pd.DataFrame(sheet_data)
         if df.empty:
+            logger.warning(f"Smartsheet {sheet_id}: nenhum dado retornado da API")
             return df
-        
+
+        logger.info(f"Smartsheet {sheet_id}: {len(df)} linhas brutas obtidas")
+
         # Converter colunas de data
         if 'Data Término' in df.columns:
             df['Data Término'] = pd.to_datetime(df['Data Término'], errors='coerce')
         if 'Data Inicio' in df.columns:
             df['Data Inicio'] = pd.to_datetime(df['Data Inicio'], errors='coerce')
-        
+
         # Definir intervalo de tempo
         today = datetime.today()
         last_week = today - timedelta(weeks=weeks_range)
         next_week = today + timedelta(weeks=weeks_range)
-        
+
         # Filtrar por data de início OU data de término no período
         # Criar máscaras para cada condição
         mask_inicio = df['Data Inicio'].between(last_week, next_week) if 'Data Inicio' in df.columns else False
         mask_termino = df['Data Término'].between(last_week, next_week) if 'Data Término' in df.columns else False
-        
+
         # Combinar as máscaras (OU lógico)
         filtered_df = df[mask_inicio | mask_termino]
-        
+        logger.info(f"Smartsheet {sheet_id}: {len(filtered_df)} linhas após filtro de data ({last_week.strftime('%Y-%m-%d')} a {next_week.strftime('%Y-%m-%d')})")
+
         # Filtrar por Level 5 (apenas tarefas de nível 5)
         if 'Level' in filtered_df.columns:
+            before_level = len(filtered_df)
+            unique_levels = filtered_df['Level'].dropna().unique().tolist()
             filtered_df = filtered_df[filtered_df['Level'] == 5]
-        
+            logger.info(f"Smartsheet {sheet_id}: {len(filtered_df)} tarefas Level 5 de {before_level} total. Níveis encontrados: {unique_levels}")
+            if len(filtered_df) == 0 and before_level > 0:
+                logger.warning(f"Smartsheet {sheet_id}: TODAS as tarefas removidas pelo filtro Level=5!")
+        else:
+            logger.warning(f"Smartsheet {sheet_id}: coluna 'Level' não encontrada. Colunas: {list(filtered_df.columns)}")
+
         # Retornar todas as colunas disponíveis
         return filtered_df

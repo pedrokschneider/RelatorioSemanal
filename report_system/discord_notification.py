@@ -8,6 +8,7 @@ import json
 import os
 import time
 from typing import Optional, Dict, Any, List, Tuple, Union
+from report_system.utils import extract_discord_channel_id
 
 logger = logging.getLogger(__name__)
 
@@ -108,12 +109,12 @@ class DiscordNotificationManager:
         """
         if not channel_id:
             return ""
-            
-        # Extrair apenas os dígitos
-        clean_id = ''.join(c for c in channel_id if c.isdigit())
-        
+
+        # Extrair channel ID (suporta URLs e IDs raw)
+        clean_id = extract_discord_channel_id(channel_id)
+
         # Verificar se houve alteração
-        if clean_id != channel_id:
+        if clean_id != str(channel_id).strip():
             logger.info(f"ID do canal foi limpo: '{channel_id}' -> '{clean_id}'")
             
         return clean_id

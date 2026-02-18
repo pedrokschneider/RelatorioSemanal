@@ -27,6 +27,7 @@ from report_system.generators.html_report_generator import HTMLReportGenerator
 from report_system.storage import GoogleDriveManager
 from report_system.utils.logging_config import setup_logging
 from report_system.utils.simple_cache import SimpleCacheManager
+from report_system.utils import extract_discord_channel_id
 
 # Sistema de mensagens de erro padronizadas
 try:
@@ -451,17 +452,17 @@ class WeeklyReportSystem:
             logger.warning("Planilha não contém coluna discord_id")
             return None
         
-        # Limpar IDs para comparação
-        channel_id_clean = ''.join(c for c in channel_id if c.isdigit())
-        
+        # Limpar IDs para comparação (suporta URLs e IDs raw)
+        channel_id_clean = extract_discord_channel_id(channel_id)
+
         # Verificar cada linha
         for _, row in projects_df.iterrows():
             if 'discord_id' in row and pd.notna(row['discord_id']):
-                row_channel = str(row['discord_id'])
-                row_channel_clean = ''.join(c for c in row_channel if c.isdigit())
-                
+                row_channel_clean = extract_discord_channel_id(str(row['discord_id']))
+
                 if row_channel_clean == channel_id_clean:
                     if 'construflow_id' in row and pd.notna(row['construflow_id']):
+                        logger.info(f"Canal {channel_id} mapeado para projeto construflow_id={row['construflow_id']}")
                         return str(row['construflow_id'])
         
         return None

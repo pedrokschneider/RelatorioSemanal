@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 
 # Importar nossa nova classe ReportQueue
 from report_queue import ReportQueue
+from report_system.utils import extract_discord_channel_id
 
 # Configurar logging
 # Criar diretório de logs se não existir
@@ -138,9 +139,9 @@ class DiscordBotAutoChannels:
                 channel_id = str(row['discord_id']).strip()
                 project_id = str(row.get('construflow_id', '')).strip()
                 project_name = str(row.get('Projeto - PR', 'Projeto sem nome')).strip()
-                
-                # Limpar o canal_id (remover caracteres não numéricos)
-                channel_id_clean = ''.join(c for c in channel_id if c.isdigit())
+
+                # Extrair channel ID (suporta URLs e IDs raw)
+                channel_id_clean = extract_discord_channel_id(channel_id)
                 
                 if channel_id_clean:
                     channels_dict[channel_id_clean] = {
@@ -151,7 +152,7 @@ class DiscordBotAutoChannels:
             # Adicionar o canal admin à lista de canais monitorados
             admin_channel_id = self.report_system.config.get_discord_admin_channel_id()
             if admin_channel_id:
-                admin_channel_clean = ''.join(c for c in admin_channel_id if c.isdigit())
+                admin_channel_clean = extract_discord_channel_id(admin_channel_id)
                 if admin_channel_clean:
                     channels_dict[admin_channel_clean] = {
                         'project_id': 'ADMIN',
@@ -218,15 +219,13 @@ class DiscordBotAutoChannels:
                 }
             
             # Buscar o projeto pelo canal
-            channel_id_str = str(channel_id).strip()
-            channel_id_clean = ''.join(c for c in channel_id_str if c.isdigit())
-            
+            channel_id_clean = extract_discord_channel_id(str(channel_id))
+
             # Procurar o projeto na planilha
             project_row = None
             for _, row in projects_df.iterrows():
-                row_channel_id = str(row['discord_id']).strip()
-                row_channel_clean = ''.join(c for c in row_channel_id if c.isdigit())
-                
+                row_channel_clean = extract_discord_channel_id(str(row['discord_id']))
+
                 if row_channel_clean == channel_id_clean:
                     project_row = row
                     break
@@ -322,14 +321,12 @@ class DiscordBotAutoChannels:
             if projects_df is None or projects_df.empty:
                 return None
             
-            channel_id_str = str(channel_id).strip()
-            channel_id_clean = ''.join(c for c in channel_id_str if c.isdigit())
-            
+            channel_id_clean = extract_discord_channel_id(str(channel_id))
+
             # Procurar o projeto na planilha
             for _, row in projects_df.iterrows():
-                row_channel_id = str(row['discord_id']).strip()
-                row_channel_clean = ''.join(c for c in row_channel_id if c.isdigit())
-                
+                row_channel_clean = extract_discord_channel_id(str(row['discord_id']))
+
                 if row_channel_clean == channel_id_clean:
                     project_name = str(row.get('Projeto - PR', 'Projeto sem nome')).strip()
                     return f"📋 **Tópico Correto:**\n\nPara o projeto **{project_name}**, use o comando `!relatorio` no tópico dedicado:\n<#{channel_id_clean}>"
@@ -893,7 +890,7 @@ class DiscordBotAutoChannels:
                 try:
                     # Verificar se o comando está sendo executado no canal admin
                     admin_channel_id = self.report_system.config.get_discord_admin_channel_id()
-                    admin_channel_clean = ''.join(c for c in admin_channel_id if c.isdigit()) if admin_channel_id else ''
+                    admin_channel_clean = extract_discord_channel_id(admin_channel_id) if admin_channel_id else ''
                     
                     if channel_id != admin_channel_clean:
                         self.send_message(channel_id, "❌ **COMANDO RESTRITO**\n\nO comando `!notificar` só pode ser executado no canal administrativo.")

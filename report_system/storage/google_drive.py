@@ -732,6 +732,11 @@ class GoogleDriveManager:
                 
                 if not project_row.empty and pd.notna(project_row['pastaemails_id'].iloc[0]):
                     folder_id = str(project_row['pastaemails_id'].iloc[0])
+                    # Extrair ID se for uma URL do Drive
+                    if 'drive.google.com' in folder_id:
+                        match = re.search(r'/folders/([a-zA-Z0-9_-]+)', folder_id)
+                        if match:
+                            folder_id = match.group(1)
                     logger.info(f"ID da pasta encontrado na planilha: {folder_id}")
                     return folder_id
             
@@ -763,44 +768,9 @@ class GoogleDriveManager:
             except Exception as search_error:
                 logger.error(f"Erro ao buscar pasta pelo nome: {search_error}")
             
-            # 3. Se não encontrar, criar uma nova pasta
-            logger.info(f"Pasta não encontrada. Criando nova pasta para o projeto {project_name}")
-            
-            # Determinar pasta pai
-            parent_id = self.report_base_folder_id
-            if not parent_id:
-                # Se não tiver ID de pasta base, usar raiz
-                parent_id = 'root'
-                logger.warning("ID da pasta base não configurado, usando pasta raiz")
-            
-            try:
-                folder_metadata = {
-                    'name': project_name,
-                    'mimeType': 'application/vnd.google-apps.folder',
-                    'parents': [parent_id]
-                }
-                
-                # Criar pasta com suporte a drives compartilhados
-                folder = drive_service.files().create(
-                    body=folder_metadata,
-                    fields='id',
-                    supportsAllDrives=True
-                ).execute()
-                
-                folder_id = folder.get('id')
-                logger.info(f"Nova pasta criada com ID: {folder_id}")
-                
-                return folder_id
-            except Exception as create_error:
-                logger.error(f"Erro ao criar pasta: {create_error}")
-                
-                # Em caso de falha ao criar, tentar usar um ID de pasta padrão
-                fallback_folder = self.config.get_env_var('DEFAULT_FOLDER_ID')
-                if fallback_folder:
-                    logger.info(f"Usando pasta padrão como fallback: {fallback_folder}")
-                    return fallback_folder
-                
-                return None
+            # 3. Se não encontrar, retornar None (pasta deve ser configurada manualmente)
+            logger.warning(f"Pasta do Drive não encontrada para o projeto {project_name} (ID: {project_id}). Configure o campo 'pasta_emails_id' no Supabase.")
+            return None
                 
         except Exception as e:
             logger.error(f"Erro ao obter/criar pasta para o projeto {project_id}: {e}")

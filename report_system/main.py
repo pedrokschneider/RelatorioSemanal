@@ -1042,6 +1042,24 @@ class WeeklyReportSystem:
                 if project_name == "Projeto" and project_data.get('project_name'):
                     project_name = project_data['project_name']
                 
+                # Verificar se o projeto tem pasta do Drive configurada ANTES de gerar
+                project_folder_id = self.gdrive.get_project_folder(project_id, project_data['project_name'])
+                if not project_folder_id:
+                    error_msg = (
+                        f"⚠️ **Relatório de {project_name} não gerado.**\n\n"
+                        f"A pasta do projeto não está configurada no Drive.\n"
+                        f"Configure o campo `pasta_emails_id` no Supabase para este projeto."
+                    )
+                    logger.warning(f"Pasta do Drive não encontrada para {project_name} (ID: {project_id}). Abortando geração.")
+                    admin_channel = self.config.get_discord_admin_channel_id()
+                    if admin_channel:
+                        self.send_discord_notification(admin_channel, error_msg)
+                    if progress_reporter:
+                        progress_reporter.complete(success=False, final_message=error_msg)
+                    elif discord_channel_id and not skip_notifications:
+                        self.send_discord_notification(discord_channel_id, error_msg)
+                    return False, None, None
+
                 # Gerar relatório
                 if progress_reporter:
                     progress_reporter.update("Geração de relatório", "Criando conteúdo do relatório...")
@@ -1137,107 +1155,67 @@ class WeeklyReportSystem:
                 # Usar o caminho do relatório do cliente como file_path principal
                 file_path = html_paths.get('client', '')
                 
-                # Obter a pasta específica do projeto a partir da planilha de configuração
+                # Upload dos relatórios para o Google Drive (project_folder_id já verificado acima)
                 if progress_reporter:
                     progress_reporter.update("Upload dos relatórios", "Enviando relatórios HTML para o Google Drive...")
-                    
-                project_folder_id = self.gdrive.get_project_folder(
-                    project_id, 
-                    project_data['project_name']
-                )
-                
-                # Fazer upload dos arquivos HTML para o Google Drive em paralelo
+
                 uploaded_files = {}
-                client_file_id = None  # Inicializar variável
-                if project_folder_id:
-                    today_str = datetime.now().strftime("%Y-%m-%d")
-                    
-                    # Funções para upload em paralelo
-                    def upload_client_report():
-                        """Upload do relatório do cliente."""
-                        if html_paths.get('client'):
-                            try:
-                                result = self.gdrive.upload_file(
-                                    file_path=html_paths['client'],
-                                    name=f"Email_cliente_{project_data['project_name']}_{today_str}.html",
-                                    parent_id=project_folder_id
-                                )
-                                return ('client', result)
-                            except Exception as e:
-                                logger.error(f"Erro ao enviar relatório do cliente para o Drive: {e}")
-                                return ('client', None)
-                        return ('client', None)
-                    
-                    def upload_team_report():
-                        """Upload do relatório da equipe."""
-                        if html_paths.get('team'):
-                            try:
-                                result = self.gdrive.upload_file(
-                                    file_path=html_paths['team'],
-                                    name=f"Email_time_{project_data['project_name']}_{today_str}.html",
-                                    parent_id=project_folder_id
-                                )
-                                return ('team', result)
-                            except Exception as e:
-                                logger.error(f"Erro ao enviar relatório da equipe para o Drive: {e}")
-                                return ('team', None)
-                        return ('team', None)
-                    
-                    # Executar uploads SEQUENCIALMENTE para evitar race conditions
-                    logger.info("🚀 Iniciando upload dos relatórios para o Google Drive...")
+                client_file_id = None
+                today_str = datetime.now().strftime("%Y-%m-%d")
 
-                    # Upload do relatório do cliente primeiro
-                    if html_paths.get('client'):
-                        logger.info(f"📤 Enviando relatório do CLIENTE: {html_paths['client']}")
-                        try:
-                            report_type, result = upload_client_report()
-                            if result:
-                                if isinstance(result, dict):
-                                    uploaded_files['client'] = result.get('webViewLink', f"https://drive.google.com/file/d/{result.get('id')}/view")
-                                    client_file_id = result.get('id')
-                                else:
-                                    uploaded_files['client'] = f"https://drive.google.com/file/d/{result}/view"
-                                    client_file_id = result
-                                logger.info(f"✅ Relatório do CLIENTE enviado para o Drive: {client_file_id}")
+                logger.info("🚀 Iniciando upload dos relatórios para o Google Drive...")
+
+                # Upload do relatório do cliente
+                if html_paths.get('client'):
+                    logger.info(f"📤 Enviando relatório do CLIENTE: {html_paths['client']}")
+                    try:
+                        result = self.gdrive.upload_file(
+                            file_path=html_paths['client'],
+                            name=f"Email_cliente_{project_data['project_name']}_{today_str}.html",
+                            parent_id=project_folder_id
+                        )
+                        if result:
+                            if isinstance(result, dict):
+                                uploaded_files['client'] = result.get('webViewLink', f"https://drive.google.com/file/d/{result.get('id')}/view")
+                                client_file_id = result.get('id')
                             else:
-                                logger.error(f"❌ Upload do relatório do CLIENTE retornou None/vazio")
-                        except Exception as e:
-                            logger.error(f"❌ Erro ao fazer upload do relatório do CLIENTE: {e}", exc_info=True)
-                    else:
-                        logger.warning(f"⚠️ Caminho do relatório do cliente não encontrado em html_paths")
+                                uploaded_files['client'] = f"https://drive.google.com/file/d/{result}/view"
+                                client_file_id = result
+                            logger.info(f"✅ Relatório do CLIENTE enviado para o Drive: {client_file_id}")
+                        else:
+                            logger.error(f"❌ Upload do relatório do CLIENTE retornou None/vazio")
+                    except Exception as e:
+                        logger.error(f"❌ Erro ao fazer upload do relatório do CLIENTE: {e}", exc_info=True)
+                else:
+                    logger.warning(f"⚠️ Caminho do relatório do cliente não encontrado em html_paths")
 
-                    # Upload do relatório da equipe
-                    if html_paths.get('team'):
-                        logger.info(f"📤 Enviando relatório da EQUIPE: {html_paths['team']}")
-                        try:
-                            report_type, result = upload_team_report()
-                            if result:
-                                if isinstance(result, dict):
-                                    uploaded_files['team'] = result.get('webViewLink', f"https://drive.google.com/file/d/{result.get('id')}/view")
-                                    team_file_id = result.get('id')
-                                else:
-                                    uploaded_files['team'] = f"https://drive.google.com/file/d/{result}/view"
-                                    team_file_id = result
-                                logger.info(f"✅ Relatório da EQUIPE enviado para o Drive: {team_file_id}")
+                # Upload do relatório da equipe
+                if html_paths.get('team'):
+                    logger.info(f"📤 Enviando relatório da EQUIPE: {html_paths['team']}")
+                    try:
+                        result = self.gdrive.upload_file(
+                            file_path=html_paths['team'],
+                            name=f"Email_time_{project_data['project_name']}_{today_str}.html",
+                            parent_id=project_folder_id
+                        )
+                        if result:
+                            if isinstance(result, dict):
+                                uploaded_files['team'] = result.get('webViewLink', f"https://drive.google.com/file/d/{result.get('id')}/view")
+                                team_file_id = result.get('id')
                             else:
-                                logger.error(f"❌ Upload do relatório da EQUIPE retornou None/vazio")
-                        except Exception as e:
-                            logger.error(f"❌ Erro ao fazer upload do relatório da EQUIPE: {e}", exc_info=True)
-                    else:
-                        logger.warning(f"⚠️ Caminho do relatório da equipe não encontrado em html_paths")
+                                uploaded_files['team'] = f"https://drive.google.com/file/d/{result}/view"
+                                team_file_id = result
+                            logger.info(f"✅ Relatório da EQUIPE enviado para o Drive: {team_file_id}")
+                        else:
+                            logger.error(f"❌ Upload do relatório da EQUIPE retornou None/vazio")
+                    except Exception as e:
+                        logger.error(f"❌ Erro ao fazer upload do relatório da EQUIPE: {e}", exc_info=True)
                 else:
-                    logger.warning(f"ID da pasta do Drive não encontrado para projeto {project_id}")
-                
-                # Preparar mensagem final - formato limpo e conciso
-                folder_url = f"https://drive.google.com/drive/folders/{project_folder_id}" if project_folder_id else None
+                    logger.warning(f"⚠️ Caminho do relatório da equipe não encontrado em html_paths")
 
-                if folder_url:
-                    final_message = f"✅ **Relatório de {project_name} gerado com sucesso!**\n\n📁 [Abrir Pasta do Projeto]({folder_url})"
-                else:
-                    # Fallback caso não tenha pasta (raro)
-                    final_message = f"✅ **Relatório de {project_name} gerado com sucesso!**"
-                    if uploaded_files.get('client'):
-                        final_message += f"\n\n📄 [Abrir Relatório]({uploaded_files['client']})"
+                # Preparar mensagem final
+                folder_url = f"https://drive.google.com/drive/folders/{project_folder_id}"
+                final_message = f"✅ **Relatório de {project_name} gerado com sucesso!**\n\n📁 [Abrir Pasta do Projeto]({folder_url})"
                 
                 # Enviar notificação
                 if progress_reporter:

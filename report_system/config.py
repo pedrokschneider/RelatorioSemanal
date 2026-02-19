@@ -59,15 +59,11 @@ class ConfigManager:
         self.projects_sheet_id = self.get_env_var("PROJECTS_SHEET_ID")
         self.projects_sheet_name = self.get_env_var("PROJECTS_SHEET_NAME", "Projetos")
         
-        # BigQuery para configuração de projetos (substitui planilha)
-        self.use_bigquery = self.get_env_var("USE_BIGQUERY", "false").lower() == "true"
-        self.bigquery_table = self.get_env_var("BIGQUERY_TABLE", "dadosindicadores.portifolio.portifolio_plataforma_enriched")
-        self.bigquery_project = self.get_env_var("BIGQUERY_PROJECT", None)
-
-        # Supabase para configuração de projetos (alternativa ao BigQuery)
-        self.use_supabase = self.get_env_var("USE_SUPABASE", "false").lower() == "true"
+        # Supabase - fonte obrigatória de configuração de projetos
         self.supabase_url = self.get_env_var("SUPABASE_URL")
         self.supabase_key = self.get_env_var("SUPABASE_KEY")
+        if not self.supabase_url or not self.supabase_key:
+            logger.error("SUPABASE_URL e SUPABASE_KEY são obrigatórios! Configuração de projetos não funcionará.")
 
         # Caminho para templates de prompt
         self.prompt_template_path = self.get_env_var("PROMPT_TEMPLATE_PATH", "templates/prompt_template.txt")

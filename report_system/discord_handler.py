@@ -51,21 +51,25 @@ class DiscordCommandHandler:
 
     def _get_project_name(self, project_id: str) -> str:
         """
-        Obtém o nome amigável do projeto.
+        Obtém o nome amigável do projeto do Supabase.
+        Prioridade: nome_comercial > Projeto - PR (projects.name)
 
         Args:
-            project_id: ID do projeto
+            project_id: ID do projeto (construflow_id)
 
         Returns:
             Nome do projeto ou o ID se não encontrar
         """
         try:
-            if self.report_system and hasattr(self.report_system, 'get_project_name'):
-                name = self.report_system.get_project_name(project_id)
-                if name:
-                    return name
-        except Exception:
-            pass
+            import pandas as pd
+            if self.report_system:
+                projects_df = self.report_system._load_project_config()
+                if not projects_df.empty and 'construflow_id' in projects_df.columns:
+                    project_row = projects_df[projects_df['construflow_id'] == str(project_id)]
+                    if not project_row.empty:
+                        return self.report_system._resolve_project_name(project_row.iloc[0])
+        except Exception as e:
+            logging.getLogger(__name__).warning(f"Erro ao obter nome do projeto {project_id}: {e}")
         return f"Projeto {project_id}"
 
     def process_command(self, channel_id: str, command: str, 
@@ -166,13 +170,11 @@ class DiscordCommandHandler:
                     # Tentar obter pasta do projeto
                     project_folder_id = None
                     try:
-                        # Obter nome do projeto
-                        project_name = self.report_system.processor.construflow.get_projects()[
-                            self.report_system.processor.construflow.get_projects()['id'] == project_id
-                        ]['name'].values[0]
-                        
+                        # Obter nome do projeto do Supabase
+                        project_name = self._get_project_name(project_id)
+
                         project_folder_id = self.report_system.gdrive.get_project_folder(
-                            project_id, 
+                            project_id,
                             project_name
                         )
                     except Exception as e:

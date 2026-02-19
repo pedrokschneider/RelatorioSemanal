@@ -210,6 +210,20 @@ class WeeklyReportSystem:
         
         return self.project_config_df
 
+    @staticmethod
+    def _resolve_project_name(row) -> str:
+        """Resolve nome do projeto: nome_comercial > Projeto - PR (projects.name)."""
+        keys = row.index if hasattr(row, 'index') else row
+        if 'nome_comercial' in keys:
+            val = row.get('nome_comercial', None)
+            if val is not None and pd.notna(val) and str(val).strip() not in ('', '-'):
+                return str(val).strip()
+        if 'Projeto - PR' in keys:
+            val = row.get('Projeto - PR', None)
+            if val is not None and pd.notna(val) and str(val).strip():
+                return str(val).strip()
+        return 'Projeto sem nome'
+
     def _extract_column_value(self, project_row: pd.DataFrame, column_name: str) -> Optional[str]:
         """
         Extrai valor de uma coluna do DataFrame de forma segura.
@@ -371,7 +385,7 @@ class WeeklyReportSystem:
             try:
                 project_dict = {
                     'id': str(row['construflow_id']),
-                    'name': row.get('Projeto - PR', 'Projeto sem nome'), 
+                    'name': self._resolve_project_name(row),
                     'smartsheet_id': str(row.get('smartsheet_id', '')),
                 }
                 
@@ -905,8 +919,8 @@ class WeeklyReportSystem:
             if not projects_df.empty and 'construflow_id' in projects_df.columns:
                 project_row = projects_df[projects_df['construflow_id'] == project_id]
                 if not project_row.empty:
-                    if 'Projeto - PR' in project_row.columns:
-                        project_name = project_row['Projeto - PR'].values[0]
+                    # nome_comercial > projects.name (Projeto - PR)
+                    project_name = self._resolve_project_name(project_row.iloc[0])
                     if 'Código Projeto' in project_row.columns:
                         codigo_projeto = project_row['Código Projeto'].values[0]
             

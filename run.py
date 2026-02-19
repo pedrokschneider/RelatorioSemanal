@@ -174,11 +174,12 @@ def main():
             codigo_projeto = project_id
             try:
                 project_df = system._load_project_config()
-                if 'construflow_id' in project_df.columns and 'Projeto - PR' in project_df.columns and 'Código Projeto' in project_df.columns:
+                if 'construflow_id' in project_df.columns:
                     project_row = project_df[project_df['construflow_id'].astype(str) == str(project_id)]
                     if not project_row.empty:
-                        project_name = project_row['Projeto - PR'].iloc[0]
-                        codigo_projeto = project_row['Código Projeto'].iloc[0]
+                        project_name = system._resolve_project_name(project_row.iloc[0])
+                        if 'Código Projeto' in project_row.columns:
+                            codigo_projeto = project_row['Código Projeto'].iloc[0]
             except Exception:
                 pass
             # Chamada explícita do log na planilha
@@ -226,10 +227,10 @@ def main():
                 motivo_falha = rest[0] if not success and len(rest) > 0 and rest[0] else "Falha ao gerar relatório"
                 try:
                     project_df = system._load_project_config()
-                    if 'construflow_id' in project_df.columns and 'Projeto - PR' in project_df.columns:
+                    if 'construflow_id' in project_df.columns:
                         project_row = project_df[project_df['construflow_id'].astype(str) == str(project_id)]
                         if not project_row.empty:
-                            project_name = project_row['Projeto - PR'].iloc[0]
+                            project_name = system._resolve_project_name(project_row.iloc[0])
                 except Exception:
                     pass
                 if not args.no_admin_notification and hasattr(system, 'discord') and system.discord:

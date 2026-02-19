@@ -138,7 +138,7 @@ class DiscordBotAutoChannels:
             for _, row in projects_with_channel.iterrows():
                 channel_id = str(row['discord_id']).strip()
                 project_id = str(row.get('construflow_id', '')).strip()
-                project_name = str(row.get('Projeto - PR', 'Projeto sem nome')).strip()
+                project_name = self._resolve_project_name(row)
 
                 # Extrair channel ID (suporta URLs e IDs raw)
                 channel_id_clean = extract_discord_channel_id(channel_id)
@@ -189,6 +189,14 @@ class DiscordBotAutoChannels:
             return self.channels_info[channel_id]['project_name']
         return "projeto"
     
+    @staticmethod
+    def _resolve_project_name(row):
+        """Resolve nome do projeto: nome_comercial > Projeto - PR (projects.name)."""
+        nome_comercial = row.get('nome_comercial', None)
+        if nome_comercial is not None and str(nome_comercial).strip() not in ('', 'nan', 'None', '-'):
+            return str(nome_comercial).strip()
+        return str(row.get('Projeto - PR', 'Projeto sem nome')).strip()
+
     def validate_channel_for_reports(self, channel_id):
         """
         Valida se um canal está configurado corretamente para gerar relatórios.
@@ -242,7 +250,7 @@ class DiscordBotAutoChannels:
             if 'relatoriosemanal_status' in projects_df.columns:
                 status = str(project_row['relatoriosemanal_status']).strip().lower()
                 if status != 'sim':
-                    project_name = str(project_row.get('Projeto - PR', 'Projeto sem nome')).strip()
+                    project_name = self._resolve_project_name(project_row)
                     return {
                         'valid': False,
                         'reason': 'inactive',
@@ -252,7 +260,7 @@ class DiscordBotAutoChannels:
             # Verificar se o projeto tem ID do Construflow
             construflow_id = str(project_row.get('construflow_id', '')).strip()
             if not construflow_id:
-                project_name = str(project_row.get('Projeto - PR', 'Projeto sem nome')).strip()
+                project_name = self._resolve_project_name(project_row)
                 return {
                     'valid': False,
                     'reason': 'no_construflow_id',
@@ -260,7 +268,7 @@ class DiscordBotAutoChannels:
                 }
             
             # Se chegou até aqui, o canal está válido
-            project_name = str(project_row.get('Projeto - PR', 'Projeto sem nome')).strip()
+            project_name = self._resolve_project_name(project_row)
             return {
                 'valid': True,
                 'project_id': construflow_id,
@@ -328,7 +336,7 @@ class DiscordBotAutoChannels:
                 row_channel_clean = extract_discord_channel_id(str(row['discord_id']))
 
                 if row_channel_clean == channel_id_clean:
-                    project_name = str(row.get('Projeto - PR', 'Projeto sem nome')).strip()
+                    project_name = self._resolve_project_name(row)
                     return f"📋 **Tópico Correto:**\n\nPara o projeto **{project_name}**, use o comando `!relatorio` no tópico dedicado:\n<#{channel_id_clean}>"
             
             return None

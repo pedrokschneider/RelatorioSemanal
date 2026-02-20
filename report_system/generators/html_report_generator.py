@@ -786,11 +786,6 @@ class HTMLReportGenerator:
                 tasks_outra_disciplina += 1
                 continue
 
-            # Tarefas com info de atraso explícita (Categoria/Motivo preenchidos) sempre incluídas
-            if self._has_delay_info(task):
-                client_delays.append(task)
-                continue
-
             # Verificar se o atraso está no período usando data do cronograma atual
             task_date = None
             end_date_str = task.get('Data Término', task.get('Data de Término', task.get('End Date', '')))
@@ -816,9 +811,6 @@ class HTMLReportGenerator:
                     client_delays.append(task)
                 else:
                     tasks_fora_periodo += 1
-            else:
-                # Se não tem data, incluir (pode ser tarefa sem data definida mas marcada como atrasada)
-                client_delays.append(task)
 
         logger.info(f"Atrasos do cliente: {len(client_delays)} de {len(delayed_tasks)} atrasadas (desde {since_date.strftime('%d/%m/%Y')})")
         if tasks_outra_disciplina > 0:
@@ -870,11 +862,6 @@ class HTMLReportGenerator:
                 tasks_cliente_otus += 1
                 continue
 
-            # Tarefas com info de atraso explícita (Categoria/Motivo preenchidos) sempre incluídas
-            if self._has_delay_info(task):
-                team_delays.append(task)
-                continue
-
             # Verificar se o atraso está no período usando data do cronograma atual
             task_date = None
             end_date_str = task.get('Data Término', task.get('Data de Término', task.get('End Date', '')))
@@ -900,9 +887,6 @@ class HTMLReportGenerator:
                     team_delays.append(task)
                 else:
                     tasks_fora_periodo += 1
-            else:
-                # Se não tem data, incluir (pode ser tarefa sem data definida mas marcada como atrasada)
-                team_delays.append(task)
 
         logger.info(f"Atrasos da equipe: {len(team_delays)} tarefas atrasadas (desde {since_date.strftime('%d/%m/%Y')})")
         if tasks_cliente_otus > 0:

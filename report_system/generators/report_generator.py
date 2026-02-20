@@ -849,8 +849,6 @@ Qualquer dúvida, estamos à disposição!
                 task_date_normalized = task_date.replace(hour=0, minute=0, second=0, microsecond=0)
                 if task_date_normalized >= since_date and task_date_normalized <= today:
                     filtered_tasks.append(task)
-            else:
-                filtered_tasks.append(task)
         delayed_tasks = filtered_tasks
 
         if not delayed_tasks:
